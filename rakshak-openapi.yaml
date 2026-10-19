@@ -1,0 +1,640 @@
+openapi: 3.0.3
+info:
+  title: Rakshak Patrol & Incident Management API
+  version: 1.0.0
+  description: >
+    REST API contract for the Rakshak Guard Mobile App (Android/iOS) and 
+    Admin Web Dashboard. Supports offline-first idempotent synchronization, 
+    cryptographic QR verification, anti-spoofing telemetry, and P1-P4 SLA alerting.
+servers:
+  - url: https://api.rakshak.example.com/api/v1
+    description: Production Server
+  - url: https://staging-api.rakshak.example.com/api/v1
+    description: Staging Server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+        - timestamp
+      properties:
+        error_code:
+          type: string
+          example: SHIFT_NOT_ACTIVE
+        message:
+          type: string
+          example: No active or upcoming shift found for this guard within the 30-minute window.
+        timestamp:
+          type: string
+          format: date-time
+
+    LoginRequest:
+      type: object
+      description: Supports either employee_code + password OR phone_number + otp_code
+      properties:
+        employee_code:
+          type: string
+          example: GRD-1042
+        password:
+          type: string
+          format: password
+        phone_number:
+          type: string
+          example: "+919876543210"
+        otp_code:
+          type: string
+          example: "482910"
+        device_id:
+          type: string
+          example: "android-b827eb349a"
+        device_wall_clock_ms:
+          type: integer
+          format: int64
+          example: 1776604200000
+        device_monotonic_uptime_ms:
+          type: integer
+          format: int64
+          description: Milliseconds since device boot (SystemClock.elapsedRealtime)
+          example: 84320100
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        server_time_ms:
+          type: integer
+          format: int64
+        guard:
+          type: object
+          properties:
+            guard_id:
+              type: string
+              format: uuid
+            full_name:
+              type: string
+            employee_code:
+              type: string
+        active_shift:
+          type: object
+          properties:
+            shift_assignment_id:
+              type: string
+              format: uuid
+            site_id:
+              type: string
+              format: uuid
+            site_name:
+              type: string
+            emergency_contact_phone:
+              type: string
+              example: "+919811122233"
+            shift_start:
+              type: string
+              format: date-time
+            shift_end:
+              type: string
+              format: date-time
+            enforce_sequence:
+              type: boolean
+            checkpoints:
+              type: array
+              items:
+                $ref: '#/components/schemas/CheckpointManifestItem'
+
+    CheckpointManifestItem:
+      type: object
+      properties:
+        checkpoint_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: North Gate Generator Room
+        qr_serial_number:
+          type: string
+          example: QR-SITE01-CP04
+        sequence_order:
+          type: integer
+          example: 4
+        latitude:
+          type: number
+          format: double
+          example: 22.3072
+        longitude:
+          type: number
+          format: double
+          example: 73.1812
+        geofence_radius_m:
+          type: integer
+          default: 50
+        is_indoor:
+          type: boolean
+          default: false
+        qr_signature_hash:
+          type: string
+          description: 16-char HMAC-SHA256 signature for offline QR authenticity validation
+          example: "9f86d081884c7d65"
+
+    PresignedUrlRequest:
+      type: object
+      required:
+        - files
+      properties:
+        files:
+          type: array
+          items:
+            type: object
+            required:
+              - client_file_id
+              - category
+              - content_type
+            properties:
+              client_file_id:
+                type: string
+                format: uuid
+              category:
+                type: string
+                enum: [SELFIE, LOCATION_PHOTO, INCIDENT_PHOTO, INCIDENT_VIDEO]
+              content_type:
+                type: string
+                enum: [image/jpeg, video/mp4]
+
+    PresignedUrlResponse:
+      type: object
+      properties:
+        uploads:
+          type: array
+          items:
+            type: object
+            properties:
+              client_file_id:
+                type: string
+                format: uuid
+              upload_url:
+                type: string
+                format: uri
+              file_key:
+                type: string
+                example: "sites/s1/2026/10/19/selfie_9a8b7c.jpg"
+
+    CheckpointScanInput:
+      type: object
+      required:
+        - client_scan_id
+        - checkpoint_id
+        - qr_payload_scanned
+        - status
+        - captured_at_wall_clock
+        - captured_at_monotonic_ms
+      properties:
+        client_scan_id:
+          type: string
+          format: uuid
+          description: Offline-safe UUIDv4 for idempotency
+        checkpoint_id:
+          type: string
+          format: uuid
+        qr_payload_scanned:
+          type: string
+          example: "rakshak://cp?s=123&c=456&v=1&sig=9f86d081884c7d65"
+        status:
+          type: string
+          enum: [SCANNED, SKIPPED]
+        skip_reason:
+          type: string
+          nullable: true
+          enum: [DOOR_LOCKED, HAZARD_BLOCKED, MAINTENANCE_IN_PROGRESS, EMERGENCY_DIVERSION, null]
+        captured_at_wall_clock:
+          type: string
+          format: date-time
+        captured_at_monotonic_ms:
+          type: integer
+          format: int64
+        gps_latitude:
+          type: number
+          format: double
+          nullable: true
+        gps_longitude:
+          type: number
+          format: double
+          nullable: true
+        gps_accuracy_meters:
+          type: number
+          format: float
+          nullable: true
+        selfie_file_key:
+          type: string
+          nullable: true
+          description: Required when status is SCANNED
+        location_photo_file_key:
+          type: string
+          nullable: true
+          description: Required when status is SCANNED
+        remarks:
+          type: string
+          maxLength: 500
+          nullable: true
+
+    PatrolRoundSyncItem:
+      type: object
+      required:
+        - client_round_id
+        - site_id
+        - shift_assignment_id
+        - started_at_wall_clock
+        - started_at_monotonic_ms
+        - round_status
+        - scans
+      properties:
+        client_round_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        shift_assignment_id:
+          type: string
+          format: uuid
+        started_at_wall_clock:
+          type: string
+          format: date-time
+        started_at_monotonic_ms:
+          type: integer
+          format: int64
+        ended_at_wall_clock:
+          type: string
+          format: date-time
+          nullable: true
+        round_status:
+          type: string
+          enum: [IN_PROGRESS, COMPLETED, PARTIAL_MANUAL_CLOSE]
+        early_close_reason:
+          type: string
+          nullable: true
+        scans:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckpointScanInput'
+
+    IncidentCreateInput:
+      type: object
+      required:
+        - client_incident_id
+        - site_id
+        - priority
+        - description
+        - captured_at_wall_clock
+        - captured_at_monotonic_ms
+      properties:
+        client_incident_id:
+          type: string
+          format: uuid
+          description: Client-generated UUIDv4 to prevent duplicate alerts on retry
+        site_id:
+          type: string
+          format: uuid
+        patrol_round_id:
+          type: string
+          format: uuid
+          nullable: true
+        priority:
+          type: string
+          enum: [P1, P2, P3, P4]
+        title:
+          type: string
+          maxLength: 120
+          example: "Smoke detected near Transformer Bay 2"
+        description:
+          type: string
+          maxLength: 2000
+        captured_at_wall_clock:
+          type: string
+          format: date-time
+        captured_at_monotonic_ms:
+          type: integer
+          format: int64
+        captured_offline:
+          type: boolean
+          default: false
+        gps_latitude:
+          type: number
+          format: double
+          nullable: true
+        gps_longitude:
+          type: number
+          format: double
+          nullable: true
+        media_file_keys:
+          type: array
+          items:
+            type: string
+
+paths:
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate guard or admin user and retrieve active shift manifest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials or expired OTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Guard has no active shift scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /guard/media/presigned-urls:
+    post:
+      tags: [Guard App - Media & Sync]
+      summary: Generate batch S3 presigned upload URLs for compressed photos/videos
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignedUrlRequest'
+      responses:
+        '200':
+          description: Presigned upload URLs generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignedUrlResponse'
+
+  /guard/patrols/sync:
+    post:
+      tags: [Guard App - Patrols]
+      summary: Real-time or offline batch sync of patrol rounds and checkpoint scans
+      description: >
+        Idempotent endpoint accepting one or more patrol rounds and their child 
+        checkpoint scans. Deduplicates using client_round_id and client_scan_id.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - rounds
+              properties:
+                rounds:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PatrolRoundSyncItem'
+      responses:
+        '200':
+          description: Sync processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  synced_round_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                  synced_scan_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                  server_timestamp:
+                    type: string
+                    format: date-time
+
+  /incidents:
+    post:
+      tags: [Incident Management]
+      summary: Submit one or more P1-P4 incident reports (online or offline sync)
+      description: >
+        Processes incident reports idempotently via client_incident_id. Triggers 
+        immediate Email/SMS/WhatsApp dispatches for P1-P3 and schedules SLA escalation jobs.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - incidents
+              properties:
+                incidents:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/IncidentCreateInput'
+      responses:
+        '201':
+          description: Incidents logged and alert workflows triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processed_incidents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        client_incident_id:
+                          type: string
+                          format: uuid
+                        server_incident_id:
+                          type: string
+                          format: uuid
+                        status:
+                          type: string
+                          enum: [OPEN]
+                        alerts_dispatched:
+                          type: boolean
+
+  /incidents/{incidentId}/acknowledge:
+    patch:
+      tags: [Incident Management]
+      summary: Acknowledge a P1/P2/P3 incident and halt SLA escalation timers
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledgment_note:
+                  type: string
+                  example: "Control room dispatched fire response team to Bay 2."
+      responses:
+        '200':
+          description: Incident transitioned to ACKNOWLEDGED and SLA timer cancelled
+
+  /incidents/{incidentId}/resolve:
+    patch:
+      tags: [Incident Management]
+      summary: Resolve and close an incident with mandatory resolution remarks
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resolution_notes
+              properties:
+                resolution_notes:
+                  type: string
+                  minLength: 10
+                  example: "Faulty cooling fan replaced; smoke cleared and inspected by safety officer."
+      responses:
+        '200':
+          description: Incident transitioned to RESOLVED
+
+  /admin/reports/patrols:
+    get:
+      tags: [Admin Dashboard - Reports]
+      summary: Fetch paginated patrol compliance reports with checkpoint drill-down
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: site_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: guard_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: date_from
+          required: true
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: date_to
+          required: true
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: completion_status
+          schema:
+            type: string
+            enum: [COMPLETED, PARTIAL_MANUAL_CLOSE, PARTIAL_AUTO_EXPIRED, IN_PROGRESS]
+        - in: query
+          name: has_gps_variance
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Paginated list of patrol rounds with checkpoint verification details
+
+  /admin/reports/export:
+    post:
+      tags: [Admin Dashboard - Reports]
+      summary: Export filtered Patrol or Incident reports as PDF or Excel (.xlsx)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - report_type
+                - format
+                - date_from
+                - date_to
+              properties:
+                report_type:
+                  type: string
+                  enum: [PATROL_COMPLIANCE, INCIDENT_LOG]
+                format:
+                  type: string
+                  enum: [PDF, XLSX]
+                site_id:
+                  type: string
+                  format: uuid
+                priority_filter:
+                  type: array
+                  items:
+                    type: string
+                    enum: [P1, P2, P3, P4]
+      responses:
+        '200':
+          description: Returns signed download URL for the generated PDF or Excel report
+
+  /admin/sites/{siteId}/checkpoints/qr-sheet:
+    get:
+      tags: [Admin Dashboard - Master Config]
+      summary: Generate printable PDF sheet of cryptographic QR codes for a site
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: siteId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Printable PDF binary stream containing site checkpoint QR plates
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
