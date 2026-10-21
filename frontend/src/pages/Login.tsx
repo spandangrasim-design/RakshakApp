@@ -22,13 +22,15 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     const baseUrl = import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev';
 
     try {
-      const response = await axios.post(`${baseUrl}/api/auth/admin`, {
-        adminId,
-        password
+      // 1. Matched the backend URL and mapped adminId to employee_code
+      const response = await axios.post(`${baseUrl}/api/v1/auth/login`, {
+        employee_code: adminId,
+        password: password
       });
 
-      const token = response.data.token;
-      const userData = response.data.admin || { full_name: 'Admin', employee_code: adminId };
+      // 2. Matched the backend response structure (access_token and guard)
+      const token = response.data.access_token;
+      const userData = response.data.guard || { full_name: 'Admin', employee_code: adminId };
 
       if (onLoginSuccess) {
         onLoginSuccess(token, userData);
@@ -39,7 +41,8 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
       navigate('/reports');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Invalid Admin ID or Password');
+      // Handle the exact error message returned by your Hono backend
+      setError(err.response?.data?.message || 'Invalid Employee Code or Password');
     } finally {
       setIsLoading(false);
     }
@@ -68,7 +71,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
               <input
                 type="text"
-                placeholder="Admin ID"
+                placeholder="Admin ID (Employee Code)"
                 value={adminId}
                 onChange={(e) => setAdminId(e.target.value)}
                 required
