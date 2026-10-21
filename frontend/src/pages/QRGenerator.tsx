@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import QRCode from 'qrcode';
-import { PDFDownloadLink } from '@react-pdf/renderer';
-import { Shield, Download, Plus } from 'lucide-react';
+import { pdf } from '@react-pdf/renderer';
+import { Shield, Download, Plus, Loader2 } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
@@ -11,6 +11,7 @@ const QRGenerator: React.FC = () => {
   const [cpName, setCpName] = useState('');
   const [cpId, setCpId] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,6 +38,26 @@ const QRGenerator: React.FC = () => {
     
     setQrData(generated);
     setIsGenerating(false);
+  };
+
+  // Modern approach: Generate and download the PDF programmatically on click
+  const handleDownloadPDF = async () => {
+    setIsDownloading(true);
+    try {
+      const blob = await pdf(<QRSheetPDF checkpoints={qrData} />).toBlob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'rakshak-checkpoints.pdf';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to generate PDF:', error);
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   return (
@@ -88,28 +109,28 @@ const QRGenerator: React.FC = () => {
           </ul>
           
           {qrData.length === checkpoints.length ? (
-            <PDFDownloadLink
-              document={<QRSheetPDF checkpoints={qrData} />}
-              fileName="rakshak-checkpoints.pdf"
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold"
+            <button
+              onClick={handleDownloadPDF}
+              disabled={isDownloading}
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold disabled:opacity-70"
             >
-              {({ loading }: { loading: boolean }) => 
-                loading ? (
-                  <span>Preparing PDF...</span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <Download className="h-5 w-5"/> Download QR Sheet
-                  </span>
-                )
-              }
-            </PDFDownloadLink>
+              {isDownloading ? (
+                <><Loader2 className="h-5 w-5 animate-spin" /> Preparing PDF...</>
+              ) : (
+                <><Download className="h-5 w-5"/> Download QR Sheet</>
+              )}
+            </button>
           ) : (
             <button 
               onClick={generateQRCodes} 
               disabled={isGenerating}
               className="bg-emerald-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-emerald-700 font-semibold"
             >
-              {isGenerating ? 'Signing...' : 'Generate Cryptographic Codes'}
+              {isGenerating ? (
+                <><Loader2 className="h-5 w-5 animate-spin" /> Signing...</>
+              ) : (
+                'Generate Cryptographic Codes'
+              )}
             </button>
           )}
         </div>
