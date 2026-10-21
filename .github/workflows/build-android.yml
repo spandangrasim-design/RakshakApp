@@ -1,0 +1,53 @@
+name: Build & Distribute Android APK
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger build when pushing a release tag like v1.0.0
+    # Or trigger manually from GitHub UI:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Release APK
+        run: |
+          flutter build apk --release \
+            --dart-define=API_URL=https://api.rakshakapp.com \
+            --dart-define=ENVIRONMENT=production
+
+      - name: Upload APK to Firebase App Distribution
+        uses: FirebaseExtended/action-appdistribution@v0.2.2
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_CREDENTIAL_FILE_CONTENT }}
+          groups: field-guards,site-supervisors
+          file: build/app/outputs/flutter-apk/app-release.apk
+          releaseNotes: "Sprint 6 Release: Production GPS soft-flagging, offline SQLite sync, camera lock."
+
+      - name: Upload Build Artifact to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakshak-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk

@@ -1,5 +1,21 @@
 name = "rakshak-api"
 main = "src/index.ts"
-compatibility_date = "2026-10-21" # Uses today's date
+compatibility_date = "2026-04-01"
 
-# We don't put secrets here! Secrets go into GitHub Actions Secrets.
+# Production Custom Domain Routing
+routes = [
+  { pattern = "api.rakshakapp.com/*", zone_name = "rakshakapp.com" }
+]
+
+[vars]
+ENVIRONMENT = "production"
+SUPABASE_URL = "https://subydhacosoarzfsusxz.supabase.co"
+
+# Bind Cloudflare R2 bucket for photo proofs
+[[r2_buckets]]
+binding = "RAKSHAK_MEDIA"
+bucket_name = "rakshak-prod-media"
+
+# SLA Escalation Cron Trigger (Every 10 minutes)
+[triggers]
+crons = ["*/10 * * * *"]
