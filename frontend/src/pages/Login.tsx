@@ -25,13 +25,9 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         password
       });
 
-      // Fallback user data just in case your API only returns a token
       const userData = response.data.admin || { full_name: 'Admin', employee_code: adminId };
       
-      // Pass the token and data back up to App.tsx
       onLoginSuccess(response.data.token, userData);
-      
-      // Redirect to the protected dashboard
       navigate('/reports');
     } catch (err) {
       setError('Invalid Admin ID or Password');
