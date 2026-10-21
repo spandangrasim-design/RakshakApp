@@ -1,0 +1,86 @@
+# ==========================================
+# 1. ENVIRONMENT & SECRETS (CRITICAL SECURITY)
+# ==========================================
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+secrets.json
+service-account.json
+
+# ==========================================
+# 2. NODE.JS, REACT & CLOUDFLARE WORKERS
+# ==========================================
+node_modules/
+dist/
+build/
+.output/
+.nuxt/
+.svelte-kit/
+
+# Cloudflare Wrangler local state & builds
+.wrangler/
+dist-worker/
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# ==========================================
+# 3. FLUTTER & DART (MOBILE APP)
+# ==========================================
+# Flutter/Dart build outputs & tool files
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+
+# Android specific
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/.gradle/
+android/local.properties
+*.jks
+*.keystore
+
+# iOS specific
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/App.framework
+ios/Flutter/Flutter.framework
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcshareddata/
+
+# ==========================================
+# 4. IDEs & EDITORS (VS CODE, ANDROID STUDIO)
+# ==========================================
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+*.sublime-workspace
+*.sublime-project
+
+# ==========================================
+# 5. OPERATIONAL SYSTEM FILES
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.log
+*.tmp
