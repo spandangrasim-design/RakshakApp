@@ -27,7 +27,6 @@ const QRGenerator: React.FC = () => {
     
     for (const cp of checkpoints) {
       const payload = generateSignedQRPayload(cp.id);
-      // Convert the payload directly into a Base64 image string for the PDF
       const dataUri = await QRCode.toDataURL(payload, { 
         width: 300,
         margin: 1,
@@ -82,7 +81,9 @@ const QRGenerator: React.FC = () => {
           <h2 className="text-xl font-semibold mb-4">Pending Checkpoints ({checkpoints.length})</h2>
           <ul className="mb-6 divide-y divide-slate-100">
             {checkpoints.map(cp => (
-              <li key={cp.id} className="py-2 text-slate-600">{cp.name} <span className="text-xs bg-slate-100 px-2 py-1 rounded ml-2">{cp.id}</span></li>
+              <li key={cp.id} className="py-2 text-slate-600">
+                {cp.name} <span className="text-xs bg-slate-100 px-2 py-1 rounded ml-2">{cp.id}</span>
+              </li>
             ))}
           </ul>
           
@@ -92,7 +93,15 @@ const QRGenerator: React.FC = () => {
               fileName="rakshak-checkpoints.pdf"
               className="bg-blue-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold"
             >
-              {({ loading }) => loading ? 'Preparing PDF...' : <><Download className="h-5 w-5"/> Download QR Sheet</>}
+              {({ loading }: { loading: boolean }) => 
+                loading ? (
+                  <span>Preparing PDF...</span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <Download className="h-5 w-5"/> Download QR Sheet
+                  </span>
+                )
+              }
             </PDFDownloadLink>
           ) : (
             <button 
