@@ -4,7 +4,7 @@ import axios from 'axios';
 import { Lock, User, Shield } from 'lucide-react';
 
 interface LoginProps {
-  onLoginSuccess: (token: string, userData: any) => void;
+  onLoginSuccess?: (token: string, userData: any) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
@@ -19,18 +19,27 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setError('');
     setIsLoading(true);
 
+    const baseUrl = import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev';
+
     try {
-      const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/auth/admin`, {
+      const response = await axios.post(`${baseUrl}/api/auth/admin`, {
         adminId,
         password
       });
 
+      const token = response.data.token;
       const userData = response.data.admin || { full_name: 'Admin', employee_code: adminId };
-      
-      onLoginSuccess(response.data.token, userData);
+
+      if (onLoginSuccess) {
+        onLoginSuccess(token, userData);
+      } else {
+        localStorage.setItem('token', token);
+        localStorage.setItem('user', JSON.stringify(userData));
+      }
+
       navigate('/reports');
-    } catch (err) {
-      setError('Invalid Admin ID or Password');
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Invalid Admin ID or Password');
     } finally {
       setIsLoading(false);
     }
