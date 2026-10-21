@@ -1,25 +1,30 @@
 {
-  "name": "rakshak-api",
+  "name": "rakshak-admin",
+  "private": true,
   "version": "1.0.0",
-  "description": "Rakshak Auth API",
-  "main": "src/index.ts",
+  "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
-    "hono": "^4.6.0",
-    "zod": "^3.23.0"
-    "axios": "^1.6.0",
-    "lucide-react": "^0.292.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0"
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.475.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-leaflet": "^4.2.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241018.0",
-    "typescript": "^5.6.0",
-    "wrangler": "^3.81.0"
+    "@types/leaflet": "^1.9.16",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
   }
 }
