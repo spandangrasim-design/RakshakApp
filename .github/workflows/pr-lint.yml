@@ -1,0 +1,48 @@
+name: PR Code Quality Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-admin-web:
+    name: Lint React Admin Dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./rakshak_admin
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install Dependencies
+        run: npm ci
+        
+      - name: Run ESLint
+        run: npm run lint
+
+  lint-mobile-app:
+    name: Lint Flutter Mobile App
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./rakshak_mobile
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Install Dependencies
+        run: flutter pub get
+        
+      - name: Run Flutter Analyze
+        run: flutter analyze
