@@ -1,0 +1,5 @@
+name = "rakshak-api"
+main = "src/index.ts"
+compatibility_date = "2026-10-21" # Uses today's date
+
+# We don't put secrets here! Secrets go into GitHub Actions Secrets.
