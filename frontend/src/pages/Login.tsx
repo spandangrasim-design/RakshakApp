@@ -1,9 +1,13 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Lock, User } from 'lucide-react';
+import { Lock, User, Shield } from 'lucide-react';
 
-export default function Login() {
+interface LoginProps {
+  onLoginSuccess: (token: string, userData: any) => void;
+}
+
+const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [adminId, setAdminId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -21,11 +25,14 @@ export default function Login() {
         password
       });
 
-      // Save the JWT token
-      localStorage.setItem('admin_token', response.data.token);
+      // Fallback user data just in case your API only returns a token
+      const userData = response.data.admin || { full_name: 'Admin', employee_code: adminId };
       
-      // Navigate to the secure dashboard
-      navigate('/dashboard');
+      // Pass the token and data back up to App.tsx
+      onLoginSuccess(response.data.token, userData);
+      
+      // Redirect to the protected dashboard
+      navigate('/reports');
     } catch (err) {
       setError('Invalid Admin ID or Password');
     } finally {
@@ -34,43 +41,62 @@ export default function Login() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f3f4f6' }}>
-      <form onSubmit={handleLogin} style={{ padding: '2.5rem', background: 'white', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', width: '100%', maxWidth: '400px' }}>
-        <h2 style={{ textAlign: 'center', marginBottom: '1.5rem', color: '#1f2937' }}>Rakshak Admin</h2>
-        
-        {error && <p style={{ color: '#ef4444', textAlign: 'center', marginBottom: '1rem', fontSize: '0.875rem' }}>{error}</p>}
-
-        <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #d1d5db', borderRadius: '4px', padding: '0.5rem', marginBottom: '1rem' }}>
-          <User size={20} color="#6b7280" />
-          <input 
-            type="text" 
-            placeholder="Admin ID" 
-            value={adminId}
-            onChange={(e) => setAdminId(e.target.value)}
-            required
-            style={{ border: 'none', outline: 'none', marginLeft: '10px', width: '100%' }}
-          />
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4 text-slate-800">
+      <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-xl shadow-slate-200/50 border border-slate-100">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-500/20">
+            <Shield className="h-6 w-6" />
+          </div>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Rakshak Admin</h2>
+          <p className="text-sm text-slate-500 mt-1">Enter your credentials to access the dashboard</p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #d1d5db', borderRadius: '4px', padding: '0.5rem', marginBottom: '1.5rem' }}>
-          <Lock size={20} color="#6b7280" />
-          <input 
-            type="password" 
-            placeholder="Password" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            style={{ border: 'none', outline: 'none', marginLeft: '10px', width: '100%' }}
-          />
-        </div>
+        {error && (
+          <div className="mb-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-600 border border-rose-100 text-center">
+            {error}
+          </div>
+        )}
 
-        <button 
-          type="submit" 
-          disabled={isLoading}
-          style={{ width: '100%', padding: '0.75rem', background: isLoading ? '#93c5fd' : '#2563eb', color: 'white', border: 'none', borderRadius: '4px', cursor: isLoading ? 'not-allowed' : 'pointer', fontSize: '1rem', fontWeight: 'bold' }}>
-          {isLoading ? 'Signing In...' : 'Sign In'}
-        </button>
-      </form>
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Admin ID"
+                value={adminId}
+                onChange={(e) => setAdminId(e.target.value)}
+                required
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm outline-none transition focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm outline-none transition focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="mt-2 w-full rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-70 disabled:cursor-not-allowed"
+          >
+            {isLoading ? 'Signing In...' : 'Sign In'}
+          </button>
+        </form>
+      </div>
     </div>
   );
-}
+};
+
+export default Login;
