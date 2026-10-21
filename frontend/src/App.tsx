@@ -1,26 +1,57 @@
 import React, { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import Login from './pages/Login';
 import { ReportsPage } from './pages/ReportsPage';
-import { Shield, LogOut } from 'lucide-react';
+import QRGenerator from './pages/QRGenerator';
+import { Shield, LogOut, FileText, QrCode } from 'lucide-react';
 
-// 1. Create a Layout Wrapper for authenticated pages
+// 1. Create a Layout Wrapper for authenticated pages with navigation tabs
 const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => void, children: React.ReactNode }) => {
+    const location = useLocation();
+
     return (
         <div className="min-h-screen bg-slate-50 text-slate-800">
             {/* Top Navigation Bar */}
             <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
                 <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-                    <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-500/20">
-                            <Shield className="h-5 w-5" />
+                    <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-500/20">
+                                <Shield className="h-5 w-5" />
+                            </div>
+                            <div>
+                                <span className="text-base font-bold tracking-tight text-slate-900">Rakshak</span>
+                                <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                                    Operations
+                                </span>
+                            </div>
                         </div>
-                        <div>
-                            <span className="text-base font-bold tracking-tight text-slate-900">Rakshak</span>
-                            <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-                                Operations
-                            </span>
-                        </div>
+
+                        {/* Navigation Tabs */}
+                        <nav className="hidden md:flex items-center gap-2">
+                            <Link
+                                to="/reports"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                    location.pathname === '/reports'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                }`}
+                            >
+                                <FileText className="h-4 w-4" />
+                                Reports
+                            </Link>
+                            <Link
+                                to="/qr-generator"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                    location.pathname === '/qr-generator'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                }`}
+                            >
+                                <QrCode className="h-4 w-4" />
+                                QR Generator
+                            </Link>
+                        </nav>
                     </div>
 
                     <div className="flex items-center gap-4">
@@ -50,7 +81,6 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
 
 // 2. Main App Component with Routing
 export const App: React.FC = () => {
-    // Check local storage for existing session on initial load
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
     const [user, setUser] = useState<any>(() => {
         const saved = localStorage.getItem('user');
@@ -102,7 +132,21 @@ export const App: React.FC = () => {
                     }
                 />
 
-                {/* Fallback Route: Redirect everything else to either reports or login */}
+                {/* Protected Route: Cryptographic QR Generator */}
+                <Route
+                    path="/qr-generator"
+                    element={
+                        token ? (
+                            <AdminLayout user={user} onLogout={handleLogout}>
+                                <QRGenerator />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
+                {/* Fallback Route */}
                 <Route
                     path="*"
                     element={<Navigate to={token ? "/reports" : "/login"} replace />}
