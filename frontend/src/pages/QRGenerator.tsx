@@ -1,7 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { GoogleMap, useJsApiLoader, Marker } from '@react-google-maps/api';
 import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
@@ -13,18 +12,11 @@ interface Checkpoint {
   lng: string;
 }
 
-// Map configuration
-const mapContainerStyle = {
-  width: '100%',
-  height: '350px',
-  borderRadius: '0.75rem',
-};
-
-// Default map center (e.g., Central India / your default coordinates)
-const defaultCenter = {
-  lat: 20.5937,
-  lng: 78.9629,
-};
+declare global {
+  interface Window {
+    L?: any;
+  }
+}
 
 const QRGenerator: React.FC = () => {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -35,36 +27,83 @@ const QRGenerator: React.FC = () => {
   const [cpLat, setCpLat] = useState('');
   const [cpLng, setCpLng] = useState('');
 
-  // Selected marker location on map
-  const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number } | null>(null);
-
+  const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-
-  // State for the full-screen zoom modal
   const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
 
-  // Load Google Maps API
-  const { isLoaded, loadError } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'YOUR_GOOGLE_MAPS_API_KEY',
-  });
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markerInstanceRef = useRef<any>(null);
 
-  // Handle map click to select position and auto-fill coordinates + ID
-  const handleMapClick = useCallback((e: google.maps.MapMouseEvent) => {
-    if (e.latLng) {
-      const lat = e.latLng.lat();
-      const lng = e.latLng.lng();
+  // Load Leaflet CSS and JS dynamically without any npm install
+  useEffect(() => {
+    if (window.L) {
+      setIsMapLoaded(true);
+      return;
+    }
 
-      setSelectedLocation({ lat, lng });
+    // Add Leaflet CSS
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+    }
+
+    // Add Leaflet JS
+    if (!document.getElementById('leaflet-js')) {
+      const script = document.createElement('script');
+      script.id = 'leaflet-js';
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.async = true;
+      script.onload = () => setIsMapLoaded(true);
+      document.body.appendChild(script);
+    } else {
+      setIsMapLoaded(true);
+    }
+  }, []);
+
+  // Initialize Leaflet Map
+  useEffect(() => {
+    if (!isMapLoaded || !mapContainerRef.current || mapInstanceRef.current || !window.L) return;
+
+    const L = window.L;
+    const initialCenter = [20.5937, 78.9629]; // [Lat, Lng]
+
+    const map = L.map(mapContainerRef.current).setView(initialCenter, 5);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    mapInstanceRef.current = map;
+
+    // Handle Map Click
+    map.on('click', (e: any) => {
+      const { lat, lng } = e.latlng;
+
+      if (!markerInstanceRef.current) {
+        markerInstanceRef.current = L.marker([lat, lng]).addTo(map);
+      } else {
+        markerInstanceRef.current.setLatLng([lat, lng]);
+      }
+
       setCpLat(lat.toFixed(6));
       setCpLng(lng.toFixed(6));
 
-      // Auto-generate Checkpoint ID if not already entered
+      // Auto-generate checkpoint ID if empty
       const generatedId = `CP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
       setCpId((prev) => (prev ? prev : generatedId));
-    }
-  }, []);
+    });
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, [isMapLoaded]);
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +113,11 @@ const QRGenerator: React.FC = () => {
       setCpId('');
       setCpLat('');
       setCpLng('');
-      setSelectedLocation(null);
+
+      if (markerInstanceRef.current && mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(markerInstanceRef.current);
+        markerInstanceRef.current = null;
+      }
     }
   };
 
@@ -123,7 +166,6 @@ const QRGenerator: React.FC = () => {
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8 space-y-6">
-        {/* Interactive Google Map Section */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
@@ -131,41 +173,24 @@ const QRGenerator: React.FC = () => {
               Pick Location on Map
             </label>
             <span className="text-xs text-slate-500">
-              Click anywhere on the map to automatically populate ID, Latitude & Longitude
+              Click anywhere on the map to auto-fill Checkpoint ID, Latitude & Longitude
             </span>
           </div>
 
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50">
-            {loadError && (
-              <div className="p-6 text-center text-red-500 text-sm">
-                Error loading Google Maps. Please check your API key.
-              </div>
-            )}
-            {!isLoaded && !loadError && (
-              <div className="p-12 flex items-center justify-center gap-2 text-slate-500">
+          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50 relative">
+            {!isMapLoaded && (
+              <div className="h-[350px] flex items-center justify-center gap-2 text-slate-500">
                 <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
                 Loading Map...
               </div>
             )}
-            {isLoaded && (
-              <GoogleMap
-                mapContainerStyle={mapContainerStyle}
-                center={selectedLocation || defaultCenter}
-                zoom={selectedLocation ? 15 : 5}
-                onClick={handleMapClick}
-                options={{
-                  streetViewControl: false,
-                  mapTypeControl: false,
-                  fullscreenControl: false,
-                }}
-              >
-                {selectedLocation && <Marker position={selectedLocation} />}
-              </GoogleMap>
-            )}
+            <div
+              ref={mapContainerRef}
+              style={{ width: '100%', height: '350px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }}
+            />
           </div>
         </div>
 
-        {/* Input Form */}
         <form onSubmit={handleAddCheckpoint} className="flex gap-4 items-end flex-wrap">
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-slate-600 mb-1">
@@ -234,7 +259,6 @@ const QRGenerator: React.FC = () => {
         </form>
       </div>
 
-      {/* Checkpoint List & QR Display */}
       {checkpoints.length > 0 && (
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <h2 className="text-xl font-semibold mb-4">Checkpoints ({checkpoints.length})</h2>
@@ -316,7 +340,6 @@ const QRGenerator: React.FC = () => {
         </div>
       )}
 
-      {/* Full-screen Zoom Modal */}
       {enlargedQR && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm"
@@ -338,7 +361,7 @@ const QRGenerator: React.FC = () => {
             <img
               src={enlargedQR.qrDataUri}
               alt={enlargedQR.name}
-              className="w-72 h-72 rounded-xl shadow-sm border border-slate-200 mb-6"
+              className="w-72 h-72 rounded-xl border border-slate-200 mb-6"
             />
 
             <div className="flex items-center gap-2 text-slate-600 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100">
