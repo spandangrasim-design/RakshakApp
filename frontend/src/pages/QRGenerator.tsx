@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, Layers } from 'lucide-react';
+import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, Layers, Trash2, CheckCircle2 } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
@@ -18,8 +18,19 @@ declare global {
   }
 }
 
+const STORAGE_KEY = 'rakshak_checkpoints';
+
 const QRGenerator: React.FC = () => {
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  // Initialize from LocalStorage so checkpoints are not lost
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [qrData, setQrData] = useState<QRData[]>([]);
 
   const [cpName, setCpName] = useState('');
@@ -30,9 +41,9 @@ const QRGenerator: React.FC = () => {
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [savedSuccess, setSavedSuccess] = useState(false);
   const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
 
-  // Map layer toggle: 'street' or 'satellite'
   const [mapType, setMapType] = useState<'street' | 'satellite'>('street');
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -41,7 +52,12 @@ const QRGenerator: React.FC = () => {
   const streetLayerRef = useRef<any>(null);
   const satelliteLayerRef = useRef<any>(null);
 
-  // Load Leaflet CSS and JS dynamically
+  // Sync checkpoints to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(checkpoints));
+  }, [checkpoints]);
+
+  // Load Leaflet dynamically
   useEffect(() => {
     if (window.L) {
       setIsMapLoaded(true);
@@ -73,30 +89,26 @@ const QRGenerator: React.FC = () => {
     if (!isMapLoaded || !mapContainerRef.current || mapInstanceRef.current || !window.L) return;
 
     const L = window.L;
-    const initialCenter = [22.2751, 73.1560]; // Vadodara default coordinates
+    const initialCenter = [22.2751, 73.1560];
 
     const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
 
-    // Street View Layer (OpenStreetMap)
     streetLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
       maxZoom: 19,
     });
 
-    // Satellite View Layer (Esri World Imagery)
     satelliteLayerRef.current = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       {
-        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+        attribution: 'Tiles &copy; Esri &mdash; World Imagery',
         maxZoom: 19,
       }
     );
 
-    // Default to street view
     streetLayerRef.current.addTo(map);
     mapInstanceRef.current = map;
 
-    // SVG Marker pin to prevent broken default image icon
     const customPinIcon = L.divIcon({
       className: 'custom-leaflet-marker',
       html: `
@@ -111,7 +123,6 @@ const QRGenerator: React.FC = () => {
       iconSize: [0, 0],
     });
 
-    // Map click handler
     map.on('click', (e: any) => {
       const { lat, lng } = e.latlng;
 
@@ -124,7 +135,6 @@ const QRGenerator: React.FC = () => {
       setCpLat(lat.toFixed(6));
       setCpLng(lng.toFixed(6));
 
-      // Auto-generate checkpoint ID if empty
       const generatedId = `CP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
       setCpId((prev) => (prev ? prev : generatedId));
     });
@@ -135,7 +145,6 @@ const QRGenerator: React.FC = () => {
     };
   }, [isMapLoaded]);
 
-  // Toggle map layer when user switches between Street / Satellite
   const toggleMapLayer = (type: 'street' | 'satellite') => {
     if (!mapInstanceRef.current) return;
     setMapType(type);
@@ -152,7 +161,9 @@ const QRGenerator: React.FC = () => {
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
     if (cpName && cpId && cpLat && cpLng) {
-      setCheckpoints([...checkpoints, { id: cpId, name: cpName, lat: cpLat, lng: cpLng }]);
+      const updated = [...checkpoints, { id: cpId, name: cpName, lat: cpLat, lng: cpLng }];
+      setCheckpoints(updated);
+      setQrData([]); // Reset generated state so user generates newly added codes
       setCpName('');
       setCpId('');
       setCpLat('');
@@ -165,6 +176,12 @@ const QRGenerator: React.FC = () => {
     }
   };
 
+  const handleDeleteCheckpoint = (id: string) => {
+    setCheckpoints(checkpoints.filter((cp) => cp.id !== id));
+    setQrData(qrData.filter((q) => q.id !== id));
+  };
+
+  // Generate & Save Codes
   const generateQRCodes = async () => {
     setIsGenerating(true);
     const generated: QRData[] = [];
@@ -180,17 +197,25 @@ const QRGenerator: React.FC = () => {
     }
 
     setQrData(generated);
+    // Explicitly guarantee storage for Reports comparison
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(checkpoints));
+    localStorage.setItem('rakshak_qr_data', JSON.stringify(generated));
+
+    setSavedSuccess(true);
+    setTimeout(() => setSavedSuccess(false), 3000);
     setIsGenerating(false);
   };
 
-  const handleDownloadPDF = async () => {
+  // Download 1 QR per page PDF
+  const handleDownloadPDF = async (specificQR?: QRData) => {
     setIsDownloading(true);
     try {
-      const blob = await pdf(<QRSheetPDF checkpoints={qrData} />).toBlob();
+      const listToPrint = specificQR ? [specificQR] : qrData;
+      const blob = await pdf(<QRSheetPDF checkpoints={listToPrint} />).toBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'rakshak-checkpoints.pdf';
+      link.download = specificQR ? `${specificQR.name}-${specificQR.id}.pdf` : 'rakshak-checkpoints-1perpage.pdf';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -204,9 +229,17 @@ const QRGenerator: React.FC = () => {
 
   return (
     <div className="p-8 max-w-6xl mx-auto text-slate-800">
-      <div className="flex items-center gap-3 mb-8">
-        <Shield className="h-8 w-8 text-blue-600" />
-        <h1 className="text-3xl font-bold">Cryptographic QR Generator</h1>
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-3">
+          <Shield className="h-8 w-8 text-blue-600" />
+          <h1 className="text-3xl font-bold">Cryptographic QR Generator</h1>
+        </div>
+
+        {savedSuccess && (
+          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-lg border border-emerald-200 text-sm font-medium animate-fade-in">
+            <CheckCircle2 className="h-4 w-4" /> Checkpoints saved for Patrol Reports!
+          </div>
+        )}
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8 space-y-6">
@@ -222,7 +255,6 @@ const QRGenerator: React.FC = () => {
           </div>
 
           <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50 relative">
-            {/* View Selector Controls Overlay */}
             <div className="absolute top-3 right-3 z-[1000] bg-white/95 backdrop-blur-sm shadow-md rounded-lg p-1 flex items-center border border-slate-200 text-xs font-semibold">
               <button
                 type="button"
@@ -332,22 +364,46 @@ const QRGenerator: React.FC = () => {
 
       {checkpoints.length > 0 && (
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-          <h2 className="text-xl font-semibold mb-4">Checkpoints ({checkpoints.length})</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold">Checkpoints ({checkpoints.length})</h2>
+            <button
+              onClick={() => {
+                if (confirm('Are you sure you want to clear all checkpoints?')) {
+                  setCheckpoints([]);
+                  setQrData([]);
+                  localStorage.removeItem(STORAGE_KEY);
+                }
+              }}
+              className="text-xs text-red-500 hover:text-red-700 font-medium"
+            >
+              Clear All
+            </button>
+          </div>
 
           {qrData.length === 0 && (
-            <ul className="mb-6 divide-y divide-slate-100">
-              {checkpoints.map((cp) => (
-                <li key={cp.id} className="py-3 text-slate-600 flex items-center gap-4">
-                  <span className="font-medium text-slate-800">{cp.name}</span>
-                  <span className="text-xs font-mono bg-slate-100 px-2 py-1 rounded border border-slate-200">
-                    {cp.id}
-                  </span>
-                  <span className="text-xs flex items-center gap-1 text-slate-500 font-mono">
-                    <MapPin className="h-3 w-3 text-blue-500" /> {cp.lat}, {cp.lng}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="mb-6">
+              <ul className="divide-y divide-slate-100">
+                {checkpoints.map((cp) => (
+                  <li key={cp.id} className="py-3 text-slate-600 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <span className="font-medium text-slate-800">{cp.name}</span>
+                      <span className="text-xs font-mono bg-slate-100 px-2 py-1 rounded border border-slate-200">
+                        {cp.id}
+                      </span>
+                      <span className="text-xs flex items-center gap-1 text-slate-500 font-mono">
+                        <MapPin className="h-3 w-3 text-blue-500" /> {cp.lat}, {cp.lng}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteCheckpoint(cp.id)}
+                      className="p-1.5 text-slate-400 hover:text-red-500 rounded"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {qrData.length === checkpoints.length ? (
@@ -356,10 +412,12 @@ const QRGenerator: React.FC = () => {
                 {qrData.map((cp) => (
                   <div
                     key={cp.id}
-                    onClick={() => setEnlargedQR(cp)}
-                    className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative group cursor-pointer hover:border-blue-400 hover:shadow-md transition-all"
+                    className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative group hover:border-blue-400 hover:shadow-md transition-all"
                   >
-                    <div className="relative mb-3">
+                    <div
+                      className="relative mb-3 cursor-pointer"
+                      onClick={() => setEnlargedQR(cp)}
+                    >
                       <img
                         src={cp.qrDataUri}
                         alt={cp.name}
@@ -371,23 +429,29 @@ const QRGenerator: React.FC = () => {
                     </div>
                     <span className="font-bold text-slate-800 text-center">{cp.name}</span>
                     <span className="text-xs text-slate-500 font-mono">ID: {cp.id}</span>
+                    <button
+                      onClick={() => handleDownloadPDF(cp)}
+                      className="mt-3 text-xs text-blue-600 hover:underline flex items-center gap-1"
+                    >
+                      <Download className="h-3 w-3" /> Download This PDF
+                    </button>
                   </div>
                 ))}
               </div>
 
               <div className="flex justify-center border-t border-slate-100 pt-6">
                 <button
-                  onClick={handleDownloadPDF}
+                  onClick={() => handleDownloadPDF()}
                   disabled={isDownloading}
                   className="bg-blue-600 text-white px-8 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold disabled:opacity-70 shadow-sm"
                 >
                   {isDownloading ? (
                     <>
-                      <Loader2 className="h-5 w-5 animate-spin" /> Preparing PDF...
+                      <Loader2 className="h-5 w-5 animate-spin" /> Generating Multi-Page PDF...
                     </>
                   ) : (
                     <>
-                      <Download className="h-5 w-5" /> Download Printable PDF Sheet
+                      <Download className="h-5 w-5" /> Download Printable PDF (1 QR per page)
                     </>
                   )}
                 </button>
@@ -401,10 +465,10 @@ const QRGenerator: React.FC = () => {
             >
               {isGenerating ? (
                 <>
-                  <Loader2 className="h-5 w-5 animate-spin" /> Signing...
+                  <Loader2 className="h-5 w-5 animate-spin" /> Signing & Storing...
                 </>
               ) : (
-                'Generate Cryptographic Codes'
+                'Generate & Store Cryptographic Codes'
               )}
             </button>
           )}
