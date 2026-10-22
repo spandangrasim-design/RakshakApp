@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
+import { GoogleMap, useJsApiLoader, Marker } from '@react-google-maps/api';
 import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
@@ -12,20 +13,58 @@ interface Checkpoint {
   lng: string;
 }
 
+// Map configuration
+const mapContainerStyle = {
+  width: '100%',
+  height: '350px',
+  borderRadius: '0.75rem',
+};
+
+// Default map center (e.g., Central India / your default coordinates)
+const defaultCenter = {
+  lat: 20.5937,
+  lng: 78.9629,
+};
+
 const QRGenerator: React.FC = () => {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [qrData, setQrData] = useState<QRData[]>([]);
-  
+
   const [cpName, setCpName] = useState('');
   const [cpId, setCpId] = useState('');
   const [cpLat, setCpLat] = useState('');
   const [cpLng, setCpLng] = useState('');
-  
+
+  // Selected marker location on map
+  const [selectedLocation, setSelectedLocation] = useState<{ lat: number; lng: number } | null>(null);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  
+
   // State for the full-screen zoom modal
   const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
+
+  // Load Google Maps API
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'YOUR_GOOGLE_MAPS_API_KEY',
+  });
+
+  // Handle map click to select position and auto-fill coordinates + ID
+  const handleMapClick = useCallback((e: google.maps.MapMouseEvent) => {
+    if (e.latLng) {
+      const lat = e.latLng.lat();
+      const lng = e.latLng.lng();
+
+      setSelectedLocation({ lat, lng });
+      setCpLat(lat.toFixed(6));
+      setCpLng(lng.toFixed(6));
+
+      // Auto-generate Checkpoint ID if not already entered
+      const generatedId = `CP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      setCpId((prev) => (prev ? prev : generatedId));
+    }
+  }, []);
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,24 +74,24 @@ const QRGenerator: React.FC = () => {
       setCpId('');
       setCpLat('');
       setCpLng('');
+      setSelectedLocation(null);
     }
   };
 
   const generateQRCodes = async () => {
     setIsGenerating(true);
     const generated: QRData[] = [];
-    
+
     for (const cp of checkpoints) {
       const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
-      // Generate a high-resolution image for zooming and printing
-      const dataUri = await QRCode.toDataURL(payload, { 
+      const dataUri = await QRCode.toDataURL(payload, {
         width: 600,
         margin: 1,
-        color: { dark: '#0f172a', light: '#ffffff' }
+        color: { dark: '#0f172a', light: '#ffffff' },
       });
       generated.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
     }
-    
+
     setQrData(generated);
     setIsGenerating(false);
   };
@@ -83,81 +122,164 @@ const QRGenerator: React.FC = () => {
         <h1 className="text-3xl font-bold">Cryptographic QR Generator</h1>
       </div>
 
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8">
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8 space-y-6">
+        {/* Interactive Google Map Section */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+              <MapPin className="h-4 w-4 text-blue-600" />
+              Pick Location on Map
+            </label>
+            <span className="text-xs text-slate-500">
+              Click anywhere on the map to automatically populate ID, Latitude & Longitude
+            </span>
+          </div>
+
+          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50">
+            {loadError && (
+              <div className="p-6 text-center text-red-500 text-sm">
+                Error loading Google Maps. Please check your API key.
+              </div>
+            )}
+            {!isLoaded && !loadError && (
+              <div className="p-12 flex items-center justify-center gap-2 text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                Loading Map...
+              </div>
+            )}
+            {isLoaded && (
+              <GoogleMap
+                mapContainerStyle={mapContainerStyle}
+                center={selectedLocation || defaultCenter}
+                zoom={selectedLocation ? 15 : 5}
+                onClick={handleMapClick}
+                options={{
+                  streetViewControl: false,
+                  mapTypeControl: false,
+                  fullscreenControl: false,
+                }}
+              >
+                {selectedLocation && <Marker position={selectedLocation} />}
+              </GoogleMap>
+            )}
+          </div>
+        </div>
+
+        {/* Input Form */}
         <form onSubmit={handleAddCheckpoint} className="flex gap-4 items-end flex-wrap">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint Name</label>
-            <input 
-              type="text" value={cpName} onChange={(e) => setCpName(e.target.value)} 
-              placeholder="e.g., North Gate" className="w-full rounded-lg border border-slate-300 px-4 py-2" required
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+              Checkpoint Name <span className="text-blue-600 font-bold">*</span>
+            </label>
+            <input
+              type="text"
+              value={cpName}
+              onChange={(e) => setCpName(e.target.value)}
+              placeholder="e.g., North Gate"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none transition"
+              required
             />
           </div>
+
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint ID</label>
-            <input 
-              type="text" value={cpId} onChange={(e) => setCpId(e.target.value)} 
-              placeholder="e.g., CP-001" className="w-full rounded-lg border border-slate-300 px-4 py-2" required
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+              Checkpoint ID <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
+            </label>
+            <input
+              type="text"
+              value={cpId}
+              onChange={(e) => setCpId(e.target.value)}
+              placeholder="e.g., CP-001"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              required
             />
           </div>
+
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Latitude</label>
-            <input 
-              type="number" step="any" value={cpLat} onChange={(e) => setCpLat(e.target.value)} 
-              placeholder="e.g., 20.5937" className="w-full rounded-lg border border-slate-300 px-4 py-2" required
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+              Latitude <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={cpLat}
+              onChange={(e) => setCpLat(e.target.value)}
+              placeholder="e.g., 20.5937"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              required
             />
           </div>
+
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Longitude</label>
-            <input 
-              type="number" step="any" value={cpLng} onChange={(e) => setCpLng(e.target.value)} 
-              placeholder="e.g., 78.9629" className="w-full rounded-lg border border-slate-300 px-4 py-2" required
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+              Longitude <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={cpLng}
+              onChange={(e) => setCpLng(e.target.value)}
+              placeholder="e.g., 78.9629"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              required
             />
           </div>
-          <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 h-[42px]">
+
+          <button
+            type="submit"
+            className="bg-slate-800 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 h-[42px] transition shadow-sm"
+          >
             <Plus className="h-4 w-4" /> Add
           </button>
         </form>
       </div>
 
+      {/* Checkpoint List & QR Display */}
       {checkpoints.length > 0 && (
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <h2 className="text-xl font-semibold mb-4">Checkpoints ({checkpoints.length})</h2>
-          
+
           {qrData.length === 0 && (
             <ul className="mb-6 divide-y divide-slate-100">
-              {checkpoints.map(cp => (
+              {checkpoints.map((cp) => (
                 <li key={cp.id} className="py-3 text-slate-600 flex items-center gap-4">
-                  <span className="font-medium">{cp.name}</span> 
-                  <span className="text-xs bg-slate-100 px-2 py-1 rounded">{cp.id}</span>
-                  <span className="text-xs flex items-center gap-1 text-slate-500">
-                    <MapPin className="h-3 w-3"/> {cp.lat}, {cp.lng}
+                  <span className="font-medium text-slate-800">{cp.name}</span>
+                  <span className="text-xs font-mono bg-slate-100 px-2 py-1 rounded border border-slate-200">
+                    {cp.id}
+                  </span>
+                  <span className="text-xs flex items-center gap-1 text-slate-500 font-mono">
+                    <MapPin className="h-3 w-3 text-blue-500" /> {cp.lat}, {cp.lng}
                   </span>
                 </li>
               ))}
             </ul>
           )}
-          
+
           {qrData.length === checkpoints.length ? (
             <div className="mt-4">
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6 mb-8">
-                {qrData.map(cp => (
-                  <div 
-                    key={cp.id} 
+                {qrData.map((cp) => (
+                  <div
+                    key={cp.id}
                     onClick={() => setEnlargedQR(cp)}
                     className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative group cursor-pointer hover:border-blue-400 hover:shadow-md transition-all"
                   >
                     <div className="relative mb-3">
-                      <img src={cp.qrDataUri} alt={cp.name} className="w-40 h-40 rounded-lg shadow-sm bg-white" />
+                      <img
+                        src={cp.qrDataUri}
+                        alt={cp.name}
+                        className="w-40 h-40 rounded-lg shadow-sm bg-white"
+                      />
                       <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
                         <ZoomIn className="text-white h-8 w-8" />
                       </div>
                     </div>
                     <span className="font-bold text-slate-800 text-center">{cp.name}</span>
-                    <span className="text-xs text-slate-500">ID: {cp.id}</span>
+                    <span className="text-xs text-slate-500 font-mono">ID: {cp.id}</span>
                   </div>
                 ))}
               </div>
-              
+
               <div className="flex justify-center border-t border-slate-100 pt-6">
                 <button
                   onClick={handleDownloadPDF}
@@ -165,21 +287,27 @@ const QRGenerator: React.FC = () => {
                   className="bg-blue-600 text-white px-8 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold disabled:opacity-70 shadow-sm"
                 >
                   {isDownloading ? (
-                    <><Loader2 className="h-5 w-5 animate-spin" /> Preparing PDF...</>
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" /> Preparing PDF...
+                    </>
                   ) : (
-                    <><Download className="h-5 w-5"/> Download Printable PDF Sheet</>
+                    <>
+                      <Download className="h-5 w-5" /> Download Printable PDF Sheet
+                    </>
                   )}
                 </button>
               </div>
             </div>
           ) : (
-            <button 
-              onClick={generateQRCodes} 
+            <button
+              onClick={generateQRCodes}
               disabled={isGenerating}
-              className="bg-emerald-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-emerald-700 font-semibold"
+              className="bg-emerald-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-emerald-700 font-semibold transition"
             >
               {isGenerating ? (
-                <><Loader2 className="h-5 w-5 animate-spin" /> Signing...</>
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" /> Signing...
+                </>
               ) : (
                 'Generate Cryptographic Codes'
               )}
@@ -190,15 +318,15 @@ const QRGenerator: React.FC = () => {
 
       {/* Full-screen Zoom Modal */}
       {enlargedQR && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm" 
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm"
           onClick={() => setEnlargedQR(null)}
         >
-          <div 
-            className="bg-white rounded-2xl p-8 max-w-md w-full relative flex flex-col items-center shadow-2xl" 
-            onClick={e => e.stopPropagation()}
+          <div
+            className="bg-white rounded-2xl p-8 max-w-md w-full relative flex flex-col items-center shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
           >
-            <button 
+            <button
               onClick={() => setEnlargedQR(null)}
               className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
             >
@@ -206,16 +334,18 @@ const QRGenerator: React.FC = () => {
             </button>
             <h3 className="text-3xl font-bold text-slate-800 mb-2 text-center">{enlargedQR.name}</h3>
             <p className="text-slate-500 mb-6 font-medium">ID: {enlargedQR.id}</p>
-            
-            <img 
-              src={enlargedQR.qrDataUri} 
-              alt={enlargedQR.name} 
-              className="w-72 h-72 rounded-xl shadow-sm border border-slate-200 mb-6" 
+
+            <img
+              src={enlargedQR.qrDataUri}
+              alt={enlargedQR.name}
+              className="w-72 h-72 rounded-xl shadow-sm border border-slate-200 mb-6"
             />
-            
+
             <div className="flex items-center gap-2 text-slate-600 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100">
-              <MapPin className="h-5 w-5 text-blue-500"/> 
-              <span className="font-mono text-sm">{enlargedQR.lat}, {enlargedQR.lng}</span>
+              <MapPin className="h-5 w-5 text-blue-500" />
+              <span className="font-mono text-sm">
+                {enlargedQR.lat}, {enlargedQR.lng}
+              </span>
             </div>
           </div>
         </div>
