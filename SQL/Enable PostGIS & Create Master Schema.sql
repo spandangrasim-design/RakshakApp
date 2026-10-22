@@ -4,6 +4,7 @@ DROP TABLE IF EXISTS patrol_rounds CASCADE;
 DROP TABLE IF EXISTS checkpoints CASCADE;
 DROP TABLE IF EXISTS incidents CASCADE;
 DROP TABLE IF EXISTS sites CASCADE;
+DROP TABLE IF EXISTS guards CASCADE;
 
 -- 2. Enable PostGIS extension for GPS coordinate mapping
 CREATE EXTENSION IF NOT EXISTS postgis;
@@ -16,7 +17,15 @@ CREATE TABLE sites (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Create Checkpoints table (Requires PostGIS)
+-- 4. Create Guards table (REQUIRED for Foreign Keys)
+CREATE TABLE guards (
+    guard_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    badge_number TEXT UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. Create Checkpoints table
 CREATE TABLE checkpoints (
     checkpoint_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     site_id UUID REFERENCES sites(site_id) ON DELETE CASCADE,
@@ -26,7 +35,7 @@ CREATE TABLE checkpoints (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. Create Patrol Rounds table (Tracks shifts/routes)
+-- 6. Create Patrol Rounds table (Tracks shifts/routes)
 CREATE TABLE patrol_rounds (
     round_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     guard_id UUID REFERENCES guards(guard_id) ON DELETE CASCADE,
@@ -36,18 +45,25 @@ CREATE TABLE patrol_rounds (
     status TEXT DEFAULT 'in_progress'
 );
 
--- 6. Create Scans table (Logs individual QR scans)
+-- 7. Create Scans table (Updated for Sprint 3 Mobile App sync)
 CREATE TABLE scans (
     scan_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     round_id UUID REFERENCES patrol_rounds(round_id) ON DELETE CASCADE,
     checkpoint_id UUID REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
     guard_id UUID REFERENCES guards(guard_id) ON DELETE CASCADE,
     scan_time TIMESTAMPTZ DEFAULT NOW(),
-    gps_location geography(POINT, 4326), -- Exact location where scan happened
-    is_valid BOOLEAN DEFAULT TRUE
+    
+    -- Sprint 3 Anti-Spoofing & Camera Data
+    device_uptime_seconds BIGINT,      -- Monotonic clock validation
+    photo_url TEXT,                    -- <500KB watermarked live photo
+    
+    -- Sprint 3 Geofence Data
+    gps_location geography(POINT, 4326), 
+    distance_meters DOUBLE PRECISION,  -- Distance from master checkpoint
+    is_gps_verified BOOLEAN            -- True = Green, False = Amber Flag
 );
 
--- 7. Create Incidents table
+-- 8. Create Incidents table
 CREATE TABLE incidents (
     incident_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     guard_id UUID REFERENCES guards(guard_id) ON DELETE CASCADE,
@@ -58,6 +74,6 @@ CREATE TABLE incidents (
     reported_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 8. Add spatial indexes for ultra-fast distance queries
+-- 9. Add spatial indexes for ultra-fast distance queries
 CREATE INDEX checkpoints_location_idx ON checkpoints USING GIST (location);
 CREATE INDEX scans_location_idx ON scans USING GIST (gps_location);

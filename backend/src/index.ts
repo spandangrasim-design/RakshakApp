@@ -1,15 +1,15 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { sign, verify } from 'hono/jwt' // Imported verify for auth
+import { sign, verify } from 'hono/jwt' 
 import { createClient } from '@supabase/supabase-js'
 import { z } from 'zod'
-import CryptoJS from 'crypto-js' // Imported for QR validation
+import CryptoJS from 'crypto-js' 
 
 type Bindings = {
   SUPABASE_URL: string
   SUPABASE_SERVICE_ROLE_KEY: string
   JWT_SECRET: string
-  QR_SECRET: string // Added QR_SECRET for signature validation
+  QR_SECRET: string 
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -30,6 +30,7 @@ const scanSchema = z.object({
   signature: z.string(),
   guard_lat: z.number(),
   guard_lng: z.number(),
+  uptime_seconds: z.number().optional(), // Added for anti-spoofing
   photo_url: z.string().optional()
 })
 
@@ -108,7 +109,7 @@ app.post('/api/v1/scans', async (c) => {
 
     // B. Parse Request Body
     const body = await c.req.json();
-    const { checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, photo_url } = scanSchema.parse(body);
+    const { checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
 
     // C. Anti-Spoofing: Verify Cryptographic QR Signature
     const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
@@ -136,6 +137,7 @@ app.post('/api/v1/scans', async (c) => {
       p_guard_lng: guard_lng,
       p_expected_lat: parseFloat(qr_lat),
       p_expected_lng: parseFloat(qr_lng),
+      p_uptime_seconds: uptime_seconds || 0,
       p_photo_url: photo_url || ''
     });
 

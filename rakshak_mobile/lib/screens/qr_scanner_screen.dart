@@ -13,15 +13,13 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   final MobileScannerController _scannerController = MobileScannerController();
   bool _isProcessing = false;
 
-  void _onDetect(BarcodeCapture capture) {
-    // Prevent multiple triggers from the same scan
+  Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
 
     final List<Barcode> barcodes = capture.barcodes;
     for (final barcode in barcodes) {
       final rawValue = barcode.rawValue;
       
-      // Validate it is our proprietary QR code format
       if (rawValue != null && rawValue.startsWith('rakshak://cp')) {
         setState(() => _isProcessing = true);
         _scannerController.stop();
@@ -34,8 +32,8 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           final signature = uri.queryParameters['s'];
 
           if (checkpointId != null && lat != null && lng != null && signature != null) {
-            // Success! Route the extracted data to the Locked Camera Screen
-            Navigator.pushReplacement(
+            // Wait for the Locked Camera to return the GPS verification result
+            final result = await Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => LockedCameraScreen(
@@ -46,13 +44,17 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                 ),
               ),
             );
+            
+            // Pass the Amber Flag result back to the Dashboard
+            if (mounted) {
+              Navigator.pop(context, result);
+            }
             return;
           }
         } catch (e) {
           debugPrint("Failed to parse QR Data: $e");
         }
         
-        // If parsing fails or data is missing, resume scanning
         setState(() => _isProcessing = false);
         _scannerController.start();
       }
@@ -75,7 +77,6 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             controller: _scannerController,
             onDetect: _onDetect,
           ),
-          // Simple visual overlay for the scanner
           Container(
             width: 250,
             height: 250,
@@ -92,9 +93,9 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             ),
           ),
           if (_isProcessing)
-            const Container(
+            Container(
               color: Colors.black54,
-              child: Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+              child: const Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
             ),
         ],
       ),

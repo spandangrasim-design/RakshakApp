@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
-import 'qr_scanner_screen.dart'; // Added import for the scanner
+import 'qr_scanner_screen.dart'; 
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -13,6 +13,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   String _guardName = 'Guard';
   bool _isShiftActive = false;
+  bool? _lastScanVerified; // Tracks the result of the last checkpoint scan
 
   @override
   void initState() {
@@ -159,6 +160,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 28),
 
+            // --- Last Scan Status Banner (Amber Flag UI) ---
+            if (_lastScanVerified != null)
+              Container(
+                margin: const EdgeInsets.only(bottom: 24),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: _lastScanVerified! ? Colors.green.shade50 : Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _lastScanVerified! ? Colors.green.shade200 : Colors.orange.shade300,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _lastScanVerified! ? Icons.verified_user : Icons.warning_amber_rounded,
+                      color: _lastScanVerified! ? Colors.green.shade700 : Colors.orange.shade800,
+                      size: 28,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _lastScanVerified! ? 'Scan Verified' : 'Geofence Warning (Amber Flag)',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: _lastScanVerified! ? Colors.green.shade900 : Colors.orange.shade900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _lastScanVerified! 
+                              ? 'Location perfectly matched checkpoint coordinates.' 
+                              : 'Your scan location was > 50 meters from the checkpoint. This has been flagged for admin review.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: _lastScanVerified! ? Colors.green.shade700 : Colors.orange.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
             const Text(
               'Patrol Actions',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
@@ -178,12 +227,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   title: 'Scan Checkpoint',
                   subtitle: 'QR verification',
                   color: const Color(0xFF2563EB),
-                  onTap: () {
-                    // Added navigation to QR Scanner
-                    Navigator.push(
+                  onTap: () async {
+                    // Await the boolean result from the QR/Camera flow
+                    final result = await Navigator.push(
                       context,
                       MaterialPageRoute(builder: (context) => const QrScannerScreen()),
                     );
+                    
+                    // Update state to trigger the banner UI
+                    if (result != null && result is bool) {
+                      setState(() => _lastScanVerified = result);
+                    }
                   },
                 ),
                 _buildActionCard(
