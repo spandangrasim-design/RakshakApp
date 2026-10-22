@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, FormEvent } from 'react';
 
 const API_BASE_URL = "https://your-cloudflare-worker-url.workers.dev"; // Replace with your worker URL
 
 export default function AdminConfigsPage() {
-  const [configs, setConfigs] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState({ text: '', type: '' });
+  // Added TypeScript types here: <Record<string, string>>
+  const [configs, setConfigs] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+  
+  // Added type definition for the message state
+  const [message, setMessage] = useState<{ text: string; type: string }>({ text: '', type: '' });
 
   // Fetch current configs on load
   useEffect(() => {
@@ -20,9 +23,10 @@ export default function AdminConfigsPage() {
       const data = await response.json();
       
       if (data.success) {
-        // Convert array from Supabase into a key-value object for easy form binding
-        const configMap = {};
-        data.configs.forEach(item => {
+        // Convert array from Supabase into a key-value object
+        const configMap: Record<string, string> = {};
+        // Added type to the item parameter
+        data.configs.forEach((item: { key_name: string; key_value: string }) => {
           configMap[item.key_name] = item.key_value;
         });
         setConfigs(configMap);
@@ -36,16 +40,17 @@ export default function AdminConfigsPage() {
     }
   };
 
-  const handleChange = (key, value) => {
+  // Added types to key and value
+  const handleChange = (key: string, value: string) => {
     setConfigs(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = async (e) => {
+  // Added FormEvent type here
+  const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setMessage({ text: '', type: '' });
 
-    // Transform back into the array format expected by your Cloudflare Worker upsert route
     const payload = Object.keys(configs).map(key => ({
       key_name: key,
       key_value: configs[key] || ''
