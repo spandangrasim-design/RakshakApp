@@ -6,25 +6,28 @@ const styles = StyleSheet.create({
     padding: 30, 
     flexDirection: 'row', 
     flexWrap: 'wrap', 
-    justifyContent: 'space-between'
+    justifyContent: 'center', // Centers everything on the A4 page
   },
   qrCard: { 
-    width: '47%', 
-    marginBottom: 20, 
-    padding: 20, 
-    border: '1pt solid #cbd5e1', 
-    borderRadius: 8,
+    width: '46%', // Two large cards per row
+    margin: '2%', // Spacing to keep them centered and breathing
+    padding: 24, 
+    border: '2pt solid #cbd5e1', 
+    borderRadius: 12,
     alignItems: 'center',
     backgroundColor: '#ffffff'
   },
-  image: { width: 220, height: 220, marginBottom: 15 },
-  title: { fontSize: 20, fontWeight: 'bold', color: '#0f172a', marginBottom: 6 },
-  subtitle: { fontSize: 12, color: '#64748b' }
+  image: { width: 250, height: 250, marginBottom: 16 }, // Massive print size
+  title: { fontSize: 22, fontWeight: 'bold', color: '#0f172a', marginBottom: 8, textAlign: 'center' },
+  subtitle: { fontSize: 14, color: '#64748b', marginBottom: 4 },
+  coords: { fontSize: 10, color: '#94a3b8' }
 });
 
 export interface QRData {
   id: string;
   name: string;
+  lat: string;
+  lng: string;
   qrDataUri: string;
 }
 
@@ -40,6 +43,7 @@ export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({ checkpoints }) => (
           <Image src={cp.qrDataUri} style={styles.image} />
           <Text style={styles.title}>{cp.name}</Text>
           <Text style={styles.subtitle}>ID: {cp.id}</Text>
+          <Text style={styles.coords}>{cp.lat}, {cp.lng}</Text>
         </View>
       ))}
     </Page>

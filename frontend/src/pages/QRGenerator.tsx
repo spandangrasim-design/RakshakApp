@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { Shield, Download, Plus, Loader2, MapPin } from 'lucide-react';
+import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
@@ -23,6 +23,9 @@ const QRGenerator: React.FC = () => {
   
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  
+  // State for the full-screen zoom modal
+  const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,14 +43,14 @@ const QRGenerator: React.FC = () => {
     const generated: QRData[] = [];
     
     for (const cp of checkpoints) {
-      // Pass the lat and lng to be cryptographically signed
       const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
+      // Generate a high-resolution image for zooming and printing
       const dataUri = await QRCode.toDataURL(payload, { 
-        width: 300,
+        width: 600,
         margin: 1,
         color: { dark: '#0f172a', light: '#ffffff' }
       });
-      generated.push({ id: cp.id, name: cp.name, qrDataUri: dataUri });
+      generated.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
     }
     
     setQrData(generated);
@@ -137,15 +140,20 @@ const QRGenerator: React.FC = () => {
           {qrData.length === checkpoints.length ? (
             <div className="mt-4">
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6 mb-8">
-                {qrData.map((cp, index) => (
-                  <div key={cp.id} className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative">
-                    <img src={cp.qrDataUri} alt={cp.name} className="w-32 h-32 mb-3 rounded-lg shadow-sm bg-white" />
+                {qrData.map(cp => (
+                  <div 
+                    key={cp.id} 
+                    onClick={() => setEnlargedQR(cp)}
+                    className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative group cursor-pointer hover:border-blue-400 hover:shadow-md transition-all"
+                  >
+                    <div className="relative mb-3">
+                      <img src={cp.qrDataUri} alt={cp.name} className="w-40 h-40 rounded-lg shadow-sm bg-white" />
+                      <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
+                        <ZoomIn className="text-white h-8 w-8" />
+                      </div>
+                    </div>
                     <span className="font-bold text-slate-800 text-center">{cp.name}</span>
                     <span className="text-xs text-slate-500">ID: {cp.id}</span>
-                    <span className="text-[10px] text-slate-400 mt-1 flex items-center gap-1 text-center">
-                      <MapPin className="h-3 w-3"/> 
-                      {checkpoints[index].lat}, {checkpoints[index].lng}
-                    </span>
                   </div>
                 ))}
               </div>
@@ -177,6 +185,39 @@ const QRGenerator: React.FC = () => {
               )}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Full-screen Zoom Modal */}
+      {enlargedQR && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm" 
+          onClick={() => setEnlargedQR(null)}
+        >
+          <div 
+            className="bg-white rounded-2xl p-8 max-w-md w-full relative flex flex-col items-center shadow-2xl" 
+            onClick={e => e.stopPropagation()}
+          >
+            <button 
+              onClick={() => setEnlargedQR(null)}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <X className="h-6 w-6" />
+            </button>
+            <h3 className="text-3xl font-bold text-slate-800 mb-2 text-center">{enlargedQR.name}</h3>
+            <p className="text-slate-500 mb-6 font-medium">ID: {enlargedQR.id}</p>
+            
+            <img 
+              src={enlargedQR.qrDataUri} 
+              alt={enlargedQR.name} 
+              className="w-72 h-72 rounded-xl shadow-sm border border-slate-200 mb-6" 
+            />
+            
+            <div className="flex items-center gap-2 text-slate-600 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100">
+              <MapPin className="h-5 w-5 text-blue-500"/> 
+              <span className="font-mono text-sm">{enlargedQR.lat}, {enlargedQR.lng}</span>
+            </div>
+          </div>
         </div>
       )}
     </div>
