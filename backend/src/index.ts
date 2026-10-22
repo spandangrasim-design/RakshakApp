@@ -533,6 +533,52 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
     return false;
   }
 }
+// --- HELPER: GOOGLE GMAIL API ALERT ---
+async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  
+  const { data: configs, error } = await supabase
+    .from('admin_configurations')
+    .select('key_name, key_value')
+    .in('key_name', ['GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL']);
+
+  if (error || !configs) return false;
+
+  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  const token = configMap['GMAIL_ACCESS_TOKEN'];
+  const managerEmail = configMap['MANAGER_EMAIL'];
+
+  if (!token || !managerEmail) return false;
+
+  const emailLines = [
+    `To: ${managerEmail}`,
+    'Subject: =?utf-8?B?' + btoa(`🚨 CRITICAL SLA BREACH: ${priority} Incident`) + '?=',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    `<h2>SLA Escalation: ${priority} Incident</h2>`,
+    `<p><strong>Incident ID:</strong> ${incidentId}</p>`,
+    `<p><strong>Description:</strong> ${description}</p>`,
+    photoUrl ? `<p><img src="${photoUrl}" alt="Incident Photo" style="max-width:300px;"/></p>` : '',
+    `<p>This incident has been OPEN for more than 10 minutes. Please take immediate action.</p>`
+  ];
+
+  const email = emailLines.join('\r\n');
+  const base64EncodedEmail = btoa(email).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  try {
+    const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw: base64EncodedEmail })
+    });
+    return response.ok;
+  } catch (err) {
+    return false;
+  }
+}
 // --- EXPORT ---
 export default {
   fetch: async (request: Request, env: Bindings, ctx: ExecutionContext) => {
