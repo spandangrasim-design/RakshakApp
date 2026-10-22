@@ -434,6 +434,41 @@ app.post('/api/v1/incidents', async (c) => {
     return c.json({ success: false, message: 'Internal Server Error' }, 500);
   }
 });
+// 1. GET all incidents for Web Dashboard
+app.get('/api/v1/incidents', async (c) => {
+  try {
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { data, error } = await supabase
+      .from('incidents')
+      .select('*')
+      .order('reported_at', { ascending: false });
+    
+    if (error) throw error;
+    return c.json({ success: true, incidents: data });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to fetch incidents' }, 500);
+  }
+});
+
+// 2. PATCH to resolve an incident
+app.patch('/api/v1/incidents/:id/resolve', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    
+    const { data, error } = await supabase
+      .from('incidents')
+      .update({ status: 'RESOLVED' })
+      .eq('client_incident_id', incidentId)
+      .select()
+      .single();
+      
+    if (error) throw error;
+    return c.json({ success: true, incident: data });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to resolve incident' }, 500);
+  }
+});
 
 // ==========================================
 // ADMIN WEB DASHBOARD: API CONFIGURATIONS

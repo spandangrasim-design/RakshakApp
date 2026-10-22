@@ -3,8 +3,9 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } f
 import Login from './pages/Login';
 import { ReportsPage } from './pages/ReportsPage';
 import QRGenerator from './pages/QRGenerator';
-import AdminConfigsPage from './pages/AdminConfigsPage'; // <-- 1. Import your Admin Configs Page
-import { Shield, LogOut, FileText, QrCode, Sliders } from 'lucide-react'; // <-- 2. Added Sliders icon
+import AdminConfigsPage from './pages/AdminConfigsPage'; 
+import IncidentsDashboard from './pages/IncidentsDashboard';
+import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle } from 'lucide-react'; 
 
 // 1. Create a Layout Wrapper for authenticated pages with navigation tabs
 const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => void, children: React.ReactNode }) => {
@@ -41,6 +42,20 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                                 <FileText className="h-4 w-4" />
                                 Reports
                             </Link>
+                            
+                            {/* NEW INCIDENTS LINK ADDED HERE */}
+                            <Link
+                                to="/incidents"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                    location.pathname === '/incidents'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                }`}
+                            >
+                                <AlertTriangle className="h-4 w-4" />
+                                Incidents
+                            </Link>
+
                             <Link
                                 to="/qr-generator"
                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
@@ -52,7 +67,7 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                                 <QrCode className="h-4 w-4" />
                                 QR Generator
                             </Link>
-                            {/* --- 3. Added Admin Configs Navigation Link --- */}
+                            
                             <Link
                                 to="/admin/configs"
                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
@@ -145,6 +160,20 @@ export const App: React.FC = () => {
                     }
                 />
 
+                {/* NEW INCIDENTS ROUTE ADDED HERE */}
+                <Route
+                    path="/incidents"
+                    element={
+                        token ? (
+                            <AdminLayout user={user} onLogout={handleLogout}>
+                                <IncidentsDashboard />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
                 {/* Protected Route: Cryptographic QR Generator */}
                 <Route
                     path="/qr-generator"
@@ -159,7 +188,7 @@ export const App: React.FC = () => {
                     }
                 />
 
-                {/* --- 4. Added Protected Route for Admin Configurations --- */}
+                {/* Protected Route for Admin Configurations */}
                 <Route
                     path="/admin/configs"
                     element={
