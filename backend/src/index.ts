@@ -189,11 +189,15 @@ app.post('/api/v1/rounds', async (c) => {
     // Insert checkpoints for this round
     if (checkpoints.length > 0) {
       const rows = checkpoints.map((cp) => ({
-        checkpoint_id: cp.id,      // <-- changed from 'id' to 'checkpoint_id'
+        checkpoint_id: cp.id,
         round_id: activeRoundId,
         name: cp.name,
+        // Provide standard fields
         lat: cp.lat,
-        lng: cp.lng
+        lng: cp.lng,
+        // Also provide RPC-compatible fields in case the schema expects them
+        expected_lat: parseFloat(cp.lat),
+        expected_lng: parseFloat(cp.lng),
       }));
 
       const { error: cpInsertError } = await supabase.from('checkpoints').insert(rows);
