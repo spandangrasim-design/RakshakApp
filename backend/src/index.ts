@@ -116,22 +116,22 @@ app.get('/api/v1/rounds', async (c) => {
 
     const { data: checkpoints, error: cpError } = await supabase
       .from('checkpoints')
-      .select('*');
+      .select('checkpoint_id, round_id, name, lat, lng, qr_payload');
 
     if (cpError) {
       return c.json({ success: false, message: cpError.message }, 500);
     }
 
-    // Map checkpoint_id back to id for the frontend
     const roundsWithCheckpoints = (rounds || []).map((round) => ({
       ...round,
       checkpoints: (checkpoints || [])
-        .filter((cp) => cp.round_id === round.id || cp.round_id === round.round_id)
+        .filter((cp) => cp.round_id === round.id)
         .map((cp) => ({
-          id: cp.checkpoint_id || cp.id,
-          name: cp.name || cp.checkpoint_name,
-          lat: cp.lat?.toString() || cp.expected_lat?.toString(),
-          lng: cp.lng?.toString() || cp.expected_lng?.toString(),
+          id: cp.checkpoint_id,
+          name: cp.name,
+          lat: cp.lat,
+          lng: cp.lng,
+          qr_payload: cp.qr_payload
         }))
     }));
 
@@ -188,20 +188,33 @@ app.post('/api/v1/rounds', async (c) => {
 
     // Insert checkpoints for this round
     if (checkpoints.length > 0) {
-      const rows = checkpoints.map((cp) => ({
-        checkpoint_id: cp.id,
-        round_id: activeRoundId,
-        name: cp.name,
-        // Provide standard fields
-        lat: cp.lat,
-        lng: cp.lng,
-        // Also provide RPC-compatible fields in case the schema expects them
-        expected_lat: parseFloat(cp.lat),
-        expected_lng: parseFloat(cp.lng),
-      }));
+      const rows = checkpoints.map((cp) => {
+        // Generate valid UUID if cp.id is not a valid UUID format
+        const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cp.id);
+        const checkpointUuid = isValidUUID ? cp.id : crypto.randomUUID();
+
+        // Sign payload matching the crypto secret
+        const dataToSign = `${checkpointUuid}|${cp.lat}|${cp.lng}`;
+        const signature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+        const signedPayload = `${dataToSign}|${signature}`;
+
+        return {
+          checkpoint_id: checkpointUuid,
+          round_id: activeRoundId,
+          name: cp.name,
+          lat: cp.lat.toString(),
+          lng: cp.lng.toString(),
+          qr_payload: signedPayload,
+          // PostGIS geography point format (lng, lat)
+          location: `SRID=4326;POINT(${cp.lng} ${cp.lat})`
+        };
+      });
 
       const { error: cpInsertError } = await supabase.from('checkpoints').insert(rows);
-      if (cpInsertError) return c.json({ success: false, message: cpInsertError.message }, 500);
+      if (cpInsertError) {
+        console.error('Checkpoints insert error:', cpInsertError);
+        return c.json({ success: false, message: cpInsertError.message }, 500);
+      }
     }
 
     return c.json({ success: true, round_id: activeRoundId });
