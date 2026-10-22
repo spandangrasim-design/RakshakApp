@@ -12,6 +12,20 @@ dependencies:
   http: ^1.2.0
   shared_preferences: ^2.2.2
   cupertino_icons: ^1.0.8
+  # QR Scanning
+  mobile_scanner: ^5.0.0
+  
+  # Locked Camera (No gallery intent)
+  camera: ^0.11.0
+  
+  # GPS coordinates
+  geolocator: ^11.0.0
+  
+  # Image manipulation (Compression & Watermarking)
+  image: ^4.1.7
+  
+  # File system paths for saving photos
+  path_provider: ^2.1.2
 
 dev_dependencies:
   flutter_test:
