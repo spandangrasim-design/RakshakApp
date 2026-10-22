@@ -3,9 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 
 # Production Custom Domain Routing
-routes = [
-  { pattern = "api.rakshakapp.com/*", zone_name = "rakshakapp.com" }
-]
+workers_dev = true
 
 [vars]
 ENVIRONMENT = "production"
@@ -13,12 +11,9 @@ SUPABASE_URL = "https://subydhacosoarzfsusxz.supabase.co"
 
 # Bind Cloudflare R2 bucket for photo proofs
 [[r2_buckets]]
-binding = "RAKSHAK_MEDIA"
-bucket_name = "rakshak-prod-media"
+binding = "R2_BUCKET"
+bucket_name = "rakshak-images"
 
 # SLA Escalation Cron Trigger (Every 10 minutes)
 [triggers]
 crons = ["*/10 * * * *"]
-[[r2_buckets]]
-binding = "R2_BUCKET"
-bucket_name = "rakshak-images"
