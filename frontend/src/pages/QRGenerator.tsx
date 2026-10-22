@@ -278,7 +278,7 @@ const QRGenerator: React.FC = () => {
   };
 
   // Download PDF (1 QR per page)
-  const handleDownloadPDF = async (round: PatrolRound, specificQR?: QRData) => {
+  const handleDownloadRoundPDF = async (round: PatrolRound, specificQR?: QRData) => {
     setIsDownloading(true);
     try {
       const items = round.checkpoints || [];
