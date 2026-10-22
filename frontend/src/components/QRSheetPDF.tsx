@@ -6,20 +6,20 @@ const styles = StyleSheet.create({
     padding: 30, 
     flexDirection: 'row', 
     flexWrap: 'wrap', 
-    justifyContent: 'flex-start' 
+    justifyContent: 'space-between'
   },
   qrCard: { 
-    width: '30%', 
-    margin: '1.5%', 
-    padding: 15, 
+    width: '47%', 
+    marginBottom: 20, 
+    padding: 20, 
     border: '1pt solid #cbd5e1', 
     borderRadius: 8,
     alignItems: 'center',
     backgroundColor: '#ffffff'
   },
-  image: { width: 120, height: 120, marginBottom: 10 },
-  title: { fontSize: 14, fontWeight: 'bold', color: '#0f172a', marginBottom: 4 },
-  subtitle: { fontSize: 8, color: '#64748b' }
+  image: { width: 220, height: 220, marginBottom: 15 },
+  title: { fontSize: 20, fontWeight: 'bold', color: '#0f172a', marginBottom: 6 },
+  subtitle: { fontSize: 12, color: '#64748b' }
 });
 
 export interface QRData {
