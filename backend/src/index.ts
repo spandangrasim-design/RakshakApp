@@ -36,7 +36,7 @@ const scanSchema = z.object({
   photo_url: z.string().optional()
 })
 
-// --- ROUTES ---
+// --- ROUTES ----
 
 // 1. Auth Login Route
 app.post('/api/v1/auth/login', async (c) => {
