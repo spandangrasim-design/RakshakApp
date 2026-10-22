@@ -1,6 +1,6 @@
 import React, { useState, useEffect, FormEvent } from 'react';
 
-const API_BASE_URL = "https://rakshak-backend.spandangrasim.workers.dev"; // Replace with your worker URL
+const API_BASE_URL = "https://rakshak-api.spandangrasim.workers.dev/"; // Replace with your worker URL
 
 export default function AdminConfigsPage() {
   // Added TypeScript types here: <Record<string, string>>
