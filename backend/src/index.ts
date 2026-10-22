@@ -122,9 +122,17 @@ app.get('/api/v1/rounds', async (c) => {
       return c.json({ success: false, message: cpError.message }, 500);
     }
 
+    // Map checkpoint_id back to id for the frontend
     const roundsWithCheckpoints = (rounds || []).map((round) => ({
       ...round,
-      checkpoints: (checkpoints || []).filter((cp) => cp.round_id === round.id)
+      checkpoints: (checkpoints || [])
+        .filter((cp) => cp.round_id === round.id || cp.round_id === round.round_id)
+        .map((cp) => ({
+          id: cp.checkpoint_id || cp.id,
+          name: cp.name || cp.checkpoint_name,
+          lat: cp.lat?.toString() || cp.expected_lat?.toString(),
+          lng: cp.lng?.toString() || cp.expected_lng?.toString(),
+        }))
     }));
 
     return c.json({ success: true, rounds: roundsWithCheckpoints });
@@ -181,7 +189,7 @@ app.post('/api/v1/rounds', async (c) => {
     // Insert checkpoints for this round
     if (checkpoints.length > 0) {
       const rows = checkpoints.map((cp) => ({
-        id: cp.id,
+        checkpoint_id: cp.id,      // <-- changed from 'id' to 'checkpoint_id'
         round_id: activeRoundId,
         name: cp.name,
         lat: cp.lat,
