@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, Layers, Trash2, CheckCircle2 } from 'lucide-react';
+import { 
+  Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, 
+  Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw 
+} from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
+
+// Point this to your backend domain (leave empty string '' if same origin)
+const API_BASE = (import.meta as any).env?.VITE_API_URL || '';
 
 interface Checkpoint {
   id: string;
@@ -12,39 +18,40 @@ interface Checkpoint {
   lng: string;
 }
 
+interface PatrolRound {
+  id: string;
+  name: string;
+  created_at: string;
+  checkpoints?: Checkpoint[];
+}
+
 declare global {
   interface Window {
     L?: any;
   }
 }
 
-const STORAGE_KEY = 'rakshak_checkpoints';
-
 const QRGenerator: React.FC = () => {
-  // Initialize from LocalStorage so checkpoints are not lost
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [roundName, setRoundName] = useState('');
+  const [editingRoundId, setEditingRoundId] = useState<string | null>(null);
 
-  const [qrData, setQrData] = useState<QRData[]>([]);
-
+  const [currentCheckpoints, setCurrentCheckpoints] = useState<Checkpoint[]>([]);
   const [cpName, setCpName] = useState('');
   const [cpId, setCpId] = useState('');
   const [cpLat, setCpLat] = useState('');
   const [cpLng, setCpLng] = useState('');
 
-  const [isMapLoaded, setIsMapLoaded] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [savedRounds, setSavedRounds] = useState<PatrolRound[]>([]);
+  const [isLoadingRounds, setIsLoadingRounds] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
-  const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [mapType, setMapType] = useState<'street' | 'satellite'>('street');
+  const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
+  const [viewingRound, setViewingRound] = useState<PatrolRound | null>(null);
+  const [viewingQRs, setViewingQRs] = useState<QRData[]>([]);
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -52,12 +59,27 @@ const QRGenerator: React.FC = () => {
   const streetLayerRef = useRef<any>(null);
   const satelliteLayerRef = useRef<any>(null);
 
-  // Sync checkpoints to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(checkpoints));
-  }, [checkpoints]);
+  // Fetch all rounds from Hono Backend API
+  const fetchRounds = async () => {
+    setIsLoadingRounds(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds`);
+      const data = await res.json();
+      if (data.success) {
+        setSavedRounds(data.rounds || []);
+      }
+    } catch (err) {
+      console.error('Failed to load rounds:', err);
+    } finally {
+      setIsLoadingRounds(false);
+    }
+  };
 
-  // Load Leaflet dynamically
+  useEffect(() => {
+    fetchRounds();
+  }, []);
+
+  // Dynamically load Leaflet assets
   useEffect(() => {
     if (window.L) {
       setIsMapLoaded(true);
@@ -84,7 +106,7 @@ const QRGenerator: React.FC = () => {
     }
   }, []);
 
-  // Initialize Leaflet Map
+  // Initialize Map
   useEffect(() => {
     if (!isMapLoaded || !mapContainerRef.current || mapInstanceRef.current || !window.L) return;
 
@@ -94,16 +116,13 @@ const QRGenerator: React.FC = () => {
     const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
 
     streetLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
+      attribution: '&copy; OpenStreetMap',
       maxZoom: 19,
     });
 
     satelliteLayerRef.current = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      {
-        attribution: 'Tiles &copy; Esri &mdash; World Imagery',
-        maxZoom: 19,
-      }
+      { attribution: 'Tiles &copy; Esri', maxZoom: 19 }
     );
 
     streetLayerRef.current.addTo(map);
@@ -160,10 +179,12 @@ const QRGenerator: React.FC = () => {
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!roundName.trim()) {
+      alert('Please enter a Round Name before adding checkpoints.');
+      return;
+    }
     if (cpName && cpId && cpLat && cpLng) {
-      const updated = [...checkpoints, { id: cpId, name: cpName, lat: cpLat, lng: cpLng }];
-      setCheckpoints(updated);
-      setQrData([]); // Reset generated state so user generates newly added codes
+      setCurrentCheckpoints([...currentCheckpoints, { id: cpId, name: cpName, lat: cpLat, lng: cpLng }]);
       setCpName('');
       setCpId('');
       setCpLat('');
@@ -176,17 +197,75 @@ const QRGenerator: React.FC = () => {
     }
   };
 
-  const handleDeleteCheckpoint = (id: string) => {
-    setCheckpoints(checkpoints.filter((cp) => cp.id !== id));
-    setQrData(qrData.filter((q) => q.id !== id));
+  const handleDeleteCurrentCheckpoint = (id: string) => {
+    setCurrentCheckpoints(currentCheckpoints.filter((cp) => cp.id !== id));
   };
 
-  // Generate & Save Codes
-  const generateQRCodes = async () => {
-    setIsGenerating(true);
-    const generated: QRData[] = [];
+  // Save or Update Round via Backend API
+  const handleSaveAndSyncRound = async () => {
+    if (!roundName.trim()) {
+      alert('Please enter a Round Name.');
+      return;
+    }
+    if (currentCheckpoints.length === 0) {
+      alert('Please add at least one checkpoint before saving.');
+      return;
+    }
 
-    for (const cp of checkpoints) {
+    setIsSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingRoundId || undefined,
+          name: roundName,
+          checkpoints: currentCheckpoints,
+        }),
+      });
+
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Save failed');
+
+      setStatusMessage(editingRoundId ? 'Round updated successfully!' : 'Round and Checkpoints saved successfully!');
+      setTimeout(() => setStatusMessage(null), 3500);
+
+      setRoundName('');
+      setEditingRoundId(null);
+      setCurrentCheckpoints([]);
+
+      await fetchRounds();
+    } catch (err: any) {
+      alert(err.message || 'Failed to save round');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleEditRound = (round: PatrolRound) => {
+    setEditingRoundId(round.id);
+    setRoundName(round.name);
+    setCurrentCheckpoints(round.checkpoints || []);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteRound = async (roundId: string) => {
+    if (!confirm('Are you sure you want to delete this round and all its checkpoints?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds/${roundId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setSavedRounds(savedRounds.filter((r) => r.id !== roundId));
+    } catch (err: any) {
+      alert('Failed to delete: ' + err.message);
+    }
+  };
+
+  // Generate QR codes & open View Modal
+  const handleViewRound = async (round: PatrolRound) => {
+    setViewingRound(round);
+    const generated: QRData[] = [];
+    for (const cp of round.checkpoints || []) {
       const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
       const dataUri = await QRCode.toDataURL(payload, {
         width: 600,
@@ -195,33 +274,38 @@ const QRGenerator: React.FC = () => {
       });
       generated.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
     }
-
-    setQrData(generated);
-    // Explicitly guarantee storage for Reports comparison
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(checkpoints));
-    localStorage.setItem('rakshak_qr_data', JSON.stringify(generated));
-
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
-    setIsGenerating(false);
+    setViewingQRs(generated);
   };
 
-  // Download 1 QR per page PDF
-  const handleDownloadPDF = async (specificQR?: QRData) => {
+  // Download PDF (1 QR per page)
+  const handleDownloadPDF = async (round: PatrolRound, specificQR?: QRData) => {
     setIsDownloading(true);
     try {
-      const listToPrint = specificQR ? [specificQR] : qrData;
-      const blob = await pdf(<QRSheetPDF checkpoints={listToPrint} />).toBlob();
+      const items = round.checkpoints || [];
+      const generatedList: QRData[] = [];
+
+      for (const cp of items) {
+        if (specificQR && cp.id !== specificQR.id) continue;
+        const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
+        const dataUri = await QRCode.toDataURL(payload, {
+          width: 600,
+          margin: 1,
+          color: { dark: '#0f172a', light: '#ffffff' },
+        });
+        generatedList.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
+      }
+
+      const blob = await pdf(<QRSheetPDF checkpoints={generatedList} />).toBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = specificQR ? `${specificQR.name}-${specificQR.id}.pdf` : 'rakshak-checkpoints-1perpage.pdf';
+      link.download = specificQR ? `${round.name}-${specificQR.name}.pdf` : `${round.name}-1perpage.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Failed to generate PDF:', error);
+      console.error('PDF generation error:', error);
     } finally {
       setIsDownloading(false);
     }
@@ -232,25 +316,39 @@ const QRGenerator: React.FC = () => {
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-3">
           <Shield className="h-8 w-8 text-blue-600" />
-          <h1 className="text-3xl font-bold">Cryptographic QR Generator</h1>
+          <h1 className="text-3xl font-bold">Patrol Round & QR Manager</h1>
         </div>
 
-        {savedSuccess && (
-          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-lg border border-emerald-200 text-sm font-medium animate-fade-in">
-            <CheckCircle2 className="h-4 w-4" /> Checkpoints saved for Patrol Reports!
+        {statusMessage && (
+          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-lg border border-emerald-200 text-sm font-medium">
+            <CheckCircle2 className="h-4 w-4" /> {statusMessage}
           </div>
         )}
       </div>
 
+      {/* ROUND BUILDER CARD */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8 space-y-6">
+        <div>
+          <label className="block text-sm font-semibold text-slate-700 mb-1">
+            Round Name {editingRoundId && <span className="text-amber-600 text-xs">(Editing)</span>}
+          </label>
+          <input
+            type="text"
+            value={roundName}
+            onChange={(e) => setRoundName(e.target.value)}
+            placeholder="e.g., Night Perimeter Patrol"
+            className="w-full md:w-1/2 rounded-lg border border-slate-300 px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+
+        {/* Map Section */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-              <MapPin className="h-4 w-4 text-blue-600" />
-              Pick Location on Map
+              <MapPin className="h-4 w-4 text-blue-600" /> Pick Location on Map
             </label>
             <span className="text-xs text-slate-500">
-              Click anywhere on the map to auto-fill Checkpoint ID, Latitude & Longitude
+              Click anywhere on the map to auto-fill Lat, Lng and Checkpoint ID
             </span>
           </div>
 
@@ -259,251 +357,240 @@ const QRGenerator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => toggleMapLayer('street')}
-                className={`px-3 py-1.5 rounded-md transition ${
-                  mapType === 'street'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
+                className={`px-3 py-1.5 rounded-md ${mapType === 'street' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
               >
                 Street
               </button>
               <button
                 type="button"
                 onClick={() => toggleMapLayer('satellite')}
-                className={`px-3 py-1.5 rounded-md transition flex items-center gap-1 ${
-                  mapType === 'satellite'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
+                className={`px-3 py-1.5 rounded-md flex items-center gap-1 ${mapType === 'satellite' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
               >
-                <Layers className="h-3.5 w-3.5" />
-                Satellite
+                <Layers className="h-3.5 w-3.5" /> Satellite
               </button>
             </div>
 
             {!isMapLoaded && (
-              <div className="h-[380px] flex items-center justify-center gap-2 text-slate-500">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                Loading Map...
+              <div className="h-[350px] flex items-center justify-center gap-2 text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin text-blue-600" /> Loading Map...
               </div>
             )}
-            <div
-              ref={mapContainerRef}
-              style={{ width: '100%', height: '380px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }}
-            />
+            <div ref={mapContainerRef} style={{ width: '100%', height: '350px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }} />
           </div>
         </div>
 
+        {/* Checkpoint Input Form */}
         <form onSubmit={handleAddCheckpoint} className="flex gap-4 items-end flex-wrap">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Checkpoint Name <span className="text-blue-600 font-bold">*</span>
-            </label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint Name *</label>
             <input
               type="text"
               value={cpName}
               onChange={(e) => setCpName(e.target.value)}
               placeholder="e.g., North Gate"
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none transition"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2"
               required
             />
           </div>
 
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Checkpoint ID <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
-            </label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint ID (Auto-filled)</label>
             <input
               type="text"
               value={cpId}
               onChange={(e) => setCpId(e.target.value)}
-              placeholder="e.g., CP-001"
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
               required
             />
           </div>
 
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Latitude <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
-            </label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Latitude (Auto-filled)</label>
             <input
               type="number"
               step="any"
               value={cpLat}
               onChange={(e) => setCpLat(e.target.value)}
-              placeholder="e.g., 22.2751"
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
               required
             />
           </div>
 
           <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Longitude <span className="text-xs text-slate-400 font-normal">(Auto-filled)</span>
-            </label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Longitude (Auto-filled)</label>
             <input
               type="number"
               step="any"
               value={cpLng}
               onChange={(e) => setCpLng(e.target.value)}
-              placeholder="e.g., 73.1560"
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
               required
             />
           </div>
 
           <button
             type="submit"
-            className="bg-slate-800 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 h-[42px] transition shadow-sm"
+            className="bg-slate-800 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 h-[42px]"
           >
-            <Plus className="h-4 w-4" /> Add
+            <Plus className="h-4 w-4" /> Add Checkpoint
           </button>
         </form>
+
+        {/* Current Round Checkpoints List */}
+        {currentCheckpoints.length > 0 && (
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="font-semibold text-slate-700 mb-2">Checkpoints in Current Round ({currentCheckpoints.length})</h3>
+            <ul className="divide-y divide-slate-100 mb-4">
+              {currentCheckpoints.map((cp) => (
+                <li key={cp.id} className="py-2.5 flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium text-slate-800">{cp.name}</span>
+                    <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-xs">{cp.id}</span>
+                    <span className="text-slate-500 font-mono text-xs">{cp.lat}, {cp.lng}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCurrentCheckpoint(cp.id)}
+                    className="text-red-500 hover:text-red-700 p-1"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={handleSaveAndSyncRound}
+                disabled={isSaving}
+                className="bg-emerald-600 text-white px-6 py-2.5 rounded-lg font-medium flex items-center gap-2 hover:bg-emerald-700"
+              >
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {editingRoundId ? 'Update & Sync Round' : 'Save & Sync Round'}
+              </button>
+              {editingRoundId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingRoundId(null);
+                    setRoundName('');
+                    setCurrentCheckpoints([]);
+                  }}
+                  className="px-4 py-2.5 border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
-      {checkpoints.length > 0 && (
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Checkpoints ({checkpoints.length})</h2>
-            <button
-              onClick={() => {
-                if (confirm('Are you sure you want to clear all checkpoints?')) {
-                  setCheckpoints([]);
-                  setQrData([]);
-                  localStorage.removeItem(STORAGE_KEY);
-                }
-              }}
-              className="text-xs text-red-500 hover:text-red-700 font-medium"
-            >
-              Clear All
-            </button>
+      {/* SAVED ROUNDS TABLE */}
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-slate-800">Existing Patrol Rounds ({savedRounds.length})</h2>
+          <button
+            onClick={fetchRounds}
+            className="text-sm text-slate-500 hover:text-blue-600 flex items-center gap-1"
+          >
+            <RefreshCw className={`h-4 w-4 ${isLoadingRounds ? 'animate-spin' : ''}`} /> Refresh
+          </button>
+        </div>
+
+        {savedRounds.length === 0 ? (
+          <div className="text-center py-8 text-slate-400">
+            No rounds created yet. Enter a round name above and add checkpoints to create one.
           </div>
-
-          {qrData.length === 0 && (
-            <div className="mb-6">
-              <ul className="divide-y divide-slate-100">
-                {checkpoints.map((cp) => (
-                  <li key={cp.id} className="py-3 text-slate-600 flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <span className="font-medium text-slate-800">{cp.name}</span>
-                      <span className="text-xs font-mono bg-slate-100 px-2 py-1 rounded border border-slate-200">
-                        {cp.id}
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 font-medium">
+                  <th className="py-3 px-4">Round Name</th>
+                  <th className="py-3 px-4">Checkpoints</th>
+                  <th className="py-3 px-4">Created Date</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {savedRounds.map((round) => (
+                  <tr key={round.id} className="hover:bg-slate-50">
+                    <td className="py-3 px-4 font-semibold text-slate-800">{round.name}</td>
+                    <td className="py-3 px-4">
+                      <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full text-xs font-medium">
+                        {round.checkpoints?.length || 0} locations
                       </span>
-                      <span className="text-xs flex items-center gap-1 text-slate-500 font-mono">
-                        <MapPin className="h-3 w-3 text-blue-500" /> {cp.lat}, {cp.lng}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteCheckpoint(cp.id)}
-                      className="p-1.5 text-slate-400 hover:text-red-500 rounded"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </li>
+                    </td>
+                    <td className="py-3 px-4 text-slate-500 text-xs">
+                      {new Date(round.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="py-3 px-4 text-right space-x-2">
+                      <button
+                        onClick={() => handleViewRound(round)}
+                        className="px-2.5 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md inline-flex items-center gap-1"
+                      >
+                        <Eye className="h-3.5 w-3.5" /> View
+                      </button>
+                      <button
+                        onClick={() => handleDownloadRoundPDF(round)}
+                        disabled={isDownloading}
+                        className="px-2.5 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md inline-flex items-center gap-1"
+                      >
+                        <Download className="h-3.5 w-3.5" /> PDF
+                      </button>
+                      <button
+                        onClick={() => handleEditRound(round)}
+                        className="px-2.5 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-md inline-flex items-center gap-1"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" /> Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteRound(round.id)}
+                        className="px-2.5 py-1.5 text-xs bg-red-50 hover:bg-red-100 text-red-700 rounded-md inline-flex items-center gap-1"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-              </ul>
-            </div>
-          )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-          {qrData.length === checkpoints.length ? (
-            <div className="mt-4">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6 mb-8">
-                {qrData.map((cp) => (
-                  <div
-                    key={cp.id}
-                    className="border border-slate-200 rounded-xl p-4 flex flex-col items-center bg-slate-50 relative group hover:border-blue-400 hover:shadow-md transition-all"
-                  >
-                    <div
-                      className="relative mb-3 cursor-pointer"
-                      onClick={() => setEnlargedQR(cp)}
-                    >
-                      <img
-                        src={cp.qrDataUri}
-                        alt={cp.name}
-                        className="w-40 h-40 rounded-lg shadow-sm bg-white"
-                      />
-                      <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
-                        <ZoomIn className="text-white h-8 w-8" />
-                      </div>
-                    </div>
-                    <span className="font-bold text-slate-800 text-center">{cp.name}</span>
-                    <span className="text-xs text-slate-500 font-mono">ID: {cp.id}</span>
-                    <button
-                      onClick={() => handleDownloadPDF(cp)}
-                      className="mt-3 text-xs text-blue-600 hover:underline flex items-center gap-1"
-                    >
-                      <Download className="h-3 w-3" /> Download This PDF
-                    </button>
-                  </div>
-                ))}
+      {/* VIEW ROUND MODAL */}
+      {viewingRound && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm" onClick={() => setViewingRound(null)}>
+          <div className="bg-white rounded-2xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-2xl font-bold text-slate-800">{viewingRound.name}</h3>
+                <p className="text-sm text-slate-500">{viewingRound.checkpoints?.length || 0} Checkpoints</p>
               </div>
-
-              <div className="flex justify-center border-t border-slate-100 pt-6">
+              <div className="flex gap-2">
                 <button
-                  onClick={() => handleDownloadPDF()}
-                  disabled={isDownloading}
-                  className="bg-blue-600 text-white px-8 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-blue-700 font-semibold disabled:opacity-70 shadow-sm"
+                  onClick={() => handleDownloadRoundPDF(viewingRound)}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-1.5 hover:bg-blue-700"
                 >
-                  {isDownloading ? (
-                    <>
-                      <Loader2 className="h-5 w-5 animate-spin" /> Generating Multi-Page PDF...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-5 w-5" /> Download Printable PDF (1 QR per page)
-                    </>
-                  )}
+                  <Download className="h-4 w-4" /> Download PDF (1/page)
+                </button>
+                <button onClick={() => setViewingRound(null)} className="p-2 text-slate-400 hover:text-slate-700">
+                  <X className="h-6 w-6" />
                 </button>
               </div>
             </div>
-          ) : (
-            <button
-              onClick={generateQRCodes}
-              disabled={isGenerating}
-              className="bg-emerald-600 text-white px-6 py-3 rounded-lg inline-flex items-center gap-2 hover:bg-emerald-700 font-semibold transition"
-            >
-              {isGenerating ? (
-                <>
-                  <Loader2 className="h-5 w-5 animate-spin" /> Signing & Storing...
-                </>
-              ) : (
-                'Generate & Store Cryptographic Codes'
-              )}
-            </button>
-          )}
-        </div>
-      )}
 
-      {enlargedQR && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm"
-          onClick={() => setEnlargedQR(null)}
-        >
-          <div
-            className="bg-white rounded-2xl p-8 max-w-md w-full relative flex flex-col items-center shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setEnlargedQR(null)}
-              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
-            >
-              <X className="h-6 w-6" />
-            </button>
-            <h3 className="text-3xl font-bold text-slate-800 mb-2 text-center">{enlargedQR.name}</h3>
-            <p className="text-slate-500 mb-6 font-medium">ID: {enlargedQR.id}</p>
-
-            <img
-              src={enlargedQR.qrDataUri}
-              alt={enlargedQR.name}
-              className="w-72 h-72 rounded-xl border border-slate-200 mb-6"
-            />
-
-            <div className="flex items-center gap-2 text-slate-600 bg-slate-50 px-4 py-2 rounded-lg border border-slate-100">
-              <MapPin className="h-5 w-5 text-blue-500" />
-              <span className="font-mono text-sm">
-                {enlargedQR.lat}, {enlargedQR.lng}
-              </span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mt-6">
+              {viewingQRs.map((cp) => (
+                <div key={cp.id} className="border border-slate-200 rounded-xl p-3 flex flex-col items-center bg-slate-50">
+                  <img src={cp.qrDataUri} alt={cp.name} className="w-32 h-32 rounded bg-white mb-2" />
+                  <span className="font-semibold text-slate-800 text-sm text-center">{cp.name}</span>
+                  <span className="text-xs text-slate-500 font-mono">{cp.id}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>

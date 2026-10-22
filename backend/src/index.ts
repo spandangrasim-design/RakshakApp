@@ -91,6 +91,131 @@ app.post('/api/v1/auth/login', async (c) => {
   }
 })
 
+// Helper to initialize Supabase admin client
+const getSupabase = (env: Bindings) =>
+  createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+    global: { fetch: (...args) => fetch(...args) }
+  });
+
+// 4. ROUNDS & CHECKPOINTS CRUD API
+
+// 4A. GET All Rounds with Checkpoints
+app.get('/api/v1/rounds', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+
+    const { data: rounds, error: roundsError } = await supabase
+      .from('rounds')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (roundsError) {
+      return c.json({ success: false, message: roundsError.message }, 500);
+    }
+
+    const { data: checkpoints, error: cpError } = await supabase
+      .from('checkpoints')
+      .select('*');
+
+    if (cpError) {
+      return c.json({ success: false, message: cpError.message }, 500);
+    }
+
+    const roundsWithCheckpoints = (rounds || []).map((round) => ({
+      ...round,
+      checkpoints: (checkpoints || []).filter((cp) => cp.round_id === round.id)
+    }));
+
+    return c.json({ success: true, rounds: roundsWithCheckpoints });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// 4B. POST Create or Update Round with Checkpoints
+const roundSaveSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().min(1),
+  checkpoints: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      lat: z.string().min(1),
+      lng: z.string().min(1)
+    })
+  )
+});
+
+app.post('/api/v1/rounds', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { id, name, checkpoints } = roundSaveSchema.parse(body);
+    const supabase = getSupabase(c.env);
+
+    let activeRoundId = id;
+
+    if (activeRoundId) {
+      // Update existing round name
+      const { error: updateError } = await supabase
+        .from('rounds')
+        .update({ name })
+        .eq('id', activeRoundId);
+
+      if (updateError) return c.json({ success: false, message: updateError.message }, 500);
+
+      // Delete old checkpoints to replace with current set
+      await supabase.from('checkpoints').delete().eq('round_id', activeRoundId);
+    } else {
+      // Insert new round
+      const { data: newRound, error: insertError } = await supabase
+        .from('rounds')
+        .insert([{ name }])
+        .select()
+        .single();
+
+      if (insertError) return c.json({ success: false, message: insertError.message }, 500);
+      activeRoundId = newRound.id;
+    }
+
+    // Insert checkpoints for this round
+    if (checkpoints.length > 0) {
+      const rows = checkpoints.map((cp) => ({
+        id: cp.id,
+        round_id: activeRoundId,
+        name: cp.name,
+        lat: cp.lat,
+        lng: cp.lng
+      }));
+
+      const { error: cpInsertError } = await supabase.from('checkpoints').insert(rows);
+      if (cpInsertError) return c.json({ success: false, message: cpInsertError.message }, 500);
+    }
+
+    return c.json({ success: true, round_id: activeRoundId });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return c.json({ success: false, message: 'Invalid payload', errors: error.errors }, 400);
+    }
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// 4C. DELETE Round
+app.delete('/api/v1/rounds/:id', async (c) => {
+  try {
+    const roundId = c.req.param('id');
+    const supabase = getSupabase(c.env);
+
+    const { error } = await supabase.from('rounds').delete().eq('id', roundId);
+    if (error) return c.json({ success: false, message: error.message }, 500);
+
+    return c.json({ success: true, message: 'Round deleted' });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
 // 2. Patrol Scan Route (Single Live Scan)
 app.post('/api/v1/scans', async (c) => {
   try {
