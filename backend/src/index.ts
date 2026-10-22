@@ -10,6 +10,7 @@ type Bindings = {
   SUPABASE_SERVICE_ROLE_KEY: string
   JWT_SECRET: string
   QR_SECRET: string 
+  R2_BUCKET: R2Bucket // ADDED: Sprint 4 Cloudflare R2 Storage
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -24,13 +25,14 @@ const loginSchema = z.object({
 })
 
 const scanSchema = z.object({
+  client_scan_id: z.string(), // ADDED: Sprint 4 Idempotency UUID
   checkpoint_id: z.string(),
   qr_lat: z.string(),
   qr_lng: z.string(),
   signature: z.string(),
   guard_lat: z.number(),
   guard_lng: z.number(),
-  uptime_seconds: z.number().optional(), // Added for anti-spoofing
+  uptime_seconds: z.number().optional(), 
   photo_url: z.string().optional()
 })
 
@@ -89,10 +91,9 @@ app.post('/api/v1/auth/login', async (c) => {
   }
 })
 
-// 2. Patrol Scan Route (QR & GPS Validation)
+// 2. Patrol Scan Route (Single Live Scan)
 app.post('/api/v1/scans', async (c) => {
   try {
-    // A. Verify JWT to get Guard ID
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return c.json({ success: false, message: 'Missing or invalid token' }, 401);
@@ -107,11 +108,9 @@ app.post('/api/v1/scans', async (c) => {
     }
     const guard_id = payload.sub as string;
 
-    // B. Parse Request Body
     const body = await c.req.json();
-    const { checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
+    const { client_scan_id, checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
 
-    // C. Anti-Spoofing: Verify Cryptographic QR Signature
     const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
     const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
 
@@ -119,7 +118,6 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
     }
 
-    // D. Initialize Supabase
     const supabase = createClient(
       c.env.SUPABASE_URL,
       c.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -129,8 +127,8 @@ app.post('/api/v1/scans', async (c) => {
       }
     );
 
-    // E. Call Supabase PostGIS Geofencing RPC
     const { data, error } = await supabase.rpc('log_patrol_scan', {
+      p_client_scan_id: client_scan_id, // ADDED
       p_checkpoint_id: checkpoint_id,
       p_guard_id: guard_id,
       p_guard_lat: guard_lat,
@@ -152,6 +150,71 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Invalid data format', errors: error.errors }, 400);
     }
     return c.json({ success: false, message: 'Server error' }, 500);
+  }
+});
+
+// 3. NEW Sprint 4: Auto-Sync Engine (Bulk Offline Upload)
+app.post('/api/v1/patrols/sync', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
+    
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET);
+    const guard_id = payload.sub as string;
+
+    const body = await c.req.json();
+    const scans = body.scans; // Array of offline scans from SQLite
+    const results = [];
+
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    for (const scan of scans) {
+      // 3A. Verify Signature
+      const dataToSign = `${scan.checkpoint_id}|${scan.qr_lat}|${scan.qr_lng}`;
+      const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+      
+      if (scan.signature !== expectedSignature) {
+        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'Invalid Signature' });
+        continue;
+      }
+
+      // 3B. Upload Photo to Cloudflare R2
+      let photoUrl = 'https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev';
+      if (scan.photo_url && scan.photo_url.startsWith('data:image')) {
+        const base64Data = scan.photo_url.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+        const fileName = `scans/${scan.client_scan_id}.jpg`;
+        
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        // NOTE: Replace with your actual public R2 dev URL before going to production
+        photoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+      }
+
+      // 3C. Idempotent DB Insert
+      const { data, error } = await supabase.rpc('log_patrol_scan', {
+        p_client_scan_id: scan.client_scan_id,
+        p_checkpoint_id: scan.checkpoint_id,
+        p_guard_id: guard_id,
+        p_guard_lat: scan.guard_lat,
+        p_guard_lng: scan.guard_lng,
+        p_expected_lat: parseFloat(scan.qr_lat),
+        p_expected_lng: parseFloat(scan.qr_lng),
+        p_uptime_seconds: scan.uptime_seconds || 0,
+        p_photo_url: photoUrl
+      });
+
+      if (error) {
+        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'DB Error' });
+      } else {
+        results.push({ client_scan_id: scan.client_scan_id, status: data.status, verification: data });
+      }
+    }
+
+    return c.json({ success: true, synced_items: results });
+
+  } catch (error) {
+    return c.json({ success: false, message: 'Sync failed', error }, 500);
   }
 });
 

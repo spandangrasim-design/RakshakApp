@@ -6,6 +6,10 @@ import 'package:system_clock/system_clock.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img; 
+import 'package:uuid/uuid.dart';
+
+// Import our new local database service for the offline queue
+import '../services/local_db_service.dart';
 
 class LockedCameraScreen extends StatefulWidget {
   final String checkpointId;
@@ -13,8 +17,8 @@ class LockedCameraScreen extends StatefulWidget {
   final double expectedLng;
   final String signature;
 
-  // TODO: Replace with your actual Cloudflare Worker URL
-  static const String API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/'; 
+  // Your deployed Cloudflare Worker URL
+  static const String API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev'; 
 
   const LockedCameraScreen({
     super.key,
@@ -92,7 +96,7 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
           img.drawString(
             decodedImage, 
             'Rakshak Verified\n$locationStr\nTime: $timestamp', 
-            font: img.arial_24, 
+            font: img.arial24, // Updated font syntax
             color: img.ColorRgb8(255, 0, 0)
           );
 
@@ -104,8 +108,12 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
       final Duration uptime = SystemClock.uptime();
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('access_token') ?? '';
+      
+      // SPRINT 4: Generate a unique ID for this scan to prevent database duplicates
+      final clientScanId = const Uuid().v4();
 
       final payload = {
+        "client_scan_id": clientScanId,
         "checkpoint_id": widget.checkpointId,
         "qr_lat": widget.expectedLat.toString(),
         "qr_lng": widget.expectedLng.toString(),
@@ -116,37 +124,50 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
         "photo_url": photoBase64
       };
 
-      final response = await http.post(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/scans'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode(payload),
-      );
+      try {
+        // Attempt Live Upload
+        final response = await http.post(
+          Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/scans'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode(payload),
+        ).timeout(const Duration(seconds: 10)); // 10s timeout before assuming dead zone
 
-      final responseData = jsonDecode(response.body);
+        final responseData = jsonDecode(response.body);
 
-      if (response.statusCode == 200 && responseData['success'] == true) {
-        final verification = responseData['verification'];
-        final isVerified = verification['is_gps_verified'];
+        if (response.statusCode == 200 && responseData['success'] == true) {
+          final isVerified = responseData['verification']['is_gps_verified'];
+          if (!mounted) return;
+          Navigator.pop(context, isVerified);
+        } else {
+          throw Exception(responseData['message'] ?? 'Server error');
+        }
 
-        if (!mounted) return;
-        Navigator.pop(context, isVerified);
-      } else {
+      } catch (e) {
+        // NETWORK DROPPED OR TIMEOUT: Queue it offline!
+        debugPrint('Live upload failed, queueing offline: $e');
+        
+        // Write the payload to the local SQLite database
+        await LocalDbService().queueScan(clientScanId, payload);
+        
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Submission Failed: ${responseData['message'] ?? 'Server error'}'),
-            backgroundColor: Colors.red,
+          const SnackBar(
+            content: Text('Dead Zone: Scan saved offline. It will sync automatically.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
           ),
         );
+        // Pop back to dashboard, passing null to indicate it's pending (neither Green nor Amber yet)
+        Navigator.pop(context, null);
       }
 
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error submitting scan: $e'), backgroundColor: Colors.red),
+        SnackBar(content: Text('Error processing scan: $e'), backgroundColor: Colors.red),
       );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);

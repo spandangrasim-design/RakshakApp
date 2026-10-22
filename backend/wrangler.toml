@@ -19,3 +19,6 @@ bucket_name = "rakshak-prod-media"
 # SLA Escalation Cron Trigger (Every 10 minutes)
 [triggers]
 crons = ["*/10 * * * *"]
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "rakshak-images"
