@@ -3,7 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } f
 import Login from './pages/Login';
 import { ReportsPage } from './pages/ReportsPage';
 import QRGenerator from './pages/QRGenerator';
-import { Shield, LogOut, FileText, QrCode } from 'lucide-react';
+import AdminConfigsPage from './pages/AdminConfigsPage'; // <-- 1. Import your Admin Configs Page
+import { Shield, LogOut, FileText, QrCode, Sliders } from 'lucide-react'; // <-- 2. Added Sliders icon
 
 // 1. Create a Layout Wrapper for authenticated pages with navigation tabs
 const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => void, children: React.ReactNode }) => {
@@ -50,6 +51,18 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                             >
                                 <QrCode className="h-4 w-4" />
                                 QR Generator
+                            </Link>
+                            {/* --- 3. Added Admin Configs Navigation Link --- */}
+                            <Link
+                                to="/admin/configs"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                    location.pathname === '/admin/configs'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                }`}
+                            >
+                                <Sliders className="h-4 w-4" />
+                                API Integrations
                             </Link>
                         </nav>
                     </div>
@@ -139,6 +152,20 @@ export const App: React.FC = () => {
                         token ? (
                             <AdminLayout user={user} onLogout={handleLogout}>
                                 <QRGenerator />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
+                {/* --- 4. Added Protected Route for Admin Configurations --- */}
+                <Route
+                    path="/admin/configs"
+                    element={
+                        token ? (
+                            <AdminLayout user={user} onLogout={handleLogout}>
+                                <AdminConfigsPage />
                             </AdminLayout>
                         ) : (
                             <Navigate to="/login" replace />
