@@ -343,9 +343,214 @@ app.post('/api/v1/patrols/sync', async (c) => {
   }
 });
 
+// ==========================================
+// SPRINT 5: REPORT INCIDENT ENDPOINT
+// ==========================================
+app.post('/api/v1/incidents', async (c) => {
+  try {
+    // 1. Verify JWT Authentication
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing or invalid token' }, 401);
+    }
+
+    let payload;
+    try {
+      const token = authHeader.split(' ')[1];
+      payload = await verify(token, c.env.JWT_SECRET);
+    } catch (e) {
+      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
+    }
+    const guard_id = payload.sub as string;
+
+    // 2. Parse payload
+    const body = await c.req.json();
+    const { client_incident_id, description, priority, photo_url, reported_at } = body;
+
+    // 3. Upload Photo to Cloudflare R2
+    let finalPhotoUrl = null;
+    if (photo_url && photo_url.startsWith('data:image')) {
+      const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
+      const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+      
+      const fileName = `incidents/${client_incident_id}.jpg`;
+      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+      
+      // Using your actual R2 Dev Domain
+      finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+    }
+
+    // 4. Idempotent Upsert into Supabase
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    
+    const { data, error } = await supabase
+      .from('incidents')
+      .upsert({
+        client_incident_id: client_incident_id,
+        guard_id: guard_id, 
+        description: description,
+        priority: priority,
+        photo_url: finalPhotoUrl,
+        status: 'OPEN', // Default for SLA monitoring
+        reported_at: reported_at || new Date().toISOString()
+      }, { onConflict: 'client_incident_id' }) 
+      .select()
+      .single();
+
+    if (error) {
+      return c.json({ success: false, message: 'Database error', error }, 500);
+    }
+
+    // 5. Return success to clear it from the mobile offline queue
+    return c.json({ success: true, incident: data }, 201);
+
+  } catch (error) {
+    console.error("Incident API Error:", error);
+    return c.json({ success: false, message: 'Internal Server Error' }, 500);
+  }
+});
+
+// ==========================================
+// ADMIN WEB DASHBOARD: API CONFIGURATIONS
+// ==========================================
+
+// 1. Fetch current API keys to display in the Web UI
+app.get('/api/v1/admin/configs', async (c) => {
+  try {
+    // In production, add a JWT check here to ensure the user is an 'admin'
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { data, error } = await supabase.from('admin_configurations').select('*');
+    
+    if (error) throw error;
+    return c.json({ success: true, configs: data });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to load configs' }, 500);
+  }
+});
+
+// 2. Save updated API keys from the Web UI
+app.post('/api/v1/admin/configs', async (c) => {
+  try {
+    const body = await c.req.json();
+    // Expects an array: [{ key_name: 'MANAGER_EMAIL', key_value: '...' }, ...]
+    
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { data, error } = await supabase
+      .from('admin_configurations')
+      .upsert(body, { onConflict: 'key_name' });
+      
+    if (error) throw error;
+    return c.json({ success: true, message: 'Configurations updated' });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to save configs' }, 500);
+  }
+});
+// --- HELPER: META WHATSAPP API ALERT ---
+async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  
+  // 1. Fetch WhatsApp configurations from Supabase
+  // (Assuming you add a MANAGER_PHONE to your admin_configurations table from the web UI)
+  const { data: configs, error } = await supabase
+    .from('admin_configurations')
+    .select('key_name, key_value')
+    .in('key_name', ['WHATSAPP_API_TOKEN', 'MANAGER_PHONE', 'WHATSAPP_PHONE_ID']);
+
+  if (error || !configs) {
+    console.error("Failed to load WhatsApp configurations", error);
+    return false;
+  }
+
+  const configMap = configs.reduce((acc, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  const token = configMap['WHATSAPP_API_TOKEN'];
+  const phoneId = configMap['WHATSAPP_PHONE_ID']; // From Meta Developer Console
+  const managerPhone = configMap['MANAGER_PHONE']; // e.g., "1234567890"
+
+  if (!token || !managerPhone || !phoneId) {
+    console.error("WhatsApp API Token, Phone ID, or Manager Phone is not configured.");
+    return false;
+  }
+
+  // 2. Construct the WhatsApp Message Payload
+  // Note: For initiating conversations, Meta requires using pre-approved templates.
+  // For sandbox/testing, you can often use a standard text message if within the 24hr window, 
+  // but for production SLA alerts, you will map this to a WhatsApp Template message.
+  const payload = {
+    messaging_product: "whatsapp",
+    to: managerPhone,
+    type: "text",
+    text: {
+      body: `🚨 *CRITICAL ALERT: ${priority} INCIDENT*\n\nAn incident has been open for 10 minutes and requires immediate attention.\n\n*ID:* ${incidentId}\n*Details:* ${description}\n\nPlease check the admin dashboard immediately.`
+    }
+  };
+
+  // 3. Send via Meta Graph API
+  try {
+    const response = await fetch(`https://graph.facebook.com/v17.0/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("WhatsApp API Failed:", errorText);
+      return false;
+    }
+    
+    console.log(`WhatsApp alert sent successfully to ${managerPhone}`);
+    return true;
+  } catch (err) {
+    console.error("WhatsApp Fetch Error:", err);
+    return false;
+  }
+}
 // --- EXPORT ---
 export default {
   fetch: async (request: Request, env: Bindings, ctx: ExecutionContext) => {
     return app.fetch(request, env, ctx)
+  },
+  
+  // NEW: SPRINT 5 SLA CRON TRIGGER
+  scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
+    console.log("SLA Cron Trigger fired at:", event.cron);
+    
+    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    
+    // 1. Calculate the time exactly 10 minutes ago
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60000).toISOString();
+    
+    // 2. Find P1/P2 incidents still 'OPEN' and older than 10 minutes
+    const { data: incidents, error } = await supabase
+      .from('incidents')
+      .select('*')
+      .in('priority', ['P1', 'P2'])
+      .eq('status', 'OPEN')
+      .lte('reported_at', tenMinutesAgo);
+
+    if (error || !incidents || incidents.length === 0) {
+      console.log("No pending SLA breaches to escalate.");
+      return;
+    }
+
+    // 3. Process each breached incident
+    for (const incident of incidents) {
+      console.log(`Escalating Incident: ${incident.client_incident_id}`);
+      
+      // Fire Email and WhatsApp concurrently
+      await Promise.all([
+        sendGoogleEmergencyEmail(env, incident.client_incident_id, incident.priority, incident.description, incident.photo_url),
+        sendWhatsAppAlert(env, incident.client_incident_id, incident.priority, incident.description)
+      ]);
+
+      // 4. Mark as ESCALATED so the system doesn't spam the manager every 10 minutes
+      await supabase
+        .from('incidents')
+        .update({ status: 'ESCALATED' })
+        .eq('client_incident_id', incident.client_incident_id);
+    }
   }
 }
