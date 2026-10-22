@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn } from 'lucide-react';
+import { Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, Layers } from 'lucide-react';
 import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
@@ -32,18 +32,22 @@ const QRGenerator: React.FC = () => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
 
+  // Map layer toggle: 'street' or 'satellite'
+  const [mapType, setMapType] = useState<'street' | 'satellite'>('street');
+
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const markerInstanceRef = useRef<any>(null);
+  const streetLayerRef = useRef<any>(null);
+  const satelliteLayerRef = useRef<any>(null);
 
-  // Load Leaflet CSS and JS dynamically without any npm install
+  // Load Leaflet CSS and JS dynamically
   useEffect(() => {
     if (window.L) {
       setIsMapLoaded(true);
       return;
     }
 
-    // Add Leaflet CSS
     if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link');
       link.id = 'leaflet-css';
@@ -52,7 +56,6 @@ const QRGenerator: React.FC = () => {
       document.head.appendChild(link);
     }
 
-    // Add Leaflet JS
     if (!document.getElementById('leaflet-js')) {
       const script = document.createElement('script');
       script.id = 'leaflet-js';
@@ -70,23 +73,50 @@ const QRGenerator: React.FC = () => {
     if (!isMapLoaded || !mapContainerRef.current || mapInstanceRef.current || !window.L) return;
 
     const L = window.L;
-    const initialCenter = [20.5937, 78.9629]; // [Lat, Lng]
+    const initialCenter = [22.2751, 73.1560]; // Vadodara default coordinates
 
-    const map = L.map(mapContainerRef.current).setView(initialCenter, 5);
+    const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    // Street View Layer (OpenStreetMap)
+    streetLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
       maxZoom: 19,
-    }).addTo(map);
+    });
 
+    // Satellite View Layer (Esri World Imagery)
+    satelliteLayerRef.current = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+        maxZoom: 19,
+      }
+    );
+
+    // Default to street view
+    streetLayerRef.current.addTo(map);
     mapInstanceRef.current = map;
 
-    // Handle Map Click
+    // SVG Marker pin to prevent broken default image icon
+    const customPinIcon = L.divIcon({
+      className: 'custom-leaflet-marker',
+      html: `
+        <div style="transform: translate(-50%, -100%);">
+          <svg width="34" height="42" viewBox="0 0 24 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 0C5.37258 0 0 5.37258 0 12C0 20.25 10.5 29.25 11.25 29.85C11.67 30.18 12.33 30.18 12.75 29.85C13.5 29.25 24 20.25 24 12C24 5.37258 18.6274 0 12 0Z" fill="#2563eb"/>
+            <circle cx="12" cy="11" r="5" fill="white"/>
+            <circle cx="12" cy="11" r="2.5" fill="#1d4ed8"/>
+          </svg>
+        </div>
+      `,
+      iconSize: [0, 0],
+    });
+
+    // Map click handler
     map.on('click', (e: any) => {
       const { lat, lng } = e.latlng;
 
       if (!markerInstanceRef.current) {
-        markerInstanceRef.current = L.marker([lat, lng]).addTo(map);
+        markerInstanceRef.current = L.marker([lat, lng], { icon: customPinIcon }).addTo(map);
       } else {
         markerInstanceRef.current.setLatLng([lat, lng]);
       }
@@ -104,6 +134,20 @@ const QRGenerator: React.FC = () => {
       mapInstanceRef.current = null;
     };
   }, [isMapLoaded]);
+
+  // Toggle map layer when user switches between Street / Satellite
+  const toggleMapLayer = (type: 'street' | 'satellite') => {
+    if (!mapInstanceRef.current) return;
+    setMapType(type);
+
+    if (type === 'satellite') {
+      mapInstanceRef.current.removeLayer(streetLayerRef.current);
+      satelliteLayerRef.current.addTo(mapInstanceRef.current);
+    } else {
+      mapInstanceRef.current.removeLayer(satelliteLayerRef.current);
+      streetLayerRef.current.addTo(mapInstanceRef.current);
+    }
+  };
 
   const handleAddCheckpoint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -178,15 +222,42 @@ const QRGenerator: React.FC = () => {
           </div>
 
           <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50 relative">
+            {/* View Selector Controls Overlay */}
+            <div className="absolute top-3 right-3 z-[1000] bg-white/95 backdrop-blur-sm shadow-md rounded-lg p-1 flex items-center border border-slate-200 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => toggleMapLayer('street')}
+                className={`px-3 py-1.5 rounded-md transition ${
+                  mapType === 'street'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Street
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleMapLayer('satellite')}
+                className={`px-3 py-1.5 rounded-md transition flex items-center gap-1 ${
+                  mapType === 'satellite'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                Satellite
+              </button>
+            </div>
+
             {!isMapLoaded && (
-              <div className="h-[350px] flex items-center justify-center gap-2 text-slate-500">
+              <div className="h-[380px] flex items-center justify-center gap-2 text-slate-500">
                 <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
                 Loading Map...
               </div>
             )}
             <div
               ref={mapContainerRef}
-              style={{ width: '100%', height: '350px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }}
+              style={{ width: '100%', height: '380px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }}
             />
           </div>
         </div>
@@ -229,7 +300,7 @@ const QRGenerator: React.FC = () => {
               step="any"
               value={cpLat}
               onChange={(e) => setCpLat(e.target.value)}
-              placeholder="e.g., 20.5937"
+              placeholder="e.g., 22.2751"
               className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
               required
             />
@@ -244,7 +315,7 @@ const QRGenerator: React.FC = () => {
               step="any"
               value={cpLng}
               onChange={(e) => setCpLng(e.target.value)}
-              placeholder="e.g., 78.9629"
+              placeholder="e.g., 73.1560"
               className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
               required
             />
