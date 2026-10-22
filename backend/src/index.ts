@@ -469,6 +469,26 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
     return c.json({ success: false, message: 'Failed to resolve incident' }, 500);
   }
 });
+// 3. PATCH to update incident admin notes
+app.patch('/api/v1/incidents/:id/notes', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const { notes } = await c.req.json();
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    
+    const { data, error } = await supabase
+      .from('incidents')
+      .update({ admin_notes: notes })
+      .eq('client_incident_id', incidentId)
+      .select()
+      .single();
+      
+    if (error) throw error;
+    return c.json({ success: true, incident: data });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to update notes' }, 500);
+  }
+});
 
 // ==========================================
 // ADMIN WEB DASHBOARD: API CONFIGURATIONS
