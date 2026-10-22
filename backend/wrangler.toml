@@ -3,9 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 
 # Production Custom Domain Routing
-routes = [
-  { pattern = "api.rakshakapp.com/*", zone_name = "rakshakapp.com" }
-]
+workers_dev = true
 
 [vars]
 ENVIRONMENT = "production"
