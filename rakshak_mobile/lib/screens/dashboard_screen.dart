@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
 import 'qr_scanner_screen.dart'; 
-import '../widgets/offline_banner.dart'; // Added import for the offline banner
+import 'incident_report_screen.dart'; // Added import for the incident form
+import '../widgets/offline_banner.dart'; 
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -70,10 +71,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       body: Column(
         children: [
-          // 1. Full-width Offline Banner placed at the very top
           const OfflineBanner(),
 
-          // 2. The rest of the scrollable dashboard
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20.0),
@@ -168,7 +167,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   const SizedBox(height: 28),
 
-                  // --- Last Scan Status Banner (Amber Flag UI) ---
                   if (_lastScanVerified != null)
                     Container(
                       margin: const EdgeInsets.only(bottom: 24),
@@ -244,8 +242,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           if (result != null && result is bool) {
                             setState(() => _lastScanVerified = result);
                           } else if (result == null) {
-                            // If the result is null, it means it was caught by the dead-zone trap.
-                            // Clear the previous verified flag so the UI focuses on the offline banner.
                             setState(() => _lastScanVerified = null);
                           }
                         },
@@ -255,7 +251,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         title: 'Report Incident',
                         subtitle: 'Log security issue',
                         color: const Color(0xFFDC2626),
-                        onTap: () {},
+                        onTap: () {
+                          // WIRE-UP: Navigates to the Incident Report form
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const IncidentReportScreen()),
+                          );
+                        },
                       ),
                       _buildActionCard(
                         icon: Icons.map_outlined,

@@ -21,8 +21,9 @@ class LocalDbService {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2, // Incremented to version 2 for Sprint 5
       onCreate: (db, version) async {
+        // Table for Sprint 4: Patrol Scans
         await db.execute('''
           CREATE TABLE offline_scans (
             client_scan_id TEXT PRIMARY KEY,
@@ -30,9 +31,34 @@ class LocalDbService {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           )
         ''');
+        
+        // Table for Sprint 5: Incident Reports
+        await db.execute('''
+          CREATE TABLE offline_incidents (
+            client_incident_id TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // Safely add the incidents table if upgrading from Sprint 4
+        if (oldVersion < 2) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS offline_incidents (
+              client_incident_id TEXT PRIMARY KEY,
+              payload TEXT NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          ''');
+        }
       },
     );
   }
+
+  // ==========================================
+  // SPRINT 4: PATROL SCANS QUEUE
+  // ==========================================
 
   // Save a failed scan to the local queue
   Future<void> queueScan(String clientScanId, Map<String, dynamic> payload) async {
@@ -54,7 +80,6 @@ class LocalDbService {
     
     return maps.map((map) {
       final payload = jsonDecode(map['payload'] as String) as Map<String, dynamic>;
-      // Ensure the ID is injected back into the payload for the backend
       payload['client_scan_id'] = map['client_scan_id'];
       return payload;
     }).toList();
@@ -67,6 +92,46 @@ class LocalDbService {
     await db.delete(
       'offline_scans',
       where: 'client_scan_id IN (${List.filled(syncedIds.length, '?').join(',')})',
+      whereArgs: syncedIds,
+    );
+  }
+
+  // ==========================================
+  // SPRINT 5: INCIDENT REPORTS QUEUE
+  // ==========================================
+
+  // Save a failed incident report to the local queue
+  Future<void> queueIncident(String clientIncidentId, Map<String, dynamic> payload) async {
+    final db = await database;
+    await db.insert(
+      'offline_incidents',
+      {
+        'client_incident_id': clientIncidentId,
+        'payload': jsonEncode(payload),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  // Retrieve all queued incidents for the Auto-Sync Engine
+  Future<List<Map<String, dynamic>>> getUnsyncedIncidents() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query('offline_incidents', orderBy: 'created_at ASC');
+    
+    return maps.map((map) {
+      final payload = jsonDecode(map['payload'] as String) as Map<String, dynamic>;
+      payload['client_incident_id'] = map['client_incident_id'];
+      return payload;
+    }).toList();
+  }
+
+  // Remove incidents that successfully uploaded to Cloudflare
+  Future<void> removeSyncedIncidents(List<String> syncedIds) async {
+    if (syncedIds.isEmpty) return;
+    final db = await database;
+    await db.delete(
+      'offline_incidents',
+      where: 'client_incident_id IN (${List.filled(syncedIds.length, '?').join(',')})',
       whereArgs: syncedIds,
     );
   }
