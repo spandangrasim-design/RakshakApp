@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/local_db_service.dart';
+import '../services/sync_service.dart'; // Added to trigger background sync
 import 'locked_camera_screen.dart'; // For API_BASE_URL
 
 class IncidentReportScreen extends StatefulWidget {
@@ -72,13 +73,14 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       "client_incident_id": clientIncidentId,
       "description": _descriptionController.text.trim(),
       "priority": _selectedPriority,
-      "photo_url": _photoBase64 ?? "",
+      "photo_url": _photoBase64 ?? "", // Matches Cloudflare Worker expectation
       "reported_at": DateTime.now().toIso8601String()
     };
 
     if (isOffline) {
       // 1. OFFLINE QUEUE
       await LocalDbService().queueIncident(clientIncidentId, payload);
+      SyncService().initialize(); // Ensure sync listener is active
       
       if (_selectedPriority == 'P1') {
         _showP1EmergencyModal();
@@ -113,6 +115,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       } catch (e) {
         debugPrint('Upload failed, queuing offline: $e');
         await LocalDbService().queueIncident(clientIncidentId, payload);
+        SyncService().initialize(); // Ensure sync listener is active
         
         if (_selectedPriority == 'P1') {
           _showP1EmergencyModal();

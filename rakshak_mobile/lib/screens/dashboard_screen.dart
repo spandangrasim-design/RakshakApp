@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
 import 'qr_scanner_screen.dart'; 
-import 'incident_report_screen.dart'; // Added import for the incident form
+import 'incident_report_screen.dart'; 
 import '../widgets/offline_banner.dart'; 
+import '../widgets/home_incidents_preview.dart'; // NEW: Imported the incidents preview widget
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -14,8 +15,11 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   String _guardName = 'Guard';
+  String _guardId = ''; // NEW: State to hold guard ID for API
+  String _token = ''; // NEW: State to hold JWT for API
   bool _isShiftActive = false;
   bool? _lastScanVerified; 
+  bool _isLoadingPrefs = true; // NEW: Ensures we have token before rendering tickets
 
   @override
   void initState() {
@@ -27,6 +31,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _guardName = prefs.getString('guard_name') ?? 'Security Guard';
+      _guardId = prefs.getString('guard_id') ?? ''; // Fetch saved guard_id
+      _token = prefs.getString('token') ?? ''; // Fetch saved JWT token
+      _isLoadingPrefs = false;
     });
   }
 
@@ -165,7 +172,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 20),
+
+                  // NEW: Ticketing / Incidents Widget integration
+                  if (!_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty) ...[
+                    HomeIncidentsPreview(
+                      guardId: _guardId,
+                      token: _token,
+                      guardName: _guardName,
+                    ),
+                    const SizedBox(height: 20),
+                  ],
 
                   if (_lastScanVerified != null)
                     Container(

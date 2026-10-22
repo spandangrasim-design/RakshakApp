@@ -5,6 +5,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import QRGenerator from './pages/QRGenerator';
 import AdminConfigsPage from './pages/AdminConfigsPage'; 
 import IncidentsDashboard from './pages/IncidentsDashboard';
+import IncidentDetails from './pages/IncidentDetails'; // <-- NEW: Imported the Details page
 import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle } from 'lucide-react'; 
 
 // 1. Create a Layout Wrapper for authenticated pages with navigation tabs
@@ -43,11 +44,11 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                                 Reports
                             </Link>
                             
-                            {/* NEW INCIDENTS LINK ADDED HERE */}
+                            {/* INCIDENTS DASHBOARD LINK */}
                             <Link
                                 to="/incidents"
                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname === '/incidents'
+                                    location.pathname.startsWith('/incidents')
                                         ? 'bg-blue-50 text-blue-700'
                                         : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                                 }`}
@@ -160,13 +161,27 @@ export const App: React.FC = () => {
                     }
                 />
 
-                {/* NEW INCIDENTS ROUTE ADDED HERE */}
+                {/* INCIDENTS DASHBOARD ROUTE */}
                 <Route
                     path="/incidents"
                     element={
                         token ? (
                             <AdminLayout user={user} onLogout={handleLogout}>
                                 <IncidentsDashboard />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
+                {/* NEW: TICKET DETAILS ROUTE (ServiceNow Style) */}
+                <Route
+                    path="/incidents/:id"
+                    element={
+                        token ? (
+                            <AdminLayout user={user} onLogout={handleLogout}>
+                                <IncidentDetails user={user} />
                             </AdminLayout>
                         ) : (
                             <Navigate to="/login" replace />

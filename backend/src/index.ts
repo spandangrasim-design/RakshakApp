@@ -369,11 +369,12 @@ app.post('/api/v1/patrols/sync', async (c) => {
 });
 
 // ==========================================
-// SPRINT 5: REPORT INCIDENT ENDPOINT
+// SPRINT 5: TICKETING & INCIDENT COMMAND
 // ==========================================
+
+// 1. POST a New Incident (Created by Guard Mobile App)
 app.post('/api/v1/incidents', async (c) => {
   try {
-    // 1. Verify JWT Authentication
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return c.json({ success: false, message: 'Missing or invalid token' }, 401);
@@ -388,26 +389,21 @@ app.post('/api/v1/incidents', async (c) => {
     }
     const guard_id = payload.sub as string;
 
-    // 2. Parse payload
     const body = await c.req.json();
     const { client_incident_id, description, priority, photo_url, reported_at } = body;
 
-    // 3. Upload Photo to Cloudflare R2
+    // Upload Photo to Cloudflare R2
     let finalPhotoUrl = null;
     if (photo_url && photo_url.startsWith('data:image')) {
       const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      
       const fileName = `incidents/${client_incident_id}.jpg`;
-      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
       
-      // Using your actual R2 Dev Domain
+      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
       finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
     }
 
-    // 4. Idempotent Upsert into Supabase
     const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
-    
     const { data, error } = await supabase
       .from('incidents')
       .upsert({
@@ -416,25 +412,21 @@ app.post('/api/v1/incidents', async (c) => {
         description: description,
         priority: priority,
         photo_url: finalPhotoUrl,
-        status: 'OPEN', // Default for SLA monitoring
+        status: 'OPEN',
         reported_at: reported_at || new Date().toISOString()
       }, { onConflict: 'client_incident_id' }) 
       .select()
       .single();
 
-    if (error) {
-      return c.json({ success: false, message: 'Database error', error }, 500);
-    }
-
-    // 5. Return success to clear it from the mobile offline queue
+    if (error) return c.json({ success: false, message: 'Database error', error }, 500);
     return c.json({ success: true, incident: data }, 201);
 
   } catch (error) {
-    console.error("Incident API Error:", error);
     return c.json({ success: false, message: 'Internal Server Error' }, 500);
   }
 });
-// 1. GET all incidents for Web Dashboard
+
+// 2. GET all Incidents (Admin Web Dashboard Feed)
 app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -450,7 +442,72 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// 2. PATCH to resolve an incident
+// 3. GET single Incident + Threaded Updates (Zendesk-style view)
+app.get('/api/v1/incidents/:id', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    
+    const { data: incident, error: incidentError } = await supabase
+      .from('incidents')
+      .select('*')
+      .eq('client_incident_id', incidentId)
+      .single();
+      
+    if (incidentError) throw incidentError;
+
+    const { data: updates, error: updatesError } = await supabase
+      .from('incident_updates')
+      .select('*')
+      .eq('incident_id', incidentId)
+      .order('created_at', { ascending: true });
+
+    if (updatesError) throw updatesError;
+    return c.json({ success: true, incident, updates });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to fetch incident details' }, 500);
+  }
+});
+
+// 4. POST an Update/Comment to an Incident Thread (Web & App)
+app.post('/api/v1/incidents/:id/updates', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const body = await c.req.json();
+    const { sender_type, sender_name, message, photo_base64 } = body;
+    
+    let finalPhotoUrl = null;
+
+    if (photo_base64 && photo_base64.startsWith('data:image')) {
+      const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
+      const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+      const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
+      
+      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+      finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+    }
+
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { data, error } = await supabase
+      .from('incident_updates')
+      .insert([{
+        incident_id: incidentId,
+        sender_type,
+        sender_name,
+        message,
+        photo_url: finalPhotoUrl
+      }])
+      .select()
+      .single();
+      
+    if (error) throw error;
+    return c.json({ success: true, update: data });
+  } catch (error) {
+    return c.json({ success: false, message: 'Failed to post update' }, 500);
+  }
+});
+
+// 5. PATCH to Mark Incident as RESOLVED
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
@@ -469,26 +526,6 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
     return c.json({ success: false, message: 'Failed to resolve incident' }, 500);
   }
 });
-// 3. PATCH to update incident admin notes
-app.patch('/api/v1/incidents/:id/notes', async (c) => {
-  try {
-    const incidentId = c.req.param('id');
-    const { notes } = await c.req.json();
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
-    
-    const { data, error } = await supabase
-      .from('incidents')
-      .update({ admin_notes: notes })
-      .eq('client_incident_id', incidentId)
-      .select()
-      .single();
-      
-    if (error) throw error;
-    return c.json({ success: true, incident: data });
-  } catch (error) {
-    return c.json({ success: false, message: 'Failed to update notes' }, 500);
-  }
-});
 
 // ==========================================
 // ADMIN WEB DASHBOARD: API CONFIGURATIONS
@@ -497,7 +534,6 @@ app.patch('/api/v1/incidents/:id/notes', async (c) => {
 // 1. Fetch current API keys to display in the Web UI
 app.get('/api/v1/admin/configs', async (c) => {
   try {
-    // In production, add a JWT check here to ensure the user is an 'admin'
     const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
     const { data, error } = await supabase.from('admin_configurations').select('*');
     
@@ -512,8 +548,6 @@ app.get('/api/v1/admin/configs', async (c) => {
 app.post('/api/v1/admin/configs', async (c) => {
   try {
     const body = await c.req.json();
-    // Expects an array: [{ key_name: 'MANAGER_EMAIL', key_value: '...' }, ...]
-    
     const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
     const { data, error } = await supabase
       .from('admin_configurations')
@@ -525,12 +559,11 @@ app.post('/api/v1/admin/configs', async (c) => {
     return c.json({ success: false, message: 'Failed to save configs' }, 500);
   }
 });
+
 // --- HELPER: META WHATSAPP API ALERT ---
 async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   
-  // 1. Fetch WhatsApp configurations from Supabase
-  // (Assuming you add a MANAGER_PHONE to your admin_configurations table from the web UI)
   const { data: configs, error } = await supabase
     .from('admin_configurations')
     .select('key_name, key_value')
@@ -541,20 +574,16 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
     return false;
   }
 
-  const configMap = configs.reduce((acc, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
   const token = configMap['WHATSAPP_API_TOKEN'];
-  const phoneId = configMap['WHATSAPP_PHONE_ID']; // From Meta Developer Console
-  const managerPhone = configMap['MANAGER_PHONE']; // e.g., "1234567890"
+  const phoneId = configMap['WHATSAPP_PHONE_ID']; 
+  const managerPhone = configMap['MANAGER_PHONE']; 
 
   if (!token || !managerPhone || !phoneId) {
     console.error("WhatsApp API Token, Phone ID, or Manager Phone is not configured.");
     return false;
   }
 
-  // 2. Construct the WhatsApp Message Payload
-  // Note: For initiating conversations, Meta requires using pre-approved templates.
-  // For sandbox/testing, you can often use a standard text message if within the 24hr window, 
-  // but for production SLA alerts, you will map this to a WhatsApp Template message.
   const payload = {
     messaging_product: "whatsapp",
     to: managerPhone,
@@ -564,7 +593,6 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
     }
   };
 
-  // 3. Send via Meta Graph API
   try {
     const response = await fetch(`https://graph.facebook.com/v17.0/${phoneId}/messages`, {
       method: 'POST',
@@ -588,6 +616,7 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
     return false;
   }
 }
+
 // --- HELPER: GOOGLE GMAIL API ALERT ---
 async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
@@ -634,6 +663,7 @@ async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, prior
     return false;
   }
 }
+
 // --- EXPORT ---
 export default {
   fetch: async (request: Request, env: Bindings, ctx: ExecutionContext) => {
