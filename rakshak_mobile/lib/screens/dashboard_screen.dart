@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
+import 'qr_scanner_screen.dart'; // Added import for the scanner
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -178,7 +179,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   subtitle: 'QR verification',
                   color: const Color(0xFF2563EB),
                   onTap: () {
-                    // QR scanner routing will go here
+                    // Added navigation to QR Scanner
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+                    );
                   },
                 ),
                 _buildActionCard(
