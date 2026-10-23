@@ -6,7 +6,7 @@ import QRGenerator from './pages/QRGenerator';
 import AdminConfigsPage from './pages/AdminConfigsPage'; 
 import IncidentsDashboard from './pages/IncidentsDashboard';
 import IncidentDetails from './pages/IncidentDetails';
-import { GuardsView } from './pages/GuardsView'; // <-- NEW: Imported GuardsView
+import { GuardsView } from './components/GuardsView'; // <-- NEW: Imported GuardsView
 import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users } from 'lucide-react'; // <-- NEW: Added Users icon
 
 // 1. Create a Layout Wrapper for authenticated pages with navigation tabs
