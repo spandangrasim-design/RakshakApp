@@ -1,0 +1,64 @@
+name: Build Rakshak Android APK
+
+on:
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./rakshak_mobile
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Generate Android Native Folder
+        run: |
+          if [ ! -d "android" ]; then
+            echo "Generating Android scaffolding..."
+            flutter create . --platforms=android --org com.rakshak.patrol --project-name rakshak_mobile
+          fi
+
+      - name: Inject Android Permissions & MinSdkVersion
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          PERMISSIONS='    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+          
+          # Inject permissions after <manifest ...>
+          sed -i "/<manifest/a $PERMISSIONS" "$MANIFEST"
+
+          # Ensure minSdkVersion is at least 21
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
+          fi
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle.kts
+          fi
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Production Release APK
+        run: flutter build apk --release
+
+      - name: Upload Production APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakshak-patrol-release-apk
+          path: rakshak_mobile/build/app/outputs/flutter-apk/app-release.apk
