@@ -192,7 +192,7 @@ app.get('/api/v1/scans', async (c) => {
     const supabase = getSupabase(c.env);
 
     const { data, error } = await supabase
-      .from('patrol_scans')
+      .from('scans')
       .select('*')
       .eq('guard_id', guard_id)
       .order('scanned_at', { ascending: false })
