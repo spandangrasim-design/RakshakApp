@@ -51,7 +51,7 @@ class SyncService {
 
     try {
       final response = await http.post(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/patrols/sync'),
+        Uri.parse('${LockedCameraScreen.API_BASE_URL}/patrols/sync'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -93,7 +93,7 @@ class SyncService {
     for (var incident in incidents) {
       try {
         final response = await http.post(
-          Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/incidents'),
+          Uri.parse('${LockedCameraScreen.API_BASE_URL}/incidents'),
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',

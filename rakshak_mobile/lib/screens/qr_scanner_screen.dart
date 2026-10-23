@@ -9,9 +9,30 @@ class QrScannerScreen extends StatefulWidget {
   State<QrScannerScreen> createState() => _QrScannerScreenState();
 }
 
-class _QrScannerScreenState extends State<QrScannerScreen> {
-  final MobileScannerController _scannerController = MobileScannerController();
+class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingObserver {
+  late MobileScannerController _scannerController;
   bool _isProcessing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scannerController = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      facing: CameraFacing.back,
+      autoStart: true,
+    );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_scannerController.value.isInitialized) return;
+    if (state == AppLifecycleState.resumed) {
+      _scannerController.start();
+    } else if (state == AppLifecycleState.paused) {
+      _scannerController.stop();
+    }
+  }
 
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
@@ -22,7 +43,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       
       if (rawValue != null && rawValue.startsWith('rakshak://cp')) {
         setState(() => _isProcessing = true);
-        _scannerController.stop();
+        await _scannerController.stop();
 
         try {
           final uri = Uri.parse(rawValue);
@@ -32,7 +53,6 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           final signature = uri.queryParameters['s'];
 
           if (checkpointId != null && lat != null && lng != null && signature != null) {
-            // Wait for the Locked Camera to return the GPS verification result
             final result = await Navigator.push(
               context,
               MaterialPageRoute(
@@ -45,7 +65,6 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
               ),
             );
             
-            // Pass the Amber Flag result back to the Dashboard
             if (mounted) {
               Navigator.pop(context, result);
             }
@@ -56,7 +75,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
         }
         
         setState(() => _isProcessing = false);
-        _scannerController.start();
+        await _scannerController.start();
       }
     }
   }
@@ -76,6 +95,42 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           MobileScanner(
             controller: _scannerController,
             onDetect: _onDetect,
+            errorBuilder: (context, error) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.no_photography_outlined, color: Colors.amber, size: 54),
+                      const SizedBox(height: 12),
+                      Text(
+                        error.errorCode == MobileScannerErrorCode.permissionDenied
+                            ? 'Camera Permission Required'
+                            : 'Camera Error: ${error.errorCode.name}',
+                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        error.errorCode == MobileScannerErrorCode.permissionDenied
+                            ? 'Please allow Camera permission in your phone Settings > Apps > Rakshak Patrol.'
+                            : (error.errorDetails?.message ?? 'Unable to start camera preview.'),
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+                        icon: const Icon(Icons.refresh, color: Colors.white),
+                        label: const Text('Retry Camera', style: TextStyle(color: Colors.white)),
+                        onPressed: () => _scannerController.start(),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
           Container(
             width: 250,
@@ -104,6 +159,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scannerController.dispose();
     super.dispose();
   }
