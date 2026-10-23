@@ -31,6 +31,7 @@ dependencies:
   connectivity_plus: ^6.0.3
   uuid: ^4.3.3
   image_picker: ^1.0.4
+  system_clock: ^3.0.0 #access system clock 
 
 dev_dependencies:
   flutter_test:
