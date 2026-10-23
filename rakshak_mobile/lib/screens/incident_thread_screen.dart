@@ -25,7 +25,7 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
   List<dynamic> updates = [];
   bool isLoading = true;
   bool isPosting = false;
-  
+
   final TextEditingController _messageController = TextEditingController();
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
@@ -42,32 +42,37 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
       if (mounted) {
         setState(() {
           incident = data['incident'];
-          updates = data['updates'];
+          updates = data['updates'] ?? [];
           isLoading = false;
         });
       }
     } catch (e) {
+      debugPrint('Error loading incident thread: $e');
       if (mounted) setState(() => isLoading = false);
     }
   }
 
   Future<void> _pickImage() async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.camera, imageQuality: 70);
+    final XFile? image = await _picker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 60,
+      maxWidth: 1024,
+    );
     if (image != null) setState(() => _selectedImage = File(image.path));
   }
 
   Future<void> _sendUpdate() async {
     if (_messageController.text.trim().isEmpty && _selectedImage == null) return;
-    
+
     setState(() => isPosting = true);
-    
+
     String? base64Image;
     if (_selectedImage != null) {
       final bytes = await _selectedImage!.readAsBytes();
       base64Image = "data:image/jpeg;base64,${base64Encode(bytes)}";
     }
 
-    bool success = await IncidentService.postIncidentUpdate(
+    final success = await IncidentService.postIncidentUpdate(
       incidentId: widget.incidentId,
       token: widget.token,
       guardName: widget.guardName,
@@ -78,41 +83,141 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
     if (success) {
       _messageController.clear();
       setState(() => _selectedImage = null);
-      await _loadThread(); 
+      await _loadThread();
     }
     setState(() => isPosting = false);
   }
 
+  void _showEnlargedPhoto(String url) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            InteractiveViewer(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => Container(
+                    padding: const EdgeInsets.all(24),
+                    color: Colors.white,
+                    child: const Text("Unable to load full-size photo proof."),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 30),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNetworkImage(String? photoUrl) {
+    if (photoUrl == null || photoUrl.isEmpty || !photoUrl.startsWith('http')) {
+      return const SizedBox.shrink();
+    }
+
+    return GestureDetector(
+      onTap: () => _showEnlargedPhoto(photoUrl),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 8.0),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.network(
+            photoUrl,
+            height: 160,
+            width: double.infinity,
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, progress) {
+              if (progress == null) return child;
+              return Container(
+                height: 160,
+                color: Colors.grey.shade100,
+                child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              );
+            },
+            errorBuilder: (context, error, stackTrace) {
+              return Container(
+                height: 80,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.broken_image_outlined, color: Colors.grey.shade400),
+                    const SizedBox(width: 8),
+                    Text(
+                      "Photo evidence unavailable",
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (isLoading) return Scaffold(body: Center(child: CircularProgressIndicator()));
-    if (incident == null) return Scaffold(body: Center(child: Text("Incident not found")));
+    if (isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (incident == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Incident Details")),
+        body: const Center(child: Text("Incident record not found.")),
+      );
+    }
 
-    bool isResolved = incident!['status'] == 'RESOLVED';
+    final isResolved = (incident!['status'] ?? '').toString().toUpperCase() == 'RESOLVED';
 
     return Scaffold(
-      appBar: AppBar(title: Text(incident!['title'] ?? 'Incident Thread'), backgroundColor: Colors.blue.shade900),
+      backgroundColor: const Color(0xFFF1F5F9),
+      appBar: AppBar(
+        title: Text(
+          incident!['title'] ?? 'Incident Thread',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: const Color(0xFF1E3A8A),
+        foregroundColor: Colors.white,
+      ),
       body: Column(
         children: [
           Expanded(
             child: ListView(
-              padding: EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
               children: [
                 _buildChatBubble(
-                  sender: "Original Report",
-                  message: incident!['description'],
+                  sender: "Initial Report",
+                  message: incident!['description'] ?? '',
                   photoUrl: incident!['photo_url'],
                   isMe: true,
-                  timestamp: incident!['reported_at'],
+                  timestamp: incident!['reported_at'] ?? '',
                 ),
                 ...updates.map((update) {
-                  bool isGuard = update['sender_type'] == 'GUARD';
+                  final isGuard = update['sender_type'] == 'GUARD';
                   return _buildChatBubble(
                     sender: "${update['sender_name']} (${update['sender_type']})",
-                    message: update['message'],
+                    message: update['message'] ?? '',
                     photoUrl: update['photo_url'],
                     isMe: isGuard,
-                    timestamp: update['created_at'],
+                    timestamp: update['created_at'] ?? '',
                   );
                 }),
               ],
@@ -121,34 +226,71 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
           if (!isResolved) _buildInputArea(),
           if (isResolved)
             Container(
-              padding: EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
               color: Colors.green.shade50,
               width: double.infinity,
-              child: Text("This ticket has been marked as RESOLVED by an Admin.", textAlign: TextAlign.center, style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold)),
-            )
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.check_circle, color: Colors.green.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    "This ticket has been marked as RESOLVED by an Admin.",
+                    style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildChatBubble({required String sender, required String message, String? photoUrl, required bool isMe, required String timestamp}) {
+  Widget _buildChatBubble({
+    required String sender,
+    required String message,
+    String? photoUrl,
+    required bool isMe,
+    required String timestamp,
+  }) {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: EdgeInsets.only(bottom: 16, left: isMe ? 40 : 0, right: isMe ? 0 : 40),
-        padding: EdgeInsets.all(12),
-        decoration: BoxDecoration(color: isMe ? Colors.blue.shade100 : Colors.grey.shade200, borderRadius: BorderRadius.circular(12)),
+        margin: EdgeInsets.only(bottom: 14, left: isMe ? 48 : 0, right: isMe ? 0 : 48),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: isMe ? const Color(0xFFDBEAFE) : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isMe ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0),
+          ),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(sender, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
-            SizedBox(height: 4),
-            Text(message, style: TextStyle(fontSize: 15)),
-            if (photoUrl != null && photoUrl.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(photoUrl, height: 150, width: double.infinity, fit: BoxFit.cover)),
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.between,
+              children: [
+                Text(
+                  sender,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: isMe ? const Color(0xFF1E40AF) : Colors.grey.shade700,
+                  ),
+                ),
+                Text(
+                  timestamp.length >= 16 ? timestamp.substring(11, 16) : '',
+                  style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              message,
+              style: const TextStyle(fontSize: 14, color: Color(0xFF0F172A)),
+            ),
+            _buildNetworkImage(photoUrl),
           ],
         ),
       ),
@@ -157,8 +299,11 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
 
   Widget _buildInputArea() {
     return Container(
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, -2))]),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Colors.grey.shade200)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -166,26 +311,61 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
             Stack(
               children: [
                 Container(
-                  margin: EdgeInsets.only(bottom: 8), height: 80, width: 80,
-                  decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), image: DecorationImage(image: FileImage(_selectedImage!), fit: BoxFit.cover)),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  height: 80,
+                  width: 80,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    image: DecorationImage(image: FileImage(_selectedImage!), fit: BoxFit.cover),
+                  ),
                 ),
-                Positioned(right: -10, top: -10, child: IconButton(icon: Icon(Icons.cancel, color: Colors.red), onPressed: () => setState(() => _selectedImage = null)))
+                Positioned(
+                  right: -8,
+                  top: -8,
+                  child: IconButton(
+                    icon: const Icon(Icons.cancel, color: Colors.red),
+                    onPressed: () => setState(() => _selectedImage = null),
+                  ),
+                )
               ],
             ),
           Row(
             children: [
-              IconButton(icon: Icon(Icons.camera_alt, color: Colors.blue.shade900), onPressed: _pickImage),
+              IconButton(
+                icon: const Icon(Icons.camera_alt, color: Color(0xFF1E3A8A)),
+                onPressed: _pickImage,
+              ),
               Expanded(
                 child: TextField(
                   controller: _messageController,
-                  decoration: InputDecoration(hintText: "Add an update or comment...", border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none), filled: true, fillColor: Colors.grey.shade100, contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10)),
+                  decoration: InputDecoration(
+                    hintText: "Add comment or update...",
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFFF1F5F9),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  ),
                   maxLines: null,
                 ),
               ),
-              SizedBox(width: 8),
+              const SizedBox(width: 8),
               isPosting
-                  ? CircularProgressIndicator()
-                  : CircleAvatar(backgroundColor: Colors.blue.shade900, child: IconButton(icon: Icon(Icons.send, color: Colors.white, size: 18), onPressed: _sendUpdate)),
+                  ? const SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : CircleAvatar(
+                      backgroundColor: const Color(0xFF1E3A8A),
+                      radius: 20,
+                      child: IconButton(
+                        icon: const Icon(Icons.send, color: Colors.white, size: 18),
+                        onPressed: _sendUpdate,
+                      ),
+                    ),
             ],
           ),
         ],

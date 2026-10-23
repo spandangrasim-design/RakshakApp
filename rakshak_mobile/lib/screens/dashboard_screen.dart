@@ -11,6 +11,7 @@ import '../services/sync_service.dart';
 import 'login_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'incident_report_screen.dart';
+import 'incident_list_screen.dart';
 import 'patrol_route_screen.dart';
 import 'activity_log_screen.dart';
 import '../widgets/offline_banner.dart';
@@ -128,8 +129,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     } else {
-      // Keep the previous behaviour (state is saved on the device) but tell
-      // the guard the TRUE reason instead of a generic "offline" message.
       messenger.showSnackBar(
         SnackBar(
           content: Text(
@@ -143,6 +142,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     }
+  }
+
+  void _navigateToIncidentList() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => IncidentListScreen(
+          guardId: _guardId,
+          token: _token,
+          guardName: _guardName,
+        ),
+      ),
+    );
   }
 
   Future<void> _handleLogout() async {
@@ -166,6 +178,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.assignment_outlined),
+            tooltip: 'My Incidents',
+            onPressed: _navigateToIncidentList,
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
@@ -297,7 +314,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   const SizedBox(height: 20),
 
-                  // Active Incidents Preview
+                  // Active Incidents Preview Widget
                   if (!_isLoadingPrefs &&
                       _guardId.isNotEmpty &&
                       _token.isNotEmpty) ...[
@@ -355,7 +372,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 Text(
                                   _lastScanVerified!
                                       ? 'Location perfectly matched checkpoint coordinates.'
-                                      : 'Your scan location was > 50 meters from the checkpoint. This has been flagged for admin review.',
+                                      : 'Your scan location was > 50 meters from the checkpoint. Flagged for admin audit.',
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: _lastScanVerified!
@@ -421,9 +438,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         },
                       ),
                       _buildActionCard(
+                        icon: Icons.assignment_outlined,
+                        title: 'Incident Tickets',
+                        subtitle: 'Active & resolved',
+                        color: const Color(0xFFE11D48),
+                        onTap: _navigateToIncidentList,
+                      ),
+                      _buildActionCard(
                         icon: Icons.map_outlined,
                         title: 'Patrol Route',
-                        subtitle: 'Check assigned checkpoints',
+                        subtitle: 'Assigned stops',
                         color: const Color(0xFF0D9488),
                         onTap: () {
                           Navigator.push(
@@ -445,6 +469,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             MaterialPageRoute(
                                 builder: (context) =>
                                     const ActivityLogScreen()),
+                          );
+                        },
+                      ),
+                      _buildActionCard(
+                        icon: Icons.sync,
+                        title: 'Sync Queue',
+                        subtitle: 'Force upload',
+                        color: const Color(0xFF7C3AED),
+                        onTap: () async {
+                          SyncService().initialize();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Checking and uploading offline queue...'),
+                              duration: Duration(seconds: 2),
+                            ),
                           );
                         },
                       ),

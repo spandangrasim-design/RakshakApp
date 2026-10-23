@@ -1,17 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   FileSpreadsheet, 
   MapPin, 
   ChevronRight, 
   ChevronLeft, 
-  Eye, 
-  Calendar, 
+  ChevronDown,
   CheckCircle2, 
-  AlertTriangle 
+  AlertTriangle,
+  RefreshCw,
+  X,
+  Maximize2,
+  Download
 } from 'lucide-react';
 import { PatrolRound, CheckpointScanDetail } from '../types/patrol';
 import { PatrolMapModal } from '../components/reports/PatrolMapModal';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
 export const ReportsPage: React.FC = () => {
   const [rounds, setRounds] = useState<PatrolRound[]>([]);
@@ -26,15 +31,38 @@ export const ReportsPage: React.FC = () => {
   const [scansLoading, setScansLoading] = useState<boolean>(false);
   const [mapOpen, setMapOpen] = useState<boolean>(false);
 
+  // Enlarged Photo Lightbox State
+  const [enlargedPhotos, setEnlargedPhotos] = useState<{
+    checkpointName: string;
+    selfieUrl?: string | null;
+    locationPhotoUrl?: string | null;
+  } | null>(null);
+
+  // Export Menu State
+  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close export dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Fetch Patrol Rounds (Paginated)
   const fetchRounds = async (targetPage: number) => {
     try {
       setLoading(true);
-      // In production, target your Cloudflare Worker: https://api.yourdomain.com/admin/reports/rounds
-      const res = await fetch(`/api/admin/reports/rounds?page=${targetPage}&pageSize=${pageSize}`);
+      const res = await fetch(`${API_BASE}/rounds?page=${targetPage}&pageSize=${pageSize}`);
       const data = await res.json();
-      setRounds(data.items || []);
-      setTotalCount(data.total || 0);
+      
+      const items = data.rounds || data.items || [];
+      setRounds(items);
+      setTotalCount(data.total || items.length);
     } catch (err) {
       console.error('Failed to fetch rounds', err);
     } finally {
@@ -50,8 +78,9 @@ export const ReportsPage: React.FC = () => {
   const handleSelectRound = async (round: PatrolRound) => {
     setSelectedRound(round);
     setScansLoading(true);
+    const roundId = (round as any).round_id || (round as any).id;
     try {
-      const res = await fetch(`/api/admin/reports/rounds/${round.round_id}/scans`);
+      const res = await fetch(`${API_BASE}/rounds/${roundId}/scans`);
       const data = await res.json();
       setRoundScans(data.scans || []);
     } catch (err) {
@@ -61,32 +90,80 @@ export const ReportsPage: React.FC = () => {
     }
   };
 
-  // Export Filtered Rounds & Scans to Excel (.xlsx)
-  const exportToExcel = () => {
-    if (!roundScans.length || !selectedRound) return;
+  // Generic Download Engine for Excel and CSV
+  const triggerDownload = (dataRows: any[], fileNamePrefix: string, sheetName: string, format: 'xlsx' | 'csv') => {
+    if (!dataRows || dataRows.length === 0) return;
 
-    const exportRows = roundScans.map((s) => ({
-      'Patrol Round ID': selectedRound.round_id,
-      'Site': selectedRound.sites?.site_name ?? 'N/A',
-      'Guard Name': selectedRound.guards?.full_name ?? 'N/A',
-      'Employee Code': selectedRound.guards?.employee_code ?? 'N/A',
-      'Checkpoint': s.checkpoint_name,
-      'Scanned At': new Date(s.scanned_at).toLocaleString(),
-      'Status': s.status,
-      'Distance Drift (m)': s.calculated_distance_m ?? 'N/A',
-      'GPS Verified': s.is_gps_verified ? 'YES' : 'NO',
-      'Remarks': s.remarks || '',
-      'Selfie URL': s.selfie_url || '',
-      'Location Photo URL': s.location_photo_url || ''
+    const worksheet = XLSX.utils.json_to_sheet(dataRows);
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const fileName = `${fileNamePrefix}_${dateStamp}.${format}`;
+
+    if (format === 'csv') {
+      const csv = XLSX.utils.sheet_to_csv(worksheet);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', fileName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } else {
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      XLSX.writeFile(workbook, fileName);
+    }
+    setExportMenuOpen(false);
+  };
+
+  // Export Master Rounds Summary (All visible rounds)
+  const exportMasterRoundsSummary = (format: 'xlsx' | 'csv') => {
+    if (!rounds.length) return;
+
+    const rows = rounds.map((r: any) => ({
+      'Round ID': r.round_id || r.id || 'N/A',
+      'Site': r.sites?.site_name || 'Main Campus',
+      'Guard Name': r.guards?.full_name || r.guard_name || 'Assigned Guard',
+      'Employee Code': r.guards?.employee_code || r.guard_id || 'N/A',
+      'Start Time': r.started_at || r.start_time ? new Date(r.started_at || r.start_time).toLocaleString() : 'N/A',
+      'End Time': r.ended_at || r.end_time ? new Date(r.ended_at || r.end_time).toLocaleString() : 'In Progress',
+      'Status': r.status || 'IN_PROGRESS'
     }));
 
-    const worksheet = XLSX.utils.json_to_sheet(exportRows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Patrol Audit');
-    XLSX.writeFile(
-      workbook, 
-      `Patrol_Audit_${selectedRound.round_id.substring(0, 8)}_${new Date().toISOString().slice(0, 10)}.xlsx`
-    );
+    triggerDownload(rows, 'Rakshak_Patrol_Summary', 'Rounds Summary', format);
+  };
+
+  // Export Stop-by-Stop Checkpoint Audits for Currently Selected Round
+  const exportInspectedRoundAudit = (format: 'xlsx' | 'csv') => {
+    if (!roundScans.length || !selectedRound) return;
+
+    const roundId = (selectedRound as any).round_id || (selectedRound as any).id || 'Round';
+    const guardName = (selectedRound as any).guards?.full_name || (selectedRound as any).guard_name || 'N/A';
+    const siteName = (selectedRound as any).sites?.site_name || 'Main Campus';
+
+    const rows = roundScans.map((s: any, idx: number) => ({
+      'Stop #': idx + 1,
+      'Patrol Round ID': roundId,
+      'Site': siteName,
+      'Guard Name': guardName,
+      'Employee Code': (selectedRound as any).guards?.employee_code || 'N/A',
+      'Checkpoint': s.checkpoint_name || s.checkpoint_id || 'N/A',
+      'Checkpoint ID': s.checkpoint_id || 'N/A',
+      'Scanned At': s.scanned_at || s.scan_time ? new Date(s.scanned_at || s.scan_time).toLocaleString() : 'N/A',
+      'Verification Status': s.is_gps_verified ? 'VERIFIED' : 'DRIFT_FLAGGED',
+      'Distance Drift (m)': s.calculated_distance_m ?? s.distance_meters ?? 'N/A',
+      'Guard Lat': s.guard_lat ?? 'N/A',
+      'Guard Lng': s.guard_lng ?? 'N/A',
+      'Expected Lat': s.expected_lat ?? 'N/A',
+      'Expected Lng': s.expected_lng ?? 'N/A',
+      'Selfie URL': s.selfie_url || s.photo_url || '',
+      'Location Photo URL': s.location_photo_url || s.photo_url || '',
+      'Remarks': s.remarks || ''
+    }));
+
+    const shortId = String(roundId).substring(0, 8);
+    triggerDownload(rows, `Rakshak_Round_Audit_${shortId}`, 'Checkpoint Audits', format);
   };
 
   const totalPages = Math.ceil(totalCount / pageSize) || 1;
@@ -100,22 +177,88 @@ export const ReportsPage: React.FC = () => {
             <h1 className="text-2xl font-bold text-gray-900">Patrol Reports & Compliance</h1>
             <p className="text-sm text-gray-500">Audit guard presence, GPS drift, and multi-factor photo proofs.</p>
           </div>
-          {selectedRound && (
-            <div className="flex gap-3">
+          
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => fetchRounds(page)}
+              className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition"
+            >
+              <RefreshCw className="h-4 w-4" /> Refresh
+            </button>
+
+            {selectedRound && (
               <button
+                type="button"
                 onClick={() => setMapOpen(true)}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition"
               >
                 <MapPin className="h-4 w-4" /> View Map Audit
               </button>
+            )}
+
+            {/* Multi-Format Export Dropdown */}
+            <div className="relative" ref={exportMenuRef}>
               <button
-                onClick={exportToExcel}
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700"
+                type="button"
+                onClick={() => setExportMenuOpen((prev) => !prev)}
+                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 transition"
               >
-                <FileSpreadsheet className="h-4 w-4" /> Export Excel
+                <FileSpreadsheet className="h-4 w-4" /> 
+                <span>Export</span>
+                <ChevronDown className="h-3.5 w-3.5" />
               </button>
+
+              {exportMenuOpen && (
+                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-gray-200 bg-white py-2 shadow-xl z-50 text-xs">
+                  <div className="px-3 py-1 font-bold uppercase tracking-wider text-gray-400 text-[10px]">
+                    Master Rounds History
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => exportMasterRoundsSummary('xlsx')}
+                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                  >
+                    <span>All Rounds Summary</span>
+                    <span className="font-semibold text-emerald-700">.XLSX</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => exportMasterRoundsSummary('csv')}
+                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                  >
+                    <span>All Rounds Summary</span>
+                    <span className="font-semibold text-emerald-700">.CSV</span>
+                  </button>
+
+                  {selectedRound && (
+                    <>
+                      <div className="border-t my-1 border-gray-100" />
+                      <div className="px-3 py-1 font-bold uppercase tracking-wider text-gray-400 text-[10px]">
+                        Inspected Round Audits
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => exportInspectedRoundAudit('xlsx')}
+                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                      >
+                        <span>Checkpoint Proofs</span>
+                        <span className="font-semibold text-emerald-700">.XLSX</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => exportInspectedRoundAudit('csv')}
+                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                      >
+                        <span>Checkpoint Proofs</span>
+                        <span className="font-semibold text-emerald-700">.CSV</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
 
         {/* Master Patrol Rounds Table */}
@@ -146,31 +289,36 @@ export const ReportsPage: React.FC = () => {
                     <td colSpan={6} className="py-8 text-center text-gray-400">No patrol rounds logged for this period.</td>
                   </tr>
                 ) : (
-                  rounds.map((round) => {
-                    const isSelected = selectedRound?.round_id === round.round_id;
+                  rounds.map((round: any) => {
+                    const roundId = round.round_id || round.id;
+                    const isSelected = selectedRound && ((selectedRound as any).round_id === roundId || (selectedRound as any).id === roundId);
+                    const startTime = round.started_at || round.start_time;
+                    const endTime = round.ended_at || round.end_time;
+
                     return (
                       <tr 
-                        key={round.round_id} 
+                        key={roundId} 
                         className={`transition hover:bg-gray-50 ${isSelected ? 'bg-blue-50/60' : ''}`}
                       >
                         <td className="px-6 py-4 font-medium text-gray-900">{round.sites?.site_name ?? 'Main Campus'}</td>
                         <td className="px-6 py-4">
-                          {round.guards?.full_name} 
-                          <span className="block text-xs text-gray-400">ID: {round.guards?.employee_code}</span>
+                          {round.guards?.full_name || round.guard_name || 'Assigned Guard'} 
+                          <span className="block text-xs text-gray-400">ID: {round.guards?.employee_code || round.guard_id || 'N/A'}</span>
                         </td>
-                        <td className="px-6 py-4">{new Date(round.started_at).toLocaleString()}</td>
-                        <td className="px-6 py-4">{round.ended_at ? new Date(round.ended_at).toLocaleString() : 'In Progress'}</td>
+                        <td className="px-6 py-4">{startTime ? new Date(startTime).toLocaleString() : '—'}</td>
+                        <td className="px-6 py-4">{endTime ? new Date(endTime).toLocaleString() : 'In Progress'}</td>
                         <td className="px-6 py-4">
                           <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
                             round.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
                           }`}>
-                            {round.status}
+                            {round.status || 'IN_PROGRESS'}
                           </span>
                         </td>
                         <td className="px-6 py-4 text-right">
                           <button
+                            type="button"
                             onClick={() => handleSelectRound(round)}
-                            className="inline-flex items-center gap-1 rounded bg-white px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 hover:bg-blue-50"
+                            className="inline-flex items-center gap-1 rounded bg-white px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 hover:bg-blue-50 transition"
                           >
                             Inspect <ChevronRight className="h-3 w-3" />
                           </button>
@@ -190,16 +338,18 @@ export const ReportsPage: React.FC = () => {
             </span>
             <div className="flex gap-2">
               <button
+                type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => p - 1)}
-                className="rounded border p-1 text-gray-600 disabled:opacity-40"
+                className="rounded border p-1 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <button
+                type="button"
                 disabled={page >= totalPages}
                 onClick={() => setPage((p) => p + 1)}
-                className="rounded border p-1 text-gray-600 disabled:opacity-40"
+                className="rounded border p-1 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
@@ -215,7 +365,7 @@ export const ReportsPage: React.FC = () => {
                 Checkpoints Scanned ({roundScans.length})
               </h2>
               <span className="text-xs text-gray-500">
-                Round ID: {selectedRound.round_id}
+                Round ID: {(selectedRound as any).round_id || (selectedRound as any).id}
               </span>
             </div>
 
@@ -225,70 +375,160 @@ export const ReportsPage: React.FC = () => {
               <p className="py-8 text-center text-sm text-gray-400">No checkpoints recorded for this round.</p>
             ) : (
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                {roundScans.map((scan, idx) => (
-                  <div key={scan.scan_id} className="rounded-lg border border-gray-200 p-4">
-                    <div className="mb-3 flex items-start justify-between">
-                      <div>
-                        <span className="text-xs font-semibold text-blue-600">Stop #{idx + 1}</span>
-                        <h3 className="font-medium text-gray-900">{scan.checkpoint_name}</h3>
-                        <p className="text-xs text-gray-400">{new Date(scan.scanned_at).toLocaleTimeString()}</p>
+                {roundScans.map((scan: any, idx: number) => {
+                  const scanTime = scan.scanned_at || scan.scan_time;
+                  const distanceMeters = scan.calculated_distance_m ?? scan.distance_meters;
+                  const selfie = scan.selfie_url || scan.photo_url;
+                  const locationPhoto = scan.location_photo_url || scan.photo_url;
+                  const checkpointName = scan.checkpoint_name || scan.checkpoint_id;
+
+                  return (
+                    <div key={scan.scan_id || scan.id || idx} className="rounded-lg border border-gray-200 p-4 bg-white">
+                      <div className="mb-3 flex items-start justify-between">
+                        <div>
+                          <span className="text-xs font-semibold text-blue-600">Stop #{idx + 1}</span>
+                          <h3 className="font-medium text-gray-900">{checkpointName}</h3>
+                          <p className="text-xs text-gray-400">{scanTime ? new Date(scanTime).toLocaleTimeString() : '—'}</p>
+                        </div>
+                        <div>
+                          {scan.is_gps_verified ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs text-green-700">
+                              <CheckCircle2 className="h-3 w-3" /> Verified (≤50m)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+                              <AlertTriangle className="h-3 w-3" /> Drift Flagged ({distanceMeters ? Number(distanceMeters).toFixed(0) : '—'}m)
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div>
-                        {scan.is_gps_verified ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs text-green-700">
-                            <CheckCircle2 className="h-3 w-3" /> Verified (≤50m)
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
-                            <AlertTriangle className="h-3 w-3" /> Drift Flagged ({scan.calculated_distance_m?.toFixed(0)}m)
-                          </span>
+
+                      {/* Clickable Side-by-Side Photos */}
+                      <div 
+                        onClick={() => {
+                          if (selfie || locationPhoto) {
+                            setEnlargedPhotos({
+                              checkpointName,
+                              selfieUrl: selfie,
+                              locationPhotoUrl: locationPhoto,
+                            });
+                          }
+                        }}
+                        className="group relative grid grid-cols-2 gap-3 cursor-pointer rounded-lg p-1 transition hover:bg-slate-50"
+                        title="Click to view full comparison"
+                      >
+                        <div>
+                          <span className="mb-1 block text-xs font-medium text-gray-500">Guard Selfie</span>
+                          <div className="aspect-square overflow-hidden rounded-md bg-gray-100 border border-gray-200">
+                            {selfie ? (
+                              <img 
+                                src={selfie} 
+                                alt="Guard Selfie" 
+                                className="h-full w-full object-cover transition group-hover:scale-105" 
+                                loading="lazy" 
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-xs text-gray-400">No Selfie</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <span className="mb-1 block text-xs font-medium text-gray-500">Location Photo</span>
+                          <div className="aspect-square overflow-hidden rounded-md bg-gray-100 border border-gray-200">
+                            {locationPhoto ? (
+                              <img 
+                                src={locationPhoto} 
+                                alt="Location Proof" 
+                                className="h-full w-full object-cover transition group-hover:scale-105" 
+                                loading="lazy" 
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-xs text-gray-400">No Location Photo</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {(selfie || locationPhoto) && (
+                          <div className="absolute right-2 top-2 rounded bg-black/60 p-1 text-white opacity-0 transition group-hover:opacity-100">
+                            <Maximize2 className="h-3.5 w-3.5" />
+                          </div>
                         )}
                       </div>
-                    </div>
 
-                    {/* Side-by-Side Verification Photos */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <span className="mb-1 block text-xs font-medium text-gray-500">Guard Selfie</span>
-                        <div className="aspect-square overflow-hidden rounded-md bg-gray-100">
-                          {scan.selfie_url ? (
-                            <img 
-                              src={scan.selfie_url} 
-                              alt="Guard Selfie" 
-                              className="h-full w-full object-cover" 
-                              loading="lazy" 
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center text-xs text-gray-400">No Selfie</div>
-                          )}
+                      {scan.remarks && (
+                        <div className="mt-3 rounded bg-gray-50 p-2 text-xs text-gray-600">
+                          <strong>Remarks:</strong> {scan.remarks}
                         </div>
-                      </div>
-                      <div>
-                        <span className="mb-1 block text-xs font-medium text-gray-500">Location Photo</span>
-                        <div className="aspect-square overflow-hidden rounded-md bg-gray-100">
-                          {scan.location_photo_url ? (
-                            <img 
-                              src={scan.location_photo_url} 
-                              alt="Location Proof" 
-                              className="h-full w-full object-cover" 
-                              loading="lazy" 
-                            />
-                          ) : (
-                            <div className="flex h-full items-center justify-center text-xs text-gray-400">No Location Photo</div>
-                          )}
-                        </div>
-                      </div>
+                      )}
                     </div>
-
-                    {scan.remarks && (
-                      <div className="mt-3 rounded bg-gray-50 p-2 text-xs text-gray-600">
-                        <strong>Remarks:</strong> {scan.remarks}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Enlarged Photo Lightbox Modal */}
+        {enlargedPhotos && (
+          <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+            onClick={() => setEnlargedPhotos(null)}
+          >
+            <div 
+              className="relative w-full max-w-4xl rounded-2xl bg-white p-6 shadow-2xl transition"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-4 flex items-center justify-between border-b pb-3">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    Photo Verification
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Checkpoint: <span className="font-semibold text-gray-700">{enlargedPhotos.checkpointName}</span>
+                  </p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setEnlargedPhotos(null)} 
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <span className="mb-2 block text-sm font-semibold text-gray-700">Guard Selfie</span>
+                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-gray-200 bg-slate-50">
+                    {enlargedPhotos.selfieUrl ? (
+                      <img 
+                        src={enlargedPhotos.selfieUrl} 
+                        alt="Guard Selfie" 
+                        className="h-full w-full object-contain" 
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-400">No selfie recorded</span>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="mb-2 block text-sm font-semibold text-gray-700">Location Proof Photo</span>
+                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-gray-200 bg-slate-50">
+                    {enlargedPhotos.locationPhotoUrl ? (
+                      <img 
+                        src={enlargedPhotos.locationPhotoUrl} 
+                        alt="Location Proof" 
+                        className="h-full w-full object-contain" 
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-400">No location photo recorded</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -297,9 +537,11 @@ export const ReportsPage: React.FC = () => {
           isOpen={mapOpen}
           onClose={() => setMapOpen(false)}
           scans={roundScans}
-          roundTitle={`Round #${selectedRound?.round_id.substring(0, 8)} - ${selectedRound?.guards?.full_name}`}
+          roundTitle={`Round #${String((selectedRound as any)?.round_id || (selectedRound as any)?.id || '').substring(0, 8)} - ${(selectedRound as any)?.guards?.full_name || (selectedRound as any)?.guard_name || 'Guard'}`}
         />
       </div>
     </div>
   );
 };
+
+export default ReportsPage;
