@@ -25,20 +25,24 @@ export const ReportsPage: React.FC = () => {
   const [pageSize] = useState<number>(10);
   const [totalCount, setTotalCount] = useState<number>(0);
   
+  // Selected Round Drill-Down State
   const [selectedRound, setSelectedRound] = useState<PatrolRound | null>(null);
   const [roundScans, setRoundScans] = useState<CheckpointScanDetail[]>([]);
   const [scansLoading, setScansLoading] = useState<boolean>(false);
   const [mapOpen, setMapOpen] = useState<boolean>(false);
 
+  // Enlarged Photo Lightbox State
   const [enlargedPhotos, setEnlargedPhotos] = useState<{
     checkpointName: string;
     selfieUrl?: string | null;
     locationPhotoUrl?: string | null;
   } | null>(null);
 
+  // Export Menu State
   const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
+  // Close export dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
@@ -49,6 +53,7 @@ export const ReportsPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Fetch Patrol Rounds (Paginated)
   const fetchRounds = async (targetPage: number) => {
     try {
       setLoading(true);
@@ -69,21 +74,62 @@ export const ReportsPage: React.FC = () => {
     fetchRounds(page);
   }, [page]);
 
+  // Fetch Scans for Selected Round with dual-endpoint fallback
   const handleSelectRound = async (round: PatrolRound) => {
     setSelectedRound(round);
     setScansLoading(true);
-    const roundId = (round as any).round_id || (round as any).id;
+    const roundId = (round as any).id || (round as any).round_id;
+
     try {
+      // 1. Try fetching directly from the round's dedicated scans endpoint
       const res = await fetch(`${API_BASE}/rounds/${roundId}/scans`);
       const data = await res.json();
-      setRoundScans(data.scans || []);
+      
+      if (data.success && Array.isArray(data.scans) && data.scans.length > 0) {
+        setRoundScans(data.scans);
+      } else {
+        // 2. Fallback: Query live scans and match against this route's checkpoints
+        const allScansRes = await fetch(`${API_BASE}/scans`);
+        const allScansData = await allScansRes.json();
+        const allScans = allScansData.scans || [];
+
+        const roundCheckpoints = (round as any).checkpoints || [];
+        const checkpointIds = new Set(roundCheckpoints.map((cp: any) => cp.id || cp.checkpoint_id));
+
+        const matchedScans = allScans
+          .filter((s: any) => s.round_id === roundId || checkpointIds.has(s.checkpoint_id))
+          .map((s: any) => {
+            const matchedCp = roundCheckpoints.find(
+              (cp: any) => (cp.id || cp.checkpoint_id) === s.checkpoint_id
+            );
+            return {
+              ...s,
+              checkpoint_name: matchedCp?.name || s.checkpoint_name || s.checkpoint_id,
+              master_lat: matchedCp?.lat ? parseFloat(matchedCp.lat) : (s.expected_lat ?? s.master_lat),
+              master_lng: matchedCp?.lng ? parseFloat(matchedCp.lng) : (s.expected_lng ?? s.master_lng),
+              scan_lat: s.guard_lat ?? s.scan_lat,
+              scan_lng: s.guard_lng ?? s.scan_lng,
+              is_gps_verified: s.is_gps_verified ?? (s.status === 'VERIFIED'),
+              calculated_distance_m: s.calculated_distance_m ?? s.distance_meters ?? 0
+            };
+          });
+
+        setRoundScans(matchedScans);
+      }
     } catch (err) {
-      console.error('Failed to fetch scans', err);
+      console.error('Failed to fetch scans for round:', err);
+      setRoundScans([]);
     } finally {
       setScansLoading(false);
     }
   };
 
+  // Helper to resolve display name for patrol routes
+  const getRouteDisplayName = (round: any) => {
+    return round.name || round.round_name || round.title || round.sites?.site_name || 'Patrol Route';
+  };
+
+  // Generic Download Engine for Excel and CSV
   const triggerDownload = (dataRows: any[], fileNamePrefix: string, sheetName: string, format: 'xlsx' | 'csv') => {
     if (!dataRows || dataRows.length === 0) return;
 
@@ -110,12 +156,13 @@ export const ReportsPage: React.FC = () => {
     setExportMenuOpen(false);
   };
 
+  // Export Master Rounds Summary (All visible rounds)
   const exportMasterRoundsSummary = (format: 'xlsx' | 'csv') => {
     if (!rounds.length) return;
 
     const rows = rounds.map((r: any) => ({
       'Round ID': r.round_id || r.id || 'N/A',
-      'Site': r.sites?.site_name || 'Main Campus',
+      'Route / Site': getRouteDisplayName(r),
       'Guard Name': r.guards?.full_name || r.guard_name || 'Assigned Guard',
       'Employee Code': r.guards?.employee_code || r.guard_id || 'N/A',
       'Start Time': r.started_at || r.start_time ? new Date(r.started_at || r.start_time).toLocaleString() : 'N/A',
@@ -126,17 +173,18 @@ export const ReportsPage: React.FC = () => {
     triggerDownload(rows, 'Rakshak_Patrol_Summary', 'Rounds Summary', format);
   };
 
+  // Export Stop-by-Stop Checkpoint Audits for Currently Selected Round
   const exportInspectedRoundAudit = (format: 'xlsx' | 'csv') => {
     if (!roundScans.length || !selectedRound) return;
 
     const roundId = (selectedRound as any).round_id || (selectedRound as any).id || 'Round';
+    const routeName = getRouteDisplayName(selectedRound);
     const guardName = (selectedRound as any).guards?.full_name || (selectedRound as any).guard_name || 'N/A';
-    const siteName = (selectedRound as any).sites?.site_name || 'Main Campus';
 
     const rows = roundScans.map((s: any, idx: number) => ({
       'Stop #': idx + 1,
       'Patrol Round ID': roundId,
-      'Site': siteName,
+      'Route Name': routeName,
       'Guard Name': guardName,
       'Employee Code': (selectedRound as any).guards?.employee_code || 'N/A',
       'Checkpoint': s.checkpoint_name || s.checkpoint_id || 'N/A',
@@ -144,10 +192,10 @@ export const ReportsPage: React.FC = () => {
       'Scanned At': s.scanned_at || s.scan_time ? new Date(s.scanned_at || s.scan_time).toLocaleString() : 'N/A',
       'Verification Status': s.is_gps_verified ? 'VERIFIED' : 'DRIFT_FLAGGED',
       'Distance Drift (m)': s.calculated_distance_m ?? s.distance_meters ?? 'N/A',
-      'Guard Lat': s.guard_lat ?? 'N/A',
-      'Guard Lng': s.guard_lng ?? 'N/A',
-      'Expected Lat': s.expected_lat ?? 'N/A',
-      'Expected Lng': s.expected_lng ?? 'N/A',
+      'Guard Lat': s.guard_lat ?? s.scan_lat ?? 'N/A',
+      'Guard Lng': s.guard_lng ?? s.scan_lng ?? 'N/A',
+      'Expected Lat': s.expected_lat ?? s.master_lat ?? 'N/A',
+      'Expected Lng': s.expected_lng ?? s.master_lng ?? 'N/A',
       'Selfie URL': getSecureMediaUrl(s.selfie_url || s.photo_url) || '',
       'Location Photo URL': getSecureMediaUrl(s.location_photo_url || s.photo_url) || '',
       'Remarks': s.remarks || ''
@@ -262,7 +310,7 @@ export const ReportsPage: React.FC = () => {
             <table className="w-full text-left text-sm text-gray-600">
               <thead className="bg-gray-50 text-xs font-semibold uppercase text-gray-500">
                 <tr>
-                  <th className="px-6 py-3">Site</th>
+                  <th className="px-6 py-3">Route / Site Name</th>
                   <th className="px-6 py-3">Guard</th>
                   <th className="px-6 py-3">Start Time</th>
                   <th className="px-6 py-3">End Time</th>
@@ -285,13 +333,21 @@ export const ReportsPage: React.FC = () => {
                     const isSelected = selectedRound && ((selectedRound as any).round_id === roundId || (selectedRound as any).id === roundId);
                     const startTime = round.started_at || round.start_time;
                     const endTime = round.ended_at || round.end_time;
+                    const routeName = getRouteDisplayName(round);
 
                     return (
                       <tr 
                         key={roundId} 
                         className={`transition hover:bg-gray-50 ${isSelected ? 'bg-blue-50/60' : ''}`}
                       >
-                        <td className="px-6 py-4 font-medium text-gray-900">{round.sites?.site_name ?? 'Main Campus'}</td>
+                        <td className="px-6 py-4 font-semibold text-gray-900">
+                          {routeName}
+                          {(round.checkpoints?.length ?? 0) > 0 && (
+                            <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                              {round.checkpoints.length} stops
+                            </span>
+                          )}
+                        </td>
                         <td className="px-6 py-4">
                           {round.guards?.full_name || round.guard_name || 'Assigned Guard'} 
                           <span className="block text-xs text-gray-400">ID: {round.guards?.employee_code || round.guard_id || 'N/A'}</span>
@@ -352,10 +408,15 @@ export const ReportsPage: React.FC = () => {
         {selectedRound && (
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Checkpoints Scanned ({roundScans.length})
-              </h2>
-              <span className="text-xs text-gray-500">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Checkpoints Scanned ({roundScans.length})
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Route: <span className="font-semibold text-slate-700">{getRouteDisplayName(selectedRound)}</span>
+                </p>
+              </div>
+              <span className="text-xs font-mono text-gray-400">
                 Round ID: {(selectedRound as any).round_id || (selectedRound as any).id}
               </span>
             </div>
@@ -363,7 +424,9 @@ export const ReportsPage: React.FC = () => {
             {scansLoading ? (
               <p className="py-8 text-center text-sm text-gray-400">Loading checkpoints and proof photos...</p>
             ) : roundScans.length === 0 ? (
-              <p className="py-8 text-center text-sm text-gray-400">No checkpoints recorded for this round.</p>
+              <div className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400">
+                No checkpoint scans recorded for this route yet.
+              </div>
             ) : (
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 {roundScans.map((scan: any, idx: number) => {
@@ -371,10 +434,10 @@ export const ReportsPage: React.FC = () => {
                   const distanceMeters = scan.calculated_distance_m ?? scan.distance_meters;
                   const selfie = getSecureMediaUrl(scan.selfie_url || scan.photo_url);
                   const locationPhoto = getSecureMediaUrl(scan.location_photo_url || scan.photo_url);
-                  const checkpointName = scan.checkpoint_name || scan.checkpoint_id;
+                  const checkpointName = scan.checkpoint_name || scan.checkpoint_id || `Stop #${idx + 1}`;
 
                   return (
-                    <div key={scan.scan_id || scan.id || idx} className="rounded-lg border border-gray-200 p-4 bg-white">
+                    <div key={scan.scan_id || scan.id || idx} className="rounded-lg border border-gray-200 p-4 bg-white shadow-sm">
                       <div className="mb-3 flex items-start justify-between">
                         <div>
                           <span className="text-xs font-semibold text-blue-600">Stop #{idx + 1}</span>
@@ -383,11 +446,11 @@ export const ReportsPage: React.FC = () => {
                         </div>
                         <div>
                           {scan.is_gps_verified ? (
-                            <span className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs text-green-700">
+                            <span className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs text-green-700 font-medium">
                               <CheckCircle2 className="h-3 w-3" /> Verified (≤50m)
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+                            <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700 font-medium">
                               <AlertTriangle className="h-3 w-3" /> Drift Flagged ({distanceMeters ? Number(distanceMeters).toFixed(0) : '—'}m)
                             </span>
                           )}
@@ -528,7 +591,7 @@ export const ReportsPage: React.FC = () => {
           isOpen={mapOpen}
           onClose={() => setMapOpen(false)}
           scans={roundScans}
-          roundTitle={`Round #${String((selectedRound as any)?.round_id || (selectedRound as any)?.id || '').substring(0, 8)} - ${(selectedRound as any)?.guards?.full_name || (selectedRound as any)?.guard_name || 'Guard'}`}
+          roundTitle={`Route: ${getRouteDisplayName(selectedRound)} (${roundScans.length} Checkpoints)`}
         />
       </div>
     </div>

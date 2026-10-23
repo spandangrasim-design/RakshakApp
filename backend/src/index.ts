@@ -263,6 +263,49 @@ app.get('/api/v1/scans', async (c) => {
     return c.json({ success: false, message: error.message || 'Server error' }, 500);
   }
 });
+// GET Checkpoint Scans for a specific Round
+app.get('/api/v1/rounds/:id/scans', async (c) => {
+  try {
+    const roundId = c.req.param('id');
+    const supabase = getSupabase(c.env);
+
+    // 1. Fetch checkpoints belonging to this round
+    const { data: checkpoints, error: cpError } = await supabase
+      .from('checkpoints')
+      .select('checkpoint_id, name, lat, lng')
+      .eq('round_id', roundId);
+
+    if (cpError) throw cpError;
+
+    const checkpointIds = (checkpoints || []).map((cp) => cp.checkpoint_id);
+
+    // 2. Fetch logged scans matching these checkpoints
+    let scans: any[] = [];
+    if (checkpointIds.length > 0) {
+      const { data: scanRecords, error: scanError } = await supabase
+        .from('scans')
+        .select('*')
+        .in('checkpoint_id', checkpointIds)
+        .order('scan_time', { ascending: true });
+
+      if (!scanError && scanRecords) {
+        scans = scanRecords.map((s) => {
+          const matchCp = checkpoints?.find((cp) => cp.checkpoint_id === s.checkpoint_id);
+          return {
+            ...s,
+            checkpoint_name: matchCp?.name || s.checkpoint_id,
+            expected_lat: matchCp?.lat,
+            expected_lng: matchCp?.lng,
+          };
+        });
+      }
+    }
+
+    return c.json({ success: true, scans });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to fetch round scans' }, 500);
+  }
+});
 
 // Bulk Offline Patrol Scan Sync
 app.post('/api/v1/patrols/sync', async (c) => {
