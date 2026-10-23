@@ -95,7 +95,6 @@ app.post('/api/v1/auth/login', async (c) => {
       device_id: device_id || 'unknown',
       exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60) 
     }
-    // ADDED 'HS256' ALGORITHM HERE
     const access_token = await sign(payload, c.env.JWT_SECRET, 'HS256')
 
     return c.json({
@@ -129,7 +128,6 @@ app.post('/api/v1/scans', async (c) => {
     let payload;
     try {
       const token = authHeader.split(' ')[1];
-      // ADDED 'HS256' ALGORITHM HERE
       payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
@@ -185,7 +183,6 @@ app.get('/api/v1/scans', async (c) => {
     const token = authHeader.split(' ')[1];
     let payload;
     try {
-      // ADDED 'HS256' ALGORITHM HERE
       payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
@@ -225,7 +222,6 @@ app.post('/api/v1/patrols/sync', async (c) => {
     if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
     
     const token = authHeader.split(' ')[1];
-    // ADDED 'HS256' ALGORITHM HERE
     const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
@@ -293,7 +289,6 @@ app.get('/api/v1/shifts/active', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    // ADDED 'HS256' ALGORITHM HERE
     const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
@@ -329,7 +324,6 @@ app.post('/api/v1/shifts/start', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    // ADDED 'HS256' ALGORITHM HERE
     const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
@@ -373,7 +367,6 @@ app.post('/api/v1/shifts/end', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    // ADDED 'HS256' ALGORITHM HERE
     const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
@@ -632,7 +625,6 @@ app.post('/api/v1/incidents', async (c) => {
     let payload;
     try {
       const token = authHeader.split(' ')[1];
-      // ADDED 'HS256' ALGORITHM HERE
       payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
@@ -640,13 +632,17 @@ app.post('/api/v1/incidents', async (c) => {
     const guard_id = payload.sub as string;
 
     const body = await c.req.json();
-    const { client_incident_id, description, priority, photo_url, reported_at } = body;
+    const { client_incident_id, title, description, priority, photo_url, reported_at } = body;
+
+    // Validate or generate a valid UUID for client_incident_id
+    const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
+    const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
     let finalPhotoUrl = null;
     if (photo_url && photo_url.startsWith('data:image')) {
       const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      const fileName = `incidents/${client_incident_id}.jpg`;
+      const fileName = `incidents/${incidentUuid}.jpg`;
       
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
       finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
@@ -656,10 +652,11 @@ app.post('/api/v1/incidents', async (c) => {
     const { data, error } = await supabase
       .from('incidents')
       .upsert({
-        client_incident_id: client_incident_id,
+        client_incident_id: incidentUuid,
         guard_id: guard_id, 
+        title: title || (description ? description.substring(0, 30) : 'Security Incident'),
         description: description,
-        priority: priority,
+        priority: priority || 'P3',
         photo_url: finalPhotoUrl,
         status: 'OPEN',
         reported_at: reported_at || new Date().toISOString()
