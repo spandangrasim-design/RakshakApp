@@ -33,6 +33,8 @@ const scanSchema = z.object({
   guard_lat: z.number(),
   guard_lng: z.number(),
   uptime_seconds: z.number().optional(), 
+  selfie_url: z.string().optional(),
+  location_photo_url: z.string().optional(),
   photo_url: z.string().optional()
 })
 
@@ -49,7 +51,6 @@ const roundSaveSchema = z.object({
   )
 })
 
-// Guard Management Schemas
 const createGuardSchema = z.object({
   full_name: z.string().min(1, 'Full name is required'),
   employee_code: z.string().min(1, 'Employee code is required'),
@@ -62,7 +63,6 @@ const updateGuardSchema = z.object({
   is_active: z.boolean().optional(),
 })
 
-// Helper to initialize Supabase admin client
 const getSupabase = (env: Bindings) =>
   createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { 
     auth: { persistSession: false },
@@ -72,8 +72,6 @@ const getSupabase = (env: Bindings) =>
 // ==========================================
 // SECURE PRIVATE R2 MEDIA STREAMING ROUTE
 // ==========================================
-// Accepts JWT via "Authorization: Bearer <token>" (Mobile App) 
-// OR "?token=<token>" query parameter (Web HTML <img> tags)
 app.get('/api/v1/media/*', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -90,14 +88,12 @@ app.get('/api/v1/media/*', async (c) => {
       return c.json({ error_code: 'UNAUTHORIZED', message: 'Missing authentication token.' }, 401);
     }
 
-    // Verify JWT Token
     try {
       await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
     }
 
-    // Extract R2 file key from URL path
     const url = new URL(c.req.url);
     const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
 
@@ -105,7 +101,6 @@ app.get('/api/v1/media/*', async (c) => {
       return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid file key.' }, 400);
     }
 
-    // Fetch binary directly from the private R2 bucket
     const object = await c.env.R2_BUCKET.get(fileKey);
     if (!object) {
       return c.json({ error_code: 'NOT_FOUND', message: 'Image not found.' }, 404);
@@ -115,7 +110,7 @@ app.get('/api/v1/media/*', async (c) => {
     object.writeHttpMetadata(headers);
     headers.set('etag', object.httpEtag);
     headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-    headers.set('Cache-Control', 'private, max-age=86400'); // Cache for 24h on authenticated device
+    headers.set('Cache-Control', 'private, max-age=86400');
     headers.set('Access-Control-Allow-Origin', '*');
 
     return new Response(object.body, { status: 200, headers });
@@ -173,7 +168,7 @@ app.post('/api/v1/auth/login', async (c) => {
 })
 
 // ==========================================
-// 2. PATROL SCANS API
+// 2. PATROL SCANS API (2-STEP VERIFICATION)
 // ==========================================
 app.post('/api/v1/scans', async (c) => {
   try {
@@ -192,7 +187,19 @@ app.post('/api/v1/scans', async (c) => {
     const guard_id = payload.sub as string;
 
     const body = await c.req.json();
-    const { client_scan_id, checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
+    const { 
+      client_scan_id, 
+      checkpoint_id, 
+      qr_lat, 
+      qr_lng, 
+      signature, 
+      guard_lat, 
+      guard_lng, 
+      uptime_seconds, 
+      selfie_url,
+      location_photo_url,
+      photo_url 
+    } = scanSchema.parse(body);
 
     const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
     const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
@@ -201,8 +208,30 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
     }
 
+    const url = new URL(c.req.url);
+
+    // Save Base64 photos directly to Private R2
+    const uploadToR2 = async (base64Str?: string, prefix: string = 'scan') => {
+      if (!base64Str || !base64Str.startsWith('data:image')) return null;
+      try {
+        const cleanData = base64Str.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(cleanData), char => char.charCodeAt(0));
+        const fileName = `scans/${prefix}_${client_scan_id}_${Date.now()}.jpg`;
+        
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        return `${url.origin}/api/v1/media/${fileName}`;
+      } catch (err) {
+        console.error(`Failed to upload ${prefix} image to R2:`, err);
+        return null;
+      }
+    };
+
+    const finalSelfieUrl = await uploadToR2(selfie_url || photo_url, 'selfie');
+    const finalLocationUrl = await uploadToR2(location_photo_url, 'location') || finalSelfieUrl;
+
     const supabase = getSupabase(c.env);
 
+    // Write to Supabase using log_patrol_scan stored procedure
     const { data, error } = await supabase.rpc('log_patrol_scan', {
       p_client_scan_id: client_scan_id,
       p_checkpoint_id: checkpoint_id,
@@ -212,12 +241,21 @@ app.post('/api/v1/scans', async (c) => {
       p_expected_lat: parseFloat(qr_lat),
       p_expected_lng: parseFloat(qr_lng),
       p_uptime_seconds: uptime_seconds || 0,
-      p_photo_url: photo_url || ''
+      p_photo_url: finalLocationUrl || ''
     });
 
     if (error) {
       return c.json({ success: false, message: 'Database error', error }, 500);
     }
+
+    // Persist separate selfie and location proof URLs into the scans table
+    await supabase
+      .from('scans')
+      .update({
+        selfie_url: finalSelfieUrl,
+        location_photo_url: finalLocationUrl
+      })
+      .eq('client_scan_id', client_scan_id);
 
     return c.json({ success: true, verification: data });
 
@@ -263,13 +301,13 @@ app.get('/api/v1/scans', async (c) => {
     return c.json({ success: false, message: error.message || 'Server error' }, 500);
   }
 });
+
 // GET Checkpoint Scans for a specific Round
 app.get('/api/v1/rounds/:id/scans', async (c) => {
   try {
     const roundId = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    // 1. Fetch checkpoints belonging to this round
     const { data: checkpoints, error: cpError } = await supabase
       .from('checkpoints')
       .select('checkpoint_id, name, lat, lng')
@@ -279,7 +317,6 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 
     const checkpointIds = (checkpoints || []).map((cp) => cp.checkpoint_id);
 
-    // 2. Fetch logged scans matching these checkpoints
     let scans: any[] = [];
     if (checkpointIds.length > 0) {
       const { data: scanRecords, error: scanError } = await supabase
@@ -333,15 +370,23 @@ app.post('/api/v1/patrols/sync', async (c) => {
         continue;
       }
 
-      let photoUrl = '';
-      if (scan.photo_url && scan.photo_url.startsWith('data:image')) {
-        const base64Data = scan.photo_url.replace(/^data:image\/\w+;base64,/, '');
+      let selfieUrl = '';
+      let locationUrl = '';
+
+      if (scan.selfie_url && scan.selfie_url.startsWith('data:image')) {
+        const base64Data = scan.selfie_url.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `scans/${scan.client_scan_id}.jpg`;
-        
+        const fileName = `scans/selfie_${scan.client_scan_id}.jpg`;
         await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        // Secure Worker proxy route
-        photoUrl = `${url.origin}/api/v1/media/${fileName}`; 
+        selfieUrl = `${url.origin}/api/v1/media/${fileName}`;
+      }
+
+      if (scan.location_photo_url && scan.location_photo_url.startsWith('data:image')) {
+        const base64Data = scan.location_photo_url.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+        const fileName = `scans/location_${scan.client_scan_id}.jpg`;
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        locationUrl = `${url.origin}/api/v1/media/${fileName}`;
       }
 
       const { data, error } = await supabase.rpc('log_patrol_scan', {
@@ -353,8 +398,18 @@ app.post('/api/v1/patrols/sync', async (c) => {
         p_expected_lat: parseFloat(scan.qr_lat),
         p_expected_lng: parseFloat(scan.qr_lng),
         p_uptime_seconds: scan.uptime_seconds || 0,
-        p_photo_url: photoUrl
+        p_photo_url: locationUrl || selfieUrl
       });
+
+      if (!error) {
+        await supabase
+          .from('scans')
+          .update({
+            selfie_url: selfieUrl,
+            location_photo_url: locationUrl
+          })
+          .eq('client_scan_id', scan.client_scan_id);
+      }
 
       if (error) {
         results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'DB Error' });
@@ -695,8 +750,6 @@ app.patch('/api/v1/guards/:id', async (c) => {
 // ==========================================
 // 6. TICKETING & INCIDENT COMMAND (R2 SECURED)
 // ==========================================
-
-// Create a New Incident
 app.post('/api/v1/incidents', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -726,10 +779,7 @@ app.post('/api/v1/incidents', async (c) => {
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
       const fileName = `incidents/${incidentUuid}.jpg`;
       
-      // Save directly to Private R2 Bucket
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      
-      // Store the secure authenticated proxy path
       finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
     }
 
@@ -773,30 +823,46 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// GET Single Incident + Threaded Updates
+// GET Single Incident + Threaded Updates (Dual lookup by client_incident_id OR id)
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
     const supabase = getSupabase(c.env);
     
-    const { data: incident, error: incidentError } = await supabase
+    let { data: incident, error: incidentError } = await supabase
       .from('incidents')
       .select('*')
-      .eq('client_incident_id', incidentId)
-      .single();
-      
-    if (incidentError) throw incidentError;
+      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
+      .maybeSingle();
+
+    if (!incident) {
+      const fallbackQuery = await supabase
+        .from('incidents')
+        .select('*')
+        .eq('client_incident_id', incidentId)
+        .maybeSingle();
+
+      if (fallbackQuery.data) {
+        incident = fallbackQuery.data;
+      }
+    }
+
+    if (!incident) {
+      return c.json({ success: false, message: 'Incident record not found.' }, 404);
+    }
+
+    const resolvedLookupId = incident.client_incident_id || incident.id || incidentId;
 
     const { data: updates, error: updatesError } = await supabase
       .from('incident_updates')
       .select('*')
-      .eq('incident_id', incidentId)
+      .eq('incident_id', resolvedLookupId)
       .order('created_at', { ascending: true });
 
     if (updatesError) throw updatesError;
-    return c.json({ success: true, incident, updates });
-  } catch (error) {
-    return c.json({ success: false, message: 'Failed to fetch incident details' }, 500);
+    return c.json({ success: true, incident, updates: updates || [] });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to fetch incident details' }, 500);
   }
 });
 
@@ -807,25 +873,30 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const url = new URL(c.req.url);
     const body = await c.req.json();
     const { sender_type, sender_name, message, photo_base64 } = body;
+    const supabase = getSupabase(c.env);
+
+    let { data: incident } = await supabase
+      .from('incidents')
+      .select('client_incident_id, id')
+      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
+      .maybeSingle();
+
+    const targetThreadId = incident?.client_incident_id || incident?.id || incidentId;
     
     let finalPhotoUrl = null;
     if (photo_base64 && photo_base64.startsWith('data:image')) {
       const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
+      const fileName = `incident_updates/${targetThreadId}_${Date.now()}.jpg`;
       
-      // Save directly to Private R2 Bucket
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      
-      // Store the secure authenticated proxy path
       finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
     }
 
-    const supabase = getSupabase(c.env);
     const { data, error } = await supabase
       .from('incident_updates')
       .insert([{
-        incident_id: incidentId,
+        incident_id: targetThreadId,
         sender_type,
         sender_name,
         message,
@@ -847,12 +918,20 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
     const incidentId = c.req.param('id');
     const supabase = getSupabase(c.env);
     
+    let { data: incident } = await supabase
+      .from('incidents')
+      .select('client_incident_id, id')
+      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
+      .maybeSingle();
+
+    const targetId = incident?.client_incident_id || incidentId;
+
     const { data, error } = await supabase
       .from('incidents')
       .update({ status: 'RESOLVED' })
-      .eq('client_incident_id', incidentId)
+      .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
       .select()
-      .single();
+      .maybeSingle();
       
     if (error) throw error;
     return c.json({ success: true, incident: data });
@@ -891,29 +970,22 @@ app.post('/api/v1/admin/configs', async (c) => {
   }
 });
 
-// --- HELPER: META WHATSAPP API ALERT ---
+// Alerts
 async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
   const supabase = getSupabase(env);
-  
   const { data: configs, error } = await supabase
     .from('admin_configurations')
     .select('key_name, key_value')
     .in('key_name', ['WHATSAPP_API_TOKEN', 'MANAGER_PHONE', 'WHATSAPP_PHONE_ID']);
 
-  if (error || !configs) {
-    console.error("Failed to load WhatsApp configurations", error);
-    return false;
-  }
+  if (error || !configs) return false;
 
   const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
   const token = configMap['WHATSAPP_API_TOKEN'];
   const phoneId = configMap['WHATSAPP_PHONE_ID']; 
   const managerPhone = configMap['MANAGER_PHONE']; 
 
-  if (!token || !managerPhone || !phoneId) {
-    console.error("WhatsApp API Token, Phone ID, or Manager Phone is not configured.");
-    return false;
-  }
+  if (!token || !managerPhone || !phoneId) return false;
 
   const payload = {
     messaging_product: "whatsapp",
@@ -933,24 +1005,14 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
       },
       body: JSON.stringify(payload)
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("WhatsApp API Failed:", errorText);
-      return false;
-    }
-    
-    return true;
+    return response.ok;
   } catch (err) {
-    console.error("WhatsApp Fetch Error:", err);
     return false;
   }
 }
 
-// --- HELPER: GOOGLE GMAIL API ALERT ---
 async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
   const supabase = getSupabase(env);
-  
   const { data: configs, error } = await supabase
     .from('admin_configurations')
     .select('key_name, key_value')
@@ -1000,10 +1062,7 @@ export default {
     return app.fetch(request, env, ctx)
   },
   
-  // SPRINT 5 SLA CRON TRIGGER
   scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
-    console.log("SLA Cron Trigger fired at:", event.cron);
-    
     const supabase = getSupabase(env);
     const tenMinutesAgo = new Date(Date.now() - 10 * 60000).toISOString();
     
@@ -1014,14 +1073,9 @@ export default {
       .eq('status', 'OPEN')
       .lte('reported_at', tenMinutesAgo);
 
-    if (error || !incidents || incidents.length === 0) {
-      console.log("No pending SLA breaches to escalate.");
-      return;
-    }
+    if (error || !incidents || incidents.length === 0) return;
 
     for (const incident of incidents) {
-      console.log(`Escalating Incident: ${incident.client_incident_id}`);
-      
       await Promise.all([
         sendGoogleEmergencyEmail(env, incident.client_incident_id, incident.priority, incident.description, incident.photo_url),
         sendWhatsAppAlert(env, incident.client_incident_id, incident.priority, incident.description)

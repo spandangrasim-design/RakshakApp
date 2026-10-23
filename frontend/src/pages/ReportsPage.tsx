@@ -7,7 +7,7 @@ import {
   ChevronLeft, 
   ChevronDown,
   CheckCircle2, 
-  AlertTriangle,
+  AlertTriangle, 
   RefreshCw,
   X,
   Maximize2
@@ -31,11 +31,14 @@ export const ReportsPage: React.FC = () => {
   const [scansLoading, setScansLoading] = useState<boolean>(false);
   const [mapOpen, setMapOpen] = useState<boolean>(false);
 
-  // Enlarged Photo Lightbox State
+  // Enlarged Photo Lightbox State (Supports both photos)
   const [enlargedPhotos, setEnlargedPhotos] = useState<{
     checkpointName: string;
     selfieUrl?: string | null;
     locationPhotoUrl?: string | null;
+    scannedAt?: string;
+    driftMeters?: number | string;
+    isVerified?: boolean;
   } | null>(null);
 
   // Export Menu State
@@ -74,7 +77,6 @@ export const ReportsPage: React.FC = () => {
     fetchRounds(page);
   }, [page]);
 
-  // Safe helper to resolve route name without crashing on null
   const getRouteDisplayName = (round: any) => {
     if (!round) return 'Patrol Route';
     return round?.name || round?.round_name || round?.title || round?.sites?.site_name || 'Patrol Route';
@@ -128,7 +130,6 @@ export const ReportsPage: React.FC = () => {
     }
   };
 
-  // Generic Download Engine for Excel and CSV
   const triggerDownload = (dataRows: any[], fileNamePrefix: string, sheetName: string, format: 'xlsx' | 'csv') => {
     if (!dataRows || dataRows.length === 0) return;
 
@@ -193,7 +194,7 @@ export const ReportsPage: React.FC = () => {
       'Guard Lng': s?.guard_lng ?? s?.scan_lng ?? 'N/A',
       'Expected Lat': s?.expected_lat ?? s?.master_lat ?? 'N/A',
       'Expected Lng': s?.expected_lng ?? s?.master_lng ?? 'N/A',
-      'Selfie URL': getSecureMediaUrl(s?.selfie_url || s?.photo_url) || '',
+      'Guard Selfie URL': getSecureMediaUrl(s?.selfie_url) || '',
       'Location Photo URL': getSecureMediaUrl(s?.location_photo_url || s?.photo_url) || '',
       'Remarks': s?.remarks || ''
     }));
@@ -205,20 +206,20 @@ export const ReportsPage: React.FC = () => {
   const totalPages = Math.ceil(totalCount / pageSize) || 1;
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
+    <div className="min-h-screen bg-gray-50 p-6 font-sans">
       <div className="mx-auto max-w-7xl">
         {/* Top Header */}
         <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Patrol Reports & Compliance</h1>
-            <p className="text-sm text-gray-500">Audit guard presence, GPS drift, and multi-factor photo proofs.</p>
+            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Patrol Reports & Compliance</h1>
+            <p className="text-base text-gray-600 mt-1">Audit guard presence, GPS drift, and multi-factor photo proofs.</p>
           </div>
           
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => fetchRounds(page)}
-              className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition"
+              className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50 transition"
             >
               <RefreshCw className="h-4 w-4" /> Refresh
             </button>
@@ -227,7 +228,7 @@ export const ReportsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setMapOpen(true)}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition"
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
               >
                 <MapPin className="h-4 w-4" /> View Map Audit
               </button>
@@ -238,56 +239,56 @@ export const ReportsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setExportMenuOpen((prev) => !prev)}
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 transition"
+                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition"
               >
                 <FileSpreadsheet className="h-4 w-4" /> 
                 <span>Export</span>
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-4 w-4" />
               </button>
 
               {exportMenuOpen && (
-                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-gray-200 bg-white py-2 shadow-xl z-50 text-xs">
-                  <div className="px-3 py-1 font-bold uppercase tracking-wider text-gray-400 text-[10px]">
+                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-gray-200 bg-white py-2 shadow-xl z-50 text-sm">
+                  <div className="px-4 py-1.5 font-bold uppercase tracking-wider text-gray-400 text-xs">
                     Master Rounds History
                   </div>
                   <button
                     type="button"
                     onClick={() => exportMasterRoundsSummary('xlsx')}
-                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                    className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
                   >
                     <span>All Rounds Summary</span>
-                    <span className="font-semibold text-emerald-700">.XLSX</span>
+                    <span className="font-bold text-emerald-700">.XLSX</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => exportMasterRoundsSummary('csv')}
-                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                    className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
                   >
                     <span>All Rounds Summary</span>
-                    <span className="font-semibold text-emerald-700">.CSV</span>
+                    <span className="font-bold text-emerald-700">.CSV</span>
                   </button>
 
                   {selectedRound && (
                     <>
                       <div className="border-t my-1 border-gray-100" />
-                      <div className="px-3 py-1 font-bold uppercase tracking-wider text-gray-400 text-[10px]">
+                      <div className="px-4 py-1.5 font-bold uppercase tracking-wider text-gray-400 text-xs">
                         Inspected Round Audits
                       </div>
                       <button
                         type="button"
                         onClick={() => exportInspectedRoundAudit('xlsx')}
-                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                        className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
                       >
                         <span>Checkpoint Proofs</span>
-                        <span className="font-semibold text-emerald-700">.XLSX</span>
+                        <span className="font-bold text-emerald-700">.XLSX</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => exportInspectedRoundAudit('csv')}
-                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
+                        className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
                       >
                         <span>Checkpoint Proofs</span>
-                        <span className="font-semibold text-emerald-700">.CSV</span>
+                        <span className="font-bold text-emerald-700">.CSV</span>
                       </button>
                     </>
                   )}
@@ -300,29 +301,29 @@ export const ReportsPage: React.FC = () => {
         {/* Master Patrol Rounds Table */}
         <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="border-b px-6 py-4">
-            <h2 className="text-base font-semibold text-gray-800">Patrol Rounds History</h2>
+            <h2 className="text-lg font-bold text-gray-800">Patrol Rounds History</h2>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-gray-600">
-              <thead className="bg-gray-50 text-xs font-semibold uppercase text-gray-500">
+            <table className="w-full text-left text-sm text-gray-700">
+              <thead className="bg-gray-100 text-xs font-bold uppercase tracking-wider text-gray-600">
                 <tr>
-                  <th className="px-6 py-3">Route / Site Name</th>
-                  <th className="px-6 py-3">Guard</th>
-                  <th className="px-6 py-3">Start Time</th>
-                  <th className="px-6 py-3">End Time</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3 text-right">Action</th>
+                  <th className="px-6 py-3.5">Route / Site Name</th>
+                  <th className="px-6 py-3.5">Guard</th>
+                  <th className="px-6 py-3.5">Start Time</th>
+                  <th className="px-6 py-3.5">End Time</th>
+                  <th className="px-6 py-3.5">Status</th>
+                  <th className="px-6 py-3.5 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-gray-200 text-sm">
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-gray-400">Loading patrol rounds...</td>
+                    <td colSpan={6} className="py-10 text-center text-base text-gray-400">Loading patrol rounds...</td>
                   </tr>
                 ) : rounds.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-gray-400">No patrol rounds logged for this period.</td>
+                    <td colSpan={6} className="py-10 text-center text-base text-gray-400">No patrol rounds logged for this period.</td>
                   </tr>
                 ) : (
                   rounds.map((round: any) => {
@@ -336,24 +337,24 @@ export const ReportsPage: React.FC = () => {
                     return (
                       <tr 
                         key={roundId} 
-                        className={`transition hover:bg-gray-50 ${isSelected ? 'bg-blue-50/60' : ''}`}
+                        className={`transition hover:bg-gray-50 ${isSelected ? 'bg-blue-50/70' : ''}`}
                       >
-                        <td className="px-6 py-4 font-semibold text-gray-900">
+                        <td className="px-6 py-4 font-bold text-gray-900 text-base">
                           {routeName}
                           {checkpointCount > 0 && (
-                            <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                            <span className="ml-2.5 inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
                               {checkpointCount} stops
                             </span>
                           )}
                         </td>
                         <td className="px-6 py-4">
-                          {round?.guards?.full_name || round?.guard_name || 'Assigned Guard'} 
-                          <span className="block text-xs text-gray-400">ID: {round?.guards?.employee_code || round?.guard_id || 'N/A'}</span>
+                          <span className="font-semibold text-gray-900">{round?.guards?.full_name || round?.guard_name || 'Assigned Guard'}</span>
+                          <span className="block text-xs font-medium text-gray-500">ID: {round?.guards?.employee_code || round?.guard_id || 'N/A'}</span>
                         </td>
-                        <td className="px-6 py-4">{startTime ? new Date(startTime).toLocaleString() : '—'}</td>
-                        <td className="px-6 py-4">{endTime ? new Date(endTime).toLocaleString() : 'In Progress'}</td>
+                        <td className="px-6 py-4 font-mono text-xs text-gray-600">{startTime ? new Date(startTime).toLocaleString() : '—'}</td>
+                        <td className="px-6 py-4 font-mono text-xs text-gray-600">{endTime ? new Date(endTime).toLocaleString() : 'In Progress'}</td>
                         <td className="px-6 py-4">
-                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${
                             round?.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
                           }`}>
                             {round?.status || 'IN_PROGRESS'}
@@ -363,9 +364,9 @@ export const ReportsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleSelectRound(round)}
-                            className="inline-flex items-center gap-1 rounded bg-white px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 hover:bg-blue-50 transition"
+                            className="inline-flex items-center gap-1 rounded-md bg-white px-3.5 py-1.5 text-xs font-bold text-blue-700 border border-blue-300 hover:bg-blue-50 transition"
                           >
-                            Inspect <ChevronRight className="h-3 w-3" />
+                            Inspect <ChevronRight className="h-4 w-4" />
                           </button>
                         </td>
                       </tr>
@@ -377,8 +378,8 @@ export const ReportsPage: React.FC = () => {
           </div>
 
           {/* Pagination Controls */}
-          <div className="flex items-center justify-between border-t px-6 py-3">
-            <span className="text-xs text-gray-500">
+          <div className="flex items-center justify-between border-t px-6 py-3.5">
+            <span className="text-sm font-medium text-gray-600">
               Page {page} of {totalPages} ({totalCount} total rounds)
             </span>
             <div className="flex gap-2">
@@ -386,43 +387,43 @@ export const ReportsPage: React.FC = () => {
                 type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => p - 1)}
-                className="rounded border p-1 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
+                className="rounded border p-1.5 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronLeft className="h-5 w-5" />
               </button>
               <button
                 type="button"
                 disabled={page >= totalPages}
                 onClick={() => setPage((p) => p + 1)}
-                className="rounded border p-1 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
+                className="rounded border p-1.5 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
               >
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="h-5 w-5" />
               </button>
             </div>
           </div>
         </div>
 
-        {/* Selected Round Drill-Down */}
+        {/* Selected Round Drill-Down (Side-by-Side Dual Photo Verification) */}
         {selectedRound && (
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b pb-4">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">
+                <h2 className="text-xl font-extrabold text-gray-900">
                   Checkpoints Scanned ({roundScans.length})
                 </h2>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Route: <span className="font-semibold text-slate-700">{getRouteDisplayName(selectedRound)}</span>
+                <p className="text-sm font-medium text-gray-600 mt-0.5">
+                  Route: <span className="font-bold text-blue-700">{getRouteDisplayName(selectedRound)}</span>
                 </p>
               </div>
-              <span className="text-xs font-mono text-gray-400">
+              <span className="text-xs font-mono text-gray-400 bg-gray-50 px-2.5 py-1 rounded border">
                 Round ID: {(selectedRound as any)?.round_id || (selectedRound as any)?.id}
               </span>
             </div>
 
             {scansLoading ? (
-              <p className="py-8 text-center text-sm text-gray-400">Loading checkpoints and proof photos...</p>
+              <p className="py-10 text-center text-base text-gray-400">Loading checkpoint verification proofs...</p>
             ) : roundScans.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400">
+              <div className="rounded-lg border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400">
                 No checkpoint scans recorded for this route yet.
               </div>
             ) : (
@@ -430,87 +431,119 @@ export const ReportsPage: React.FC = () => {
                 {roundScans.map((scan: any, idx: number) => {
                   const scanTime = scan?.scanned_at || scan?.scan_time;
                   const distanceMeters = scan?.calculated_distance_m ?? scan?.distance_meters;
-                  const selfie = getSecureMediaUrl(scan?.selfie_url || scan?.photo_url);
-                  const locationPhoto = getSecureMediaUrl(scan?.location_photo_url || scan?.photo_url);
+                  const isVerified = scan?.is_gps_verified ?? (scan?.status === 'VERIFIED');
+                  
+                  // Extract individual photos
+                  const rawSelfie = scan?.selfie_url;
+                  const rawLocation = scan?.location_photo_url || scan?.photo_url;
+
+                  const selfieUrl = getSecureMediaUrl(rawSelfie);
+                  const locationUrl = getSecureMediaUrl(rawLocation);
+                  
+                  // Determine if we have two genuine distinct photos or just one
+                  const hasTwoDistinctPhotos = Boolean(selfieUrl && locationUrl && selfieUrl !== locationUrl);
                   const checkpointName = scan?.checkpoint_name || scan?.checkpoint_id || `Stop #${idx + 1}`;
 
                   return (
-                    <div key={scan?.scan_id || scan?.id || idx} className="rounded-lg border border-gray-200 p-4 bg-white shadow-sm">
-                      <div className="mb-3 flex items-start justify-between">
-                        <div>
-                          <span className="text-xs font-semibold text-blue-600">Stop #{idx + 1}</span>
-                          <h3 className="font-medium text-gray-900">{checkpointName}</h3>
-                          <p className="text-xs text-gray-400">{scanTime ? new Date(scanTime).toLocaleTimeString() : '—'}</p>
+                    <div key={scan?.scan_id || scan?.id || idx} className="rounded-xl border border-gray-200 p-4 bg-white shadow-sm flex flex-col justify-between">
+                      <div>
+                        {/* Header: Stop # and GPS Status */}
+                        <div className="mb-3 flex items-start justify-between gap-2">
+                          <div>
+                            <span className="text-xs font-extrabold uppercase tracking-wider text-blue-700">Stop #{idx + 1}</span>
+                            <h3 className="font-bold text-gray-900 text-base leading-tight mt-0.5">{checkpointName}</h3>
+                            <p className="text-xs font-semibold text-gray-500 mt-0.5">
+                              {scanTime ? new Date(scanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
+                            </p>
+                          </div>
+                          <div>
+                            {isVerified ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1 text-xs font-bold text-green-700 border border-green-200 whitespace-nowrap">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Verified
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 border border-amber-200 whitespace-nowrap">
+                                <AlertTriangle className="h-3.5 w-3.5" /> Drift ({distanceMeters ? Number(distanceMeters).toFixed(0) : '—'}m)
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div>
-                          {scan?.is_gps_verified ? (
-                            <span className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs text-green-700 font-medium">
-                              <CheckCircle2 className="h-3 w-3" /> Verified (≤50m)
-                            </span>
+
+                        {/* Side-by-Side Dual Photo Container with object-contain (no edge crop) */}
+                        <div 
+                          onClick={() => {
+                            if (selfieUrl || locationUrl) {
+                              setEnlargedPhotos({
+                                checkpointName,
+                                selfieUrl: hasTwoDistinctPhotos ? selfieUrl : null,
+                                locationPhotoUrl: hasTwoDistinctPhotos ? locationUrl : (locationUrl || selfieUrl),
+                                scannedAt: scanTime ? new Date(scanTime).toLocaleString() : undefined,
+                                driftMeters: distanceMeters,
+                                isVerified
+                              });
+                            }
+                          }}
+                          className="group relative cursor-pointer rounded-lg p-1 transition hover:bg-slate-50"
+                          title="Click to compare full proof photos"
+                        >
+                          {hasTwoDistinctPhotos ? (
+                            <div className="grid grid-cols-2 gap-3">
+                              {/* 1. Guard Face Selfie */}
+                              <div>
+                                <span className="mb-1 block text-xs font-bold text-gray-700">1. Guard Selfie</span>
+                                <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
+                                  <img 
+                                    src={selfieUrl!} 
+                                    alt="Guard Face Proof" 
+                                    className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
+                                    loading="lazy" 
+                                  />
+                                </div>
+                              </div>
+
+                              {/* 2. Checkpoint Tag / Location Proof */}
+                              <div>
+                                <span className="mb-1 block text-xs font-bold text-gray-700">2. Location Proof</span>
+                                <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
+                                  <img 
+                                    src={locationUrl!} 
+                                    alt="Checkpoint Location Proof" 
+                                    className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
+                                    loading="lazy" 
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ) : (locationUrl || selfieUrl) ? (
+                            // Clean Single Photo View (If guard has only taken 1 photo so far)
+                            <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
+                              <img 
+                                src={(locationUrl || selfieUrl)!} 
+                                alt="Checkpoint Proof" 
+                                className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
+                                loading="lazy" 
+                              />
+                              <span className="absolute bottom-2 left-2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-bold text-white backdrop-blur-sm shadow">
+                                Checkpoint Proof
+                              </span>
+                            </div>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700 font-medium">
-                              <AlertTriangle className="h-3 w-3" /> Drift Flagged ({distanceMeters ? Number(distanceMeters).toFixed(0) : '—'}m)
-                            </span>
+                            <div className="flex h-44 items-center justify-center rounded-lg border border-dashed border-gray-200 text-xs font-semibold text-gray-400">
+                              No Photo Proof Captured
+                            </div>
+                          )}
+
+                          {(selfieUrl || locationUrl) && (
+                            <div className="absolute top-3 right-3 rounded-md bg-black/60 p-1.5 text-white opacity-0 transition group-hover:opacity-100 z-10">
+                              <Maximize2 className="h-4 w-4" />
+                            </div>
                           )}
                         </div>
                       </div>
 
-                      {/* Clickable Side-by-Side Photos */}
-                      <div 
-                        onClick={() => {
-                          if (selfie || locationPhoto) {
-                            setEnlargedPhotos({
-                              checkpointName,
-                              selfieUrl: selfie,
-                              locationPhotoUrl: locationPhoto,
-                            });
-                          }
-                        }}
-                        className="group relative grid grid-cols-2 gap-3 cursor-pointer rounded-lg p-1 transition hover:bg-slate-50"
-                        title="Click to view full comparison"
-                      >
-                        <div>
-                          <span className="mb-1 block text-xs font-medium text-gray-500">Guard Selfie</span>
-                          <div className="aspect-square overflow-hidden rounded-md bg-gray-100 border border-gray-200">
-                            {selfie ? (
-                              <img 
-                                src={selfie} 
-                                alt="Guard Selfie" 
-                                className="h-full w-full object-cover transition group-hover:scale-105" 
-                                loading="lazy" 
-                              />
-                            ) : (
-                              <div className="flex h-full items-center justify-center text-xs text-gray-400">No Selfie</div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="mb-1 block text-xs font-medium text-gray-500">Location Photo</span>
-                          <div className="aspect-square overflow-hidden rounded-md bg-gray-100 border border-gray-200">
-                            {locationPhoto ? (
-                              <img 
-                                src={locationPhoto} 
-                                alt="Location Proof" 
-                                className="h-full w-full object-cover transition group-hover:scale-105" 
-                                loading="lazy" 
-                              />
-                            ) : (
-                              <div className="flex h-full items-center justify-center text-xs text-gray-400">No Location Photo</div>
-                            )}
-                          </div>
-                        </div>
-
-                        {(selfie || locationPhoto) && (
-                          <div className="absolute right-2 top-2 rounded bg-black/60 p-1 text-white opacity-0 transition group-hover:opacity-100">
-                            <Maximize2 className="h-3.5 w-3.5" />
-                          </div>
-                        )}
-                      </div>
-
                       {scan?.remarks && (
-                        <div className="mt-3 rounded bg-gray-50 p-2 text-xs text-gray-600">
-                          <strong>Remarks:</strong> {scan.remarks}
+                        <div className="mt-3 rounded-md bg-gray-50 p-2.5 text-xs text-gray-700 border border-gray-100">
+                          <strong className="font-bold text-gray-900">Remark:</strong> {scan.remarks}
                         </div>
                       )}
                     </div>
@@ -524,61 +557,85 @@ export const ReportsPage: React.FC = () => {
         {/* Enlarged Photo Lightbox Modal */}
         {enlargedPhotos && (
           <div 
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
             onClick={() => setEnlargedPhotos(null)}
           >
             <div 
-              className="relative w-full max-w-4xl rounded-2xl bg-white p-6 shadow-2xl transition"
+              className="relative w-full max-w-5xl rounded-2xl bg-white p-6 shadow-2xl transition max-h-[92vh] flex flex-col overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Modal Header */}
               <div className="mb-4 flex items-center justify-between border-b pb-3">
                 <div>
-                  <h3 className="text-lg font-bold text-gray-900">
-                    Photo Verification
+                  <h3 className="text-xl font-extrabold text-gray-900">
+                    Photo Verification Audit
                   </h3>
-                  <p className="text-xs text-gray-500">
-                    Checkpoint: <span className="font-semibold text-gray-700">{enlargedPhotos.checkpointName}</span>
+                  <p className="text-sm font-medium text-gray-600 mt-0.5">
+                    Target: <span className="font-bold text-blue-700">{enlargedPhotos.checkpointName}</span>
+                    {enlargedPhotos.scannedAt && <span className="ml-2 text-gray-500">({enlargedPhotos.scannedAt})</span>}
                   </p>
                 </div>
                 <button 
                   type="button"
                   onClick={() => setEnlargedPhotos(null)} 
-                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition"
+                  className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition"
+                  aria-label="Close"
                 >
-                  <X className="h-5 w-5" />
+                  <X className="h-6 w-6" />
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <span className="mb-2 block text-sm font-semibold text-gray-700">Guard Selfie</span>
-                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-gray-200 bg-slate-50">
-                    {enlargedPhotos.selfieUrl ? (
+              {/* Modal Content: Dual Side-by-Side View vs Single View */}
+              {enlargedPhotos.selfieUrl && enlargedPhotos.locationPhotoUrl ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Left: Guard Face Selfie */}
+                  <div>
+                    <span className="mb-2 block text-sm font-bold text-gray-800">1. Guard Face Selfie</span>
+                    <div className="relative flex h-[58vh] items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
                       <img 
                         src={enlargedPhotos.selfieUrl} 
                         alt="Guard Selfie" 
                         className="h-full w-full object-contain" 
                       />
-                    ) : (
-                      <span className="text-sm text-gray-400">No selfie recorded</span>
-                    )}
+                    </div>
                   </div>
-                </div>
 
-                <div>
-                  <span className="mb-2 block text-sm font-semibold text-gray-700">Location Proof Photo</span>
-                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-gray-200 bg-slate-50">
-                    {enlargedPhotos.locationPhotoUrl ? (
+                  {/* Right: Checkpoint Location Photo */}
+                  <div>
+                    <span className="mb-2 block text-sm font-bold text-gray-800">2. Location Proof Photo</span>
+                    <div className="relative flex h-[58vh] items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
                       <img 
                         src={enlargedPhotos.locationPhotoUrl} 
                         alt="Location Proof" 
                         className="h-full w-full object-contain" 
                       />
-                    ) : (
-                      <span className="text-sm text-gray-400">No location photo recorded</span>
-                    )}
+                    </div>
                   </div>
                 </div>
+              ) : (
+                <div className="relative flex h-[60vh] w-full items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
+                  <img 
+                    src={(enlargedPhotos.locationPhotoUrl || enlargedPhotos.selfieUrl)!} 
+                    alt="Checkpoint Verification Proof" 
+                    className="h-full w-full object-contain" 
+                  />
+                </div>
+              )}
+
+              {/* Status Footer Pill */}
+              <div className="mt-4 flex items-center justify-between border-t pt-3 text-xs">
+                <div className="flex items-center gap-2">
+                  {enlargedPhotos.isVerified ? (
+                    <span className="inline-flex items-center gap-1 font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded border border-green-200">
+                      <CheckCircle2 className="h-4 w-4" /> GPS & Timestamp Verified
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded border border-amber-200">
+                      <AlertTriangle className="h-4 w-4" /> Drift Flagged ({enlargedPhotos.driftMeters ?? '—'}m)
+                    </span>
+                  )}
+                </div>
+                <span className="text-gray-500 font-medium">Full Aspect Ratio Retained (Edge data uncropped)</span>
               </div>
             </div>
           </div>
