@@ -95,7 +95,8 @@ app.post('/api/v1/auth/login', async (c) => {
       device_id: device_id || 'unknown',
       exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60) 
     }
-    const access_token = await sign(payload, c.env.JWT_SECRET)
+    // ADDED 'HS256' ALGORITHM HERE
+    const access_token = await sign(payload, c.env.JWT_SECRET, 'HS256')
 
     return c.json({
       access_token,
@@ -128,7 +129,8 @@ app.post('/api/v1/scans', async (c) => {
     let payload;
     try {
       const token = authHeader.split(' ')[1];
-      payload = await verify(token, c.env.JWT_SECRET);
+      // ADDED 'HS256' ALGORITHM HERE
+      payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
     }
@@ -183,7 +185,8 @@ app.get('/api/v1/scans', async (c) => {
     const token = authHeader.split(' ')[1];
     let payload;
     try {
-      payload = await verify(token, c.env.JWT_SECRET);
+      // ADDED 'HS256' ALGORITHM HERE
+      payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
     }
@@ -222,7 +225,8 @@ app.post('/api/v1/patrols/sync', async (c) => {
     if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
     
     const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET);
+    // ADDED 'HS256' ALGORITHM HERE
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
     const body = await c.req.json();
@@ -289,7 +293,8 @@ app.get('/api/v1/shifts/active', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET);
+    // ADDED 'HS256' ALGORITHM HERE
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
     const supabase = getSupabase(c.env);
@@ -324,7 +329,8 @@ app.post('/api/v1/shifts/start', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET);
+    // ADDED 'HS256' ALGORITHM HERE
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
     const supabase = getSupabase(c.env);
@@ -367,7 +373,8 @@ app.post('/api/v1/shifts/end', async (c) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET);
+    // ADDED 'HS256' ALGORITHM HERE
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
     const supabase = getSupabase(c.env);
@@ -625,7 +632,8 @@ app.post('/api/v1/incidents', async (c) => {
     let payload;
     try {
       const token = authHeader.split(' ')[1];
-      payload = await verify(token, c.env.JWT_SECRET);
+      // ADDED 'HS256' ALGORITHM HERE
+      payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     } catch (e) {
       return c.json({ success: false, message: 'Invalid or expired token' }, 401);
     }
