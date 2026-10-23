@@ -6,6 +6,9 @@
 - Scanner startup is explicit, and the patrol route screen prevents opening multiple scanner screens at once.
 - Camera failures show permission/retry guidance instead of exposing the raw Android exception on screen.
 
+## Android release build
+- Gradle wrapper upgraded to 8.14.3 to meet the minimum required by the Flutter Gradle plugin.
+
 ## "Network unstable. Incident queued." (yellow message)
 Cause: every failure (HTTP 400/401/404/500, timeout, real network loss) was caught by one
 `catch` and reported as a network problem + queued. Now:
