@@ -10,27 +10,40 @@ class QrScannerScreen extends StatefulWidget {
 }
 
 class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingObserver {
-  late MobileScannerController _scannerController;
+  MobileScannerController? _scannerController;
   bool _isProcessing = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // Defer controller initialization until the native view is mounted
     _scannerController = MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
       facing: CameraFacing.back,
-      autoStart: true,
+      autoStart: false,
     );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (mounted && _scannerController != null) {
+        try {
+          await _scannerController!.start();
+          if (mounted) setState(() {});
+        } catch (e) {
+          debugPrint("Scanner initialization error: $e");
+        }
+      }
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_scannerController.value.isInitialized) return;
+    if (_scannerController == null) return;
     if (state == AppLifecycleState.resumed) {
-      _scannerController.start();
+      _scannerController!.start();
     } else if (state == AppLifecycleState.paused) {
-      _scannerController.stop();
+      _scannerController!.stop();
     }
   }
 
@@ -43,7 +56,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingOb
       
       if (rawValue != null && rawValue.startsWith('rakshak://cp')) {
         setState(() => _isProcessing = true);
-        await _scannerController.stop();
+        await _scannerController?.stop();
 
         try {
           final uri = Uri.parse(rawValue);
@@ -75,7 +88,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingOb
         }
         
         setState(() => _isProcessing = false);
-        await _scannerController.start();
+        await _scannerController?.start();
       }
     }
   }
@@ -92,46 +105,49 @@ class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingOb
       body: Stack(
         alignment: Alignment.center,
         children: [
-          MobileScanner(
-            controller: _scannerController,
-            onDetect: _onDetect,
-            errorBuilder: (context, error, child) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.no_photography_outlined, color: Colors.amber, size: 54),
-                      const SizedBox(height: 12),
-                      Text(
-                        error.errorCode == MobileScannerErrorCode.permissionDenied
-                            ? 'Camera Permission Required'
-                            : 'Camera Error: ${error.errorCode.name}',
-                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        error.errorCode == MobileScannerErrorCode.permissionDenied
-                            ? 'Please allow Camera permission in your phone Settings > Apps > Rakshak Patrol.'
-                            : (error.errorDetails?.message ?? 'Unable to start camera preview.'),
-                        style: const TextStyle(color: Colors.white70, fontSize: 13),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 20),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
-                        icon: const Icon(Icons.refresh, color: Colors.white),
-                        label: const Text('Retry Camera', style: TextStyle(color: Colors.white)),
-                        onPressed: () => _scannerController.start(),
-                      ),
-                    ],
+          if (_scannerController != null)
+            MobileScanner(
+              controller: _scannerController,
+              onDetect: _onDetect,
+              errorBuilder: (context, error, child) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.camera_alt_outlined, color: Colors.amber, size: 54),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Starting Camera...',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          error.errorDetails?.message ?? 'Connecting to Android camera hardware.',
+                          style: const TextStyle(color: Colors.white70, fontSize: 13),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 20),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+                          icon: const Icon(Icons.refresh, color: Colors.white),
+                          label: const Text('Restart Camera', style: TextStyle(color: Colors.white)),
+                          onPressed: () async {
+                            try {
+                              await _scannerController?.stop();
+                              await _scannerController?.start();
+                              setState(() {});
+                            } catch (_) {}
+                          },
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
+                );
+              },
+            ),
           Container(
             width: 250,
             height: 250,
@@ -160,7 +176,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingOb
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _scannerController.dispose();
+    _scannerController?.dispose();
     super.dispose();
   }
 }

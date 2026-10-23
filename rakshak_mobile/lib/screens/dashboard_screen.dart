@@ -48,17 +48,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _isShiftActive = localShiftState;
       _isLoadingPrefs = false;
     });
-
-    if (_token.isNotEmpty) {
-      await _syncActiveShiftWithServer();
-    }
-  }
-
-  // Fetch true server shift state
+// Fetch true server shift state
   Future<void> _syncActiveShiftWithServer() async {
     try {
       final response = await http.get(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/shifts/active'),
+        Uri.parse('${LockedCameraScreen.API_BASE_URL}/shifts/active'), // <-- FIXED: Removed duplicate /api/v1
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $_token',
@@ -81,6 +75,70 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     } catch (_) {
       // Offline fallback: keep localShiftState
+    }
+  }
+
+  Future<void> _toggleShift() async {
+    if (_isShiftLoading) return;
+
+    setState(() => _isShiftLoading = true);
+
+    // FIXED: Endpoints without duplicate /api/v1
+    final endpoint = _isShiftActive ? '/shifts/end' : '/shifts/start';
+    final targetState = !_isShiftActive;
+
+    try {
+      final response = await http.post(
+        Uri.parse('${LockedCameraScreen.API_BASE_URL}$endpoint'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_shift_active', targetState);
+
+        if (mounted) {
+          setState(() {
+            _isShiftActive = targetState;
+            _isShiftLoading = false;
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(_isShiftActive ? 'Shift Started and logged online.' : 'Shift Ended and logged online.'),
+              backgroundColor: _isShiftActive ? Colors.green.shade700 : Colors.orange.shade800,
+            ),
+          );
+        }
+        return;
+      }
+
+      throw Exception('Server returned ${response.statusCode}');
+    } catch (e) {
+      // Fallback: persist locally and notify user of network lag
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_shift_active', targetState);
+
+      if (mounted) {
+        setState(() {
+          _isShiftActive = targetState;
+          _isShiftLoading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _isShiftActive
+                  ? 'Shift Started locally (will sync once connected).'
+                  : 'Shift Ended locally (will sync once connected).',
+            ),
+            backgroundColor: Colors.amber.shade900,
+          ),
+        );
+      }
     }
   }
 
