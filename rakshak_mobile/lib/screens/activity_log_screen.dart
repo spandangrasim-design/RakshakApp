@@ -3,12 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/api_config.dart';
 import '../services/local_db_service.dart';
 import '../services/sync_service.dart';
-import 'locked_camera_screen.dart';
 
 class ActivityLogScreen extends StatefulWidget {
-  const ActivityLogScreen({Key? key}) : super(key: key);
+  const ActivityLogScreen({super.key});
 
   @override
   State<ActivityLogScreen> createState() => _ActivityLogScreenState();
@@ -39,7 +39,7 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
       final token = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
 
       final response = await http.get(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/scans'),
+        Uri.parse(ApiConfig.scansUrl),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -67,10 +67,9 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
 
   Future<void> _triggerManualSync() async {
     setState(() => _isSyncing = true);
-    SyncService().initialize();
-    
-    // Wait briefly for network transmission
-    await Future.delayed(const Duration(seconds: 2));
+
+    // Actually wait for the upload to finish (no guessing with a delay)
+    await SyncService().syncNow();
     await _loadAllLogs();
 
     if (mounted) {
@@ -131,7 +130,7 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
                       ],
                     ),
                     const SizedBox(height: 10),
-                    ..._pendingScans.map((scan) => _buildPendingScanCard(scan)).toList(),
+                    ..._pendingScans.map((scan) => _buildPendingScanCard(scan)),
                     const SizedBox(height: 20),
                   ],
 
@@ -158,7 +157,7 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
                       ),
                     )
                   else
-                    ..._syncedScans.map((scan) => _buildSyncedScanCard(scan)).toList(),
+                    ..._syncedScans.map((scan) => _buildSyncedScanCard(scan)),
                 ],
               ),
             ),

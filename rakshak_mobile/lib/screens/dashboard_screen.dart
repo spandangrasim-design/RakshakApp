@@ -1,19 +1,23 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/api_config.dart';
+import '../services/api_client.dart';
+import '../services/sync_service.dart';
+
 import 'login_screen.dart';
-import 'qr_scanner_screen.dart'; 
-import 'incident_report_screen.dart'; 
+import 'qr_scanner_screen.dart';
+import 'incident_report_screen.dart';
 import 'patrol_route_screen.dart';
 import 'activity_log_screen.dart';
-import 'locked_camera_screen.dart'; // Provides API_BASE_URL
-import '../widgets/offline_banner.dart'; 
+import '../widgets/offline_banner.dart';
 import '../widgets/home_incidents_preview.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -25,7 +29,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _token = '';
   bool _isShiftActive = false;
   bool _isShiftLoading = false;
-  bool? _lastScanVerified; 
+  bool? _lastScanVerified;
   bool _isLoadingPrefs = true;
 
   @override
@@ -38,9 +42,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedGuardName = prefs.getString('guard_name') ?? 'Security Guard';
     final savedGuardId = prefs.getString('guard_id') ?? '';
-    final savedToken = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+    final savedToken =
+        prefs.getString('access_token') ?? prefs.getString('token') ?? '';
     final localShiftState = prefs.getBool('is_shift_active') ?? false;
 
+    if (!mounted) return;
     setState(() {
       _guardName = savedGuardName;
       _guardId = savedGuardId;
@@ -48,11 +54,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _isShiftActive = localShiftState;
       _isLoadingPrefs = false;
     });
-// Fetch true server shift state
+
+    if (_token.isNotEmpty) {
+      // Upload anything that was queued while offline / before login
+      SyncService().initialize();
+      await _syncActiveShiftWithServer();
+    }
+  }
+
+  // Fetch true server shift state
   Future<void> _syncActiveShiftWithServer() async {
     try {
       final response = await http.get(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/shifts/active'), // <-- FIXED: Removed duplicate /api/v1
+        Uri.parse('${ApiConfig.shiftsBase}/active'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $_token',
@@ -83,125 +97,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     setState(() => _isShiftLoading = true);
 
-    // FIXED: Endpoints without duplicate /api/v1
-    final endpoint = _isShiftActive ? '/shifts/end' : '/shifts/start';
+    final endpoint = _isShiftActive ? 'end' : 'start';
     final targetState = !_isShiftActive;
 
-    try {
-      final response = await http.post(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}$endpoint'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-      ).timeout(const Duration(seconds: 10));
+    final outcome = await ApiClient.postJson(
+      '${ApiConfig.shiftsBase}/$endpoint',
+      token: _token,
+      body: const <String, dynamic>{},
+      timeout: const Duration(seconds: 10),
+    );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_shift_active', targetState);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_shift_active', targetState);
 
-        if (mounted) {
-          setState(() {
-            _isShiftActive = targetState;
-            _isShiftLoading = false;
-          });
+    if (!mounted) return;
+    setState(() {
+      _isShiftActive = targetState;
+      _isShiftLoading = false;
+    });
 
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(_isShiftActive ? 'Shift Started and logged online.' : 'Shift Ended and logged online.'),
-              backgroundColor: _isShiftActive ? Colors.green.shade700 : Colors.orange.shade800,
-            ),
-          );
-        }
-        return;
-      }
-
-      throw Exception('Server returned ${response.statusCode}');
-    } catch (e) {
-      // Fallback: persist locally and notify user of network lag
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('is_shift_active', targetState);
-
-      if (mounted) {
-        setState(() {
-          _isShiftActive = targetState;
-          _isShiftLoading = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _isShiftActive
-                  ? 'Shift Started locally (will sync once connected).'
-                  : 'Shift Ended locally (will sync once connected).',
-            ),
-            backgroundColor: Colors.amber.shade900,
+    final messenger = ScaffoldMessenger.of(context);
+    if (outcome.ok) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(targetState
+              ? 'Shift Started and logged online.'
+              : 'Shift Ended and logged online.'),
+          backgroundColor:
+              targetState ? Colors.green.shade700 : Colors.orange.shade800,
+        ),
+      );
+    } else {
+      // Keep the previous behaviour (state is saved on the device) but tell
+      // the guard the TRUE reason instead of a generic "offline" message.
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Shift ${targetState ? 'started' : 'ended'} on this device only. '
+            'Server: ${outcome.describe}',
+            style: const TextStyle(fontSize: 12),
           ),
-        );
-      }
-    }
-  }
-
-  Future<void> _toggleShift() async {
-    if (_isShiftLoading) return;
-
-    setState(() => _isShiftLoading = true);
-
-    final endpoint = _isShiftActive ? '/api/v1/shifts/end' : '/api/v1/shifts/start';
-    final targetState = !_isShiftActive;
-
-    try {
-      final response = await http.post(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}$endpoint'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_shift_active', targetState);
-
-        if (mounted) {
-          setState(() {
-            _isShiftActive = targetState;
-            _isShiftLoading = false;
-          });
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(_isShiftActive ? 'Shift Started and logged online.' : 'Shift Ended and logged online.'),
-              backgroundColor: _isShiftActive ? Colors.green.shade700 : Colors.orange.shade800,
-            ),
-          );
-        }
-        return;
-      }
-
-      throw Exception('Server returned ${response.statusCode}');
-    } catch (e) {
-      // Fallback: persist locally and notify user of network lag
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('is_shift_active', targetState);
-
-      if (mounted) {
-        setState(() {
-          _isShiftActive = targetState;
-          _isShiftLoading = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _isShiftActive
-                  ? 'Shift Started locally (will sync once connected).'
-                  : 'Shift Ended locally (will sync once connected).',
-            ),
-            backgroundColor: Colors.amber.shade900,
-          ),
-        );
-      }
+          backgroundColor: Colors.red.shade900,
+          duration: const Duration(seconds: 8),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -221,7 +161,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('Rakshak Patrol', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Rakshak Patrol',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
         actions: [
@@ -235,7 +176,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: Column(
         children: [
           const OfflineBanner(),
-
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(20.0),
@@ -251,7 +191,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       border: Border.all(color: Colors.grey.shade200),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
+                          color: Colors.black.withValues(alpha: 0.04),
                           blurRadius: 10,
                           offset: const Offset(0, 4),
                         ),
@@ -261,8 +201,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       children: [
                         CircleAvatar(
                           radius: 28,
-                          backgroundColor: const Color(0xFF1E3A8A).withOpacity(0.1),
-                          child: const Icon(Icons.person, size: 32, color: Color(0xFF1E3A8A)),
+                          backgroundColor:
+                              const Color(0xFF1E3A8A).withValues(alpha: 0.1),
+                          child: const Icon(Icons.person,
+                              size: 32, color: Color(0xFF1E3A8A)),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
@@ -271,7 +213,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             children: [
                               const Text(
                                 'Welcome back,',
-                                style: TextStyle(color: Colors.black54, fontSize: 13),
+                                style: TextStyle(
+                                    color: Colors.black54, fontSize: 13),
                               ),
                               Text(
                                 _guardName,
@@ -293,43 +236,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: _isShiftActive ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+                      color: _isShiftActive
+                          ? const Color(0xFFECFDF5)
+                          : const Color(0xFFFFFBEB),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _isShiftActive ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+                        color: _isShiftActive
+                            ? const Color(0xFFA7F3D0)
+                            : const Color(0xFFFDE68A),
                       ),
                     ),
                     child: Row(
                       children: [
                         Icon(
-                          _isShiftActive ? Icons.check_circle : Icons.pause_circle_filled,
-                          color: _isShiftActive ? Colors.green.shade700 : Colors.amber.shade800,
+                          _isShiftActive
+                              ? Icons.check_circle
+                              : Icons.pause_circle_filled,
+                          color: _isShiftActive
+                              ? Colors.green.shade700
+                              : Colors.amber.shade800,
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            _isShiftActive ? 'Active Patrol Shift' : 'Off-Duty (No Active Shift)',
+                            _isShiftActive
+                                ? 'Active Patrol Shift'
+                                : 'Off-Duty (No Active Shift)',
                             style: TextStyle(
                               fontWeight: FontWeight.w600,
-                              color: _isShiftActive ? Colors.green.shade900 : Colors.amber.shade900,
+                              color: _isShiftActive
+                                  ? Colors.green.shade900
+                                  : Colors.amber.shade900,
                             ),
                           ),
                         ),
                         ElevatedButton(
                           onPressed: _isShiftLoading ? null : _toggleShift,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: _isShiftActive ? Colors.red.shade600 : const Color(0xFF1E3A8A),
+                            backgroundColor: _isShiftActive
+                                ? Colors.red.shade600
+                                : const Color(0xFF1E3A8A),
                             foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8)),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
                           ),
                           child: _isShiftLoading
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
                                 )
-                              : Text(_isShiftActive ? 'End Shift' : 'Start Shift'),
+                              : Text(
+                                  _isShiftActive ? 'End Shift' : 'Start Shift'),
                         ),
                       ],
                     ),
@@ -337,7 +298,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 20),
 
                   // Active Incidents Preview
-                  if (!_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty) ...[
+                  if (!_isLoadingPrefs &&
+                      _guardId.isNotEmpty &&
+                      _token.isNotEmpty) ...[
                     HomeIncidentsPreview(
                       guardId: _guardId,
                       token: _token,
@@ -351,17 +314,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       margin: const EdgeInsets.only(bottom: 24),
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: _lastScanVerified! ? Colors.green.shade50 : Colors.orange.shade50,
+                        color: _lastScanVerified!
+                            ? Colors.green.shade50
+                            : Colors.orange.shade50,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: _lastScanVerified! ? Colors.green.shade200 : Colors.orange.shade300,
+                          color: _lastScanVerified!
+                              ? Colors.green.shade200
+                              : Colors.orange.shade300,
                         ),
                       ),
                       child: Row(
                         children: [
                           Icon(
-                            _lastScanVerified! ? Icons.verified_user : Icons.warning_amber_rounded,
-                            color: _lastScanVerified! ? Colors.green.shade700 : Colors.orange.shade800,
+                            _lastScanVerified!
+                                ? Icons.verified_user
+                                : Icons.warning_amber_rounded,
+                            color: _lastScanVerified!
+                                ? Colors.green.shade700
+                                : Colors.orange.shade800,
                             size: 28,
                           ),
                           const SizedBox(width: 12),
@@ -370,20 +341,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  _lastScanVerified! ? 'Scan Verified' : 'Geofence Warning (Amber Flag)',
+                                  _lastScanVerified!
+                                      ? 'Scan Verified'
+                                      : 'Geofence Warning (Amber Flag)',
                                   style: TextStyle(
                                     fontWeight: FontWeight.bold,
-                                    color: _lastScanVerified! ? Colors.green.shade900 : Colors.orange.shade900,
+                                    color: _lastScanVerified!
+                                        ? Colors.green.shade900
+                                        : Colors.orange.shade900,
                                   ),
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  _lastScanVerified! 
-                                    ? 'Location perfectly matched checkpoint coordinates.' 
-                                    : 'Your scan location was > 50 meters from the checkpoint. This has been flagged for admin review.',
+                                  _lastScanVerified!
+                                      ? 'Location perfectly matched checkpoint coordinates.'
+                                      : 'Your scan location was > 50 meters from the checkpoint. This has been flagged for admin review.',
                                   style: TextStyle(
                                     fontSize: 12,
-                                    color: _lastScanVerified! ? Colors.green.shade700 : Colors.orange.shade800,
+                                    color: _lastScanVerified!
+                                        ? Colors.green.shade700
+                                        : Colors.orange.shade800,
                                   ),
                                 ),
                               ],
@@ -395,7 +372,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                   const Text(
                     'Patrol Actions',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF334155)),
                   ),
                   const SizedBox(height: 12),
 
@@ -415,9 +395,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onTap: () async {
                           final result = await Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+                            MaterialPageRoute(
+                                builder: (context) => const QrScannerScreen()),
                           );
-                          
+
                           if (result != null && result is bool) {
                             setState(() => _lastScanVerified = result);
                           } else if (result == null) {
@@ -433,7 +414,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onTap: () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const IncidentReportScreen()),
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    const IncidentReportScreen()),
                           );
                         },
                       ),
@@ -445,7 +428,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onTap: () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const PatrolRouteScreen()),
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    const PatrolRouteScreen()),
                           );
                         },
                       ),
@@ -457,7 +442,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         onTap: () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const ActivityLogScreen()),
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    const ActivityLogScreen()),
                           );
                         },
                       ),
@@ -490,7 +477,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           border: Border.all(color: Colors.grey.shade200),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.02),
+              color: Colors.black.withValues(alpha: 0.02),
               blurRadius: 8,
               offset: const Offset(0, 3),
             ),
@@ -502,13 +489,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             CircleAvatar(
               radius: 22,
-              backgroundColor: color.withOpacity(0.12),
+              backgroundColor: color.withValues(alpha: 0.12),
               child: Icon(icon, color: color, size: 24),
             ),
             const SizedBox(height: 12),
             Text(
               title,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+              style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Color(0xFF0F172A)),
             ),
             const SizedBox(height: 4),
             Text(

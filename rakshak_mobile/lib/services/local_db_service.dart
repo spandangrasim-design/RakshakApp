@@ -135,4 +135,21 @@ class LocalDbService {
       whereArgs: syncedIds,
     );
   }
+
+  // ==========================================
+  // QUEUE COUNTS (cheap - no payload decoding)
+  // ==========================================
+  Future<int> pendingScanCount() async {
+    final db = await database;
+    return Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM offline_scans')) ??
+        0;
+  }
+
+  Future<int> pendingIncidentCount() async {
+    final db = await database;
+    return Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM offline_incidents')) ??
+        0;
+  }
 }

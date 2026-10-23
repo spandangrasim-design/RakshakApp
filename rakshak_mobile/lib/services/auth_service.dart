@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/api_config.dart';
+
 class AuthService {
   // Your live Cloudflare API URL
-  static const String apiUrl = 'https://rakshak-api.spandangrasim.workers.dev/api/v1/auth/login';
+  static const String apiUrl = ApiConfig.loginUrl;
 
   Future<Map<String, dynamic>> login(String employeeCode, String password) async {
     try {

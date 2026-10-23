@@ -1,14 +1,15 @@
 import 'dart:convert';
-import 'package:flutter/material.dart';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:uuid/uuid.dart';
+import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
 
+import '../config/api_config.dart';
+import '../services/api_client.dart';
 import '../services/local_db_service.dart';
-import '../services/sync_service.dart'; // Added to trigger background sync
-import 'locked_camera_screen.dart'; // For API_BASE_URL
+import '../services/sync_service.dart';
 
 class IncidentReportScreen extends StatefulWidget {
   const IncidentReportScreen({super.key});
@@ -21,7 +22,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   final TextEditingController _descriptionController = TextEditingController();
   String _selectedPriority = 'P4';
   bool _isSubmitting = false;
-  
+
   String? _photoBase64;
   final ImagePicker _picker = ImagePicker();
 
@@ -36,107 +37,155 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     try {
       final XFile? photo = await _picker.pickImage(
         source: ImageSource.camera,
-        imageQuality: 60, // Compress to save bandwidth
-        maxWidth: 1080,
+        imageQuality: 50, // compress to save bandwidth
+        maxWidth: 1024,
       );
 
       if (photo != null) {
         final bytes = await photo.readAsBytes();
+        if (!mounted) return;
         setState(() {
-          _photoBase64 = "data:image/jpeg;base64,${base64Encode(bytes)}";
+          _photoBase64 = 'data:image/jpeg;base64,${base64Encode(bytes)}';
         });
       }
     } catch (e) {
-      debugPrint("Photo error: $e");
+      debugPrint('Photo error: $e');
     }
+  }
+
+  void _showSnack(String text, Color color, {int seconds = 4}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        backgroundColor: color,
+        duration: Duration(seconds: seconds),
+      ),
+    );
   }
 
   Future<void> _submitIncident() async {
     if (_descriptionController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a description')),
-      );
+      _showSnack('Please enter a description', Colors.black87);
       return;
     }
 
     setState(() => _isSubmitting = true);
 
-    final connectivityResult = await Connectivity().checkConnectivity();
-    final isOffline = !connectivityResult.contains(ConnectivityResult.mobile) && 
-                      !connectivityResult.contains(ConnectivityResult.wifi);
-
     final clientIncidentId = const Uuid().v4();
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('access_token') ?? '';
+    final token =
+        prefs.getString('access_token') ?? prefs.getString('token') ?? '';
 
-    final payload = {
-      "client_incident_id": clientIncidentId,
-      "description": _descriptionController.text.trim(),
-      "priority": _selectedPriority,
-      "photo_url": _photoBase64 ?? "", // Matches Cloudflare Worker expectation
-      "reported_at": DateTime.now().toIso8601String()
+    final payload = <String, dynamic>{
+      'client_incident_id': clientIncidentId,
+      'description': _descriptionController.text.trim(),
+      'priority': _selectedPriority,
+      'photo_url': _photoBase64 ?? '',
+      'reported_at': DateTime.now().toIso8601String(),
     };
 
-    if (isOffline) {
-      // 1. OFFLINE QUEUE
-      await LocalDbService().queueIncident(clientIncidentId, payload);
-      SyncService().initialize(); // Ensure sync listener is active
-      
-      if (_selectedPriority == 'P1') {
-        _showP1EmergencyModal();
-      } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Offline: Incident queued for sync.'), backgroundColor: Colors.orange),
-        );
-        Navigator.pop(context);
-      }
-    } else {
-      // 2. LIVE UPLOAD
-      try {
-        final response = await http.post(
-          Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/incidents'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-          body: jsonEncode(payload),
-        ).timeout(const Duration(seconds: 15));
+    // Is the phone connected to anything at all?
+    final connectivity = await Connectivity().checkConnectivity();
+    final deviceOffline = connectivity.every((r) => r == ConnectivityResult.none);
 
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Incident reported successfully.'), backgroundColor: Colors.green),
-          );
-          Navigator.pop(context);
-        } else {
-          throw Exception('Server error: ${response.statusCode}');
-        }
-      } catch (e) {
-        debugPrint('Upload failed, queuing offline: $e');
-        await LocalDbService().queueIncident(clientIncidentId, payload);
-        SyncService().initialize(); // Ensure sync listener is active
-        
-        if (_selectedPriority == 'P1') {
-          _showP1EmergencyModal();
-        } else {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Network unstable. Incident queued.'), backgroundColor: Colors.orange),
-          );
-          Navigator.pop(context);
-        }
-      }
+    if (deviceOffline) {
+      await _queueAndFinish(
+        clientIncidentId,
+        payload,
+        toast: 'No internet. Incident saved and will sync automatically.',
+        p1Reason: 'You are offline and this P1 incident cannot be sent instantly.',
+      );
+      return;
     }
 
-    if (mounted) setState(() => _isSubmitting = false);
+    // LIVE UPLOAD
+    final outcome = await ApiClient.postJson(
+      ApiConfig.incidentsUrl,
+      token: token,
+      body: payload,
+      timeout: const Duration(seconds: 30), // photos can be large
+    );
+
+    if (outcome.ok) {
+      _showSnack('Incident reported successfully.', Colors.green);
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+
+    debugPrint('Incident upload failed: ${outcome.failure} ${outcome.describe}');
+
+    switch (outcome.failure) {
+      case ApiFailure.network:
+        await _queueAndFinish(
+          clientIncidentId,
+          payload,
+          toast: 'Could not reach the server (${outcome.message}). '
+              'Incident saved and will sync automatically.',
+          p1Reason: 'The server could not be reached for this P1 incident.',
+        );
+        break;
+
+      case ApiFailure.unauthorized:
+        await _queueAndFinish(
+          clientIncidentId,
+          payload,
+          toast: 'Session expired (HTTP 401). Incident saved - please log out '
+              'and log in again so it can sync.',
+          p1Reason: 'Your login expired, so this P1 incident was not sent.',
+        );
+        break;
+
+      case ApiFailure.server:
+        await _queueAndFinish(
+          clientIncidentId,
+          payload,
+          toast: 'Server problem (${outcome.describe}). '
+              'Incident saved and will retry automatically.',
+          p1Reason: 'The server had an error while receiving this P1 incident.',
+        );
+        break;
+
+      case ApiFailure.rejected:
+      case ApiFailure.none:
+        // The server refused this data. Queueing would fail forever, so keep
+        // the form open and show the REAL reason.
+        _showSnack(
+          'Server rejected the report (${outcome.describe})',
+          Colors.red.shade700,
+          seconds: 8,
+        );
+        if (mounted) setState(() => _isSubmitting = false);
+        break;
+    }
   }
 
-  void _showP1EmergencyModal() {
-    showDialog(
+  /// Saves the incident in the local queue, triggers a sync attempt, then
+  /// closes the screen (P1 shows the emergency modal first).
+  Future<void> _queueAndFinish(
+    String clientIncidentId,
+    Map<String, dynamic> payload, {
+    required String toast,
+    required String p1Reason,
+  }) async {
+    await LocalDbService().queueIncident(clientIncidentId, payload);
+    SyncService().initialize(); // safe to call repeatedly
+
+    if (!mounted) return;
+
+    if (_selectedPriority == 'P1') {
+      await _showP1EmergencyModal(p1Reason);
+    } else {
+      _showSnack(toast, Colors.orange.shade800, seconds: 6);
+      if (mounted) Navigator.pop(context);
+    }
+  }
+
+  Future<void> _showP1EmergencyModal(String reason) {
+    return showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) {
+      builder: (BuildContext dialogContext) {
         return AlertDialog(
           backgroundColor: Colors.red.shade700,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -144,12 +193,15 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             children: [
               Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
               SizedBox(width: 12),
-              Text('CRITICAL ALERT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              Text('CRITICAL ALERT',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
             ],
           ),
-          content: const Text(
-            'You are offline and this P1 incident cannot be transmitted instantly.\n\nCall the Control Room immediately via radio or phone.',
-            style: TextStyle(color: Colors.white, fontSize: 16),
+          content: Text(
+            '$reason\n\nThe report is saved and will upload automatically. '
+            'Call the Control Room immediately via radio or phone.',
+            style: const TextStyle(color: Colors.white, fontSize: 16),
           ),
           actions: [
             ElevatedButton(
@@ -158,10 +210,11 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 foregroundColor: Colors.red.shade700,
               ),
               onPressed: () {
-                Navigator.of(context).pop(); 
-                Navigator.of(context).pop(); 
+                Navigator.of(dialogContext).pop(); // close dialog
+                if (mounted) Navigator.of(context).pop(); // close screen
               },
-              child: const Text('I Understand', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text('I Understand',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         );
@@ -189,7 +242,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Priority Level', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text('Priority Level',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -205,12 +259,18 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   items: _priorityLabels.entries.map((entry) {
                     return DropdownMenuItem(
                       value: entry.key,
-                      child: Text(entry.value, 
+                      child: Text(
+                        entry.value,
                         style: TextStyle(
-                          color: entry.key == 'P1' ? Colors.red : 
-                                 entry.key == 'P2' ? Colors.orange : Colors.black87,
-                          fontWeight: entry.key == 'P1' || entry.key == 'P2' ? FontWeight.bold : FontWeight.normal
-                        )
+                          color: entry.key == 'P1'
+                              ? Colors.red
+                              : entry.key == 'P2'
+                                  ? Colors.orange
+                                  : Colors.black87,
+                          fontWeight: entry.key == 'P1' || entry.key == 'P2'
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
                       ),
                     );
                   }).toList(),
@@ -221,8 +281,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
               ),
             ),
             const SizedBox(height: 24),
-            
-            const Text('Description', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text('Description',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             TextField(
               controller: _descriptionController,
@@ -243,32 +303,44 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Camera Button
+            // Camera button
             InkWell(
               onTap: _capturePhoto,
               borderRadius: BorderRadius.circular(12),
               child: Container(
                 height: 120,
                 decoration: BoxDecoration(
-                  color: _photoBase64 != null ? Colors.green.shade50 : Colors.grey.shade200,
+                  color: _photoBase64 != null
+                      ? Colors.green.shade50
+                      : Colors.grey.shade200,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: _photoBase64 != null ? Colors.green.shade400 : Colors.grey.shade300, 
-                    style: BorderStyle.solid
+                    color: _photoBase64 != null
+                        ? Colors.green.shade400
+                        : Colors.grey.shade300,
                   ),
                 ),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      _photoBase64 != null ? Icons.check_circle : Icons.camera_alt, 
-                      size: 40, 
-                      color: _photoBase64 != null ? Colors.green : Colors.black38
+                      _photoBase64 != null
+                          ? Icons.check_circle
+                          : Icons.camera_alt,
+                      size: 40,
+                      color:
+                          _photoBase64 != null ? Colors.green : Colors.black38,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _photoBase64 != null ? 'Photo Captured (Tap to retake)' : 'Tap to add photo (Optional)', 
-                      style: TextStyle(color: _photoBase64 != null ? Colors.green.shade700 : Colors.black54)
+                      _photoBase64 != null
+                          ? 'Photo Captured (Tap to retake)'
+                          : 'Tap to add photo (Optional)',
+                      style: TextStyle(
+                        color: _photoBase64 != null
+                            ? Colors.green.shade700
+                            : Colors.black54,
+                      ),
                     ),
                   ],
                 ),
@@ -282,11 +354,19 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                 backgroundColor: const Color(0xFFDC2626),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
               ),
-              child: _isSubmitting 
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Text('Submit Report', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              child: _isSubmitting
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Text('Submit Report',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ],
         ),

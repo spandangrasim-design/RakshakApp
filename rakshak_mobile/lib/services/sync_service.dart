@@ -1,36 +1,62 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/api_config.dart';
+import 'api_client.dart';
 import 'local_db_service.dart';
-import '../screens/locked_camera_screen.dart'; // Adjust import if your API_BASE_URL is stored elsewhere
 
+/// Uploads everything saved in the local offline queue (patrol scans and
+/// incident reports).
+///
+/// Sync runs:
+///  * once at app start,
+///  * whenever the device regains a connection,
+///  * every 60 seconds while the app is open (covers the case where the
+///    server was briefly failing while the phone itself was online),
+///  * on demand via [syncNow].
 class SyncService {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
   SyncService._internal();
 
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  Timer? _retryTimer;
   bool _isSyncing = false;
 
+  static bool hasConnection(List<ConnectivityResult> results) =>
+      results.any((r) => r != ConnectivityResult.none);
+
+  /// Safe to call many times - listeners are only attached once.
   void initialize() {
-    // Listen for network changes (Wi-Fi or Mobile Data returning)
-    Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
-      if (results.contains(ConnectivityResult.mobile) || results.contains(ConnectivityResult.wifi)) {
-        _syncAllOfflineData();
-      }
+    _connectivitySub ??=
+        Connectivity().onConnectivityChanged.listen((results) {
+      if (hasConnection(results)) syncNow();
     });
+
+    _retryTimer ??= Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => syncNow(),
+    );
+
+    syncNow();
   }
 
-  Future<void> _syncAllOfflineData() async {
-    if (_isSyncing) return; // Prevent overlapping syncs
+  /// Try to upload everything that is queued right now.
+  Future<void> syncNow() async {
+    if (_isSyncing) return; // prevent overlapping syncs
     _isSyncing = true;
 
     try {
-      await _syncPatrolScans();
-      await _syncIncidents(); // NEW: Fire the incident sync
+      final prefs = await SharedPreferences.getInstance();
+      final token =
+          prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+      if (token.isEmpty) return; // not logged in yet
+
+      await _syncPatrolScans(token);
+      await _syncIncidents(token);
     } catch (e) {
       debugPrint('Background sync error: $e');
     } finally {
@@ -39,78 +65,69 @@ class SyncService {
   }
 
   // ==========================================
-  // SPRINT 4: SYNC PATROL SCANS
+  // PATROL SCANS
   // ==========================================
-  Future<void> _syncPatrolScans() async {
+  Future<void> _syncPatrolScans(String token) async {
     final scans = await LocalDbService().getUnsyncedScans();
     if (scans.isEmpty) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('access_token');
-    if (token == null) return;
+    final outcome = await ApiClient.postJson(
+      ApiConfig.patrolSyncUrl,
+      token: token,
+      body: {'scans': scans},
+      timeout: const Duration(seconds: 30),
+    );
 
-    try {
-      final response = await http.post(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/patrols/sync'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({'scans': scans}),
-      ).timeout(const Duration(seconds: 15));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final syncedItems = data['synced_items'] as List;
-        
-        // Extract the IDs that were successfully saved by the server
-        final List<String> successfullySyncedIds = syncedItems
-            .where((item) => item['status'] != 'failed')
-            .map((item) => item['client_scan_id'] as String)
-            .toList();
-
-        await LocalDbService().removeSyncedScans(successfullySyncedIds);
-      }
-    } catch (e) {
-      debugPrint('Scan sync failed. Will retry later: $e');
+    if (!outcome.ok) {
+      debugPrint('Scan sync failed (${outcome.describe}). Will retry later.');
+      return;
     }
+
+    final items = outcome.json?['synced_items'];
+    if (items is! List) return;
+
+    final syncedIds = <String>[];
+    for (final item in items) {
+      if (item is Map &&
+          item['status'] != 'failed' &&
+          item['client_scan_id'] != null) {
+        syncedIds.add(item['client_scan_id'].toString());
+      }
+    }
+
+    await LocalDbService().removeSyncedScans(syncedIds);
   }
 
   // ==========================================
-  // SPRINT 5: SYNC INCIDENT REPORTS
+  // INCIDENT REPORTS
   // ==========================================
-  Future<void> _syncIncidents() async {
+  Future<void> _syncIncidents(String token) async {
     final incidents = await LocalDbService().getUnsyncedIncidents();
     if (incidents.isEmpty) return;
 
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('access_token');
-    if (token == null) return;
+    final syncedIds = <String>[];
 
-    List<String> successfullySyncedIds = [];
+    // One by one - each incident may contain a large base64 photo.
+    for (final incident in incidents) {
+      final id = incident['client_incident_id'].toString();
 
-    // Sync incidents one by one (since they might contain large base64 photos)
-    for (var incident in incidents) {
-      try {
-        final response = await http.post(
-          Uri.parse('${LockedCameraScreen.API_BASE_URL}/incidents'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-          body: jsonEncode(incident),
-        ).timeout(const Duration(seconds: 20)); // slightly longer timeout for photos
+      final outcome = await ApiClient.postJson(
+        ApiConfig.incidentsUrl, // same URL as the live upload
+        token: token,
+        body: incident,
+        timeout: const Duration(seconds: 40),
+      );
 
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          successfullySyncedIds.add(incident['client_incident_id']);
-        }
-      } catch (e) {
-        debugPrint('Incident sync failed for ${incident['client_incident_id']}. Will retry later.');
+      // 409 = the server already has this incident (duplicate) -> done.
+      if (outcome.ok || outcome.statusCode == 409) {
+        syncedIds.add(id);
+      } else {
+        debugPrint('Incident $id not synced (${outcome.describe}).');
+        // No connection at all: no point trying the rest right now.
+        if (outcome.failure == ApiFailure.network) break;
       }
     }
 
-    if (successfullySyncedIds.isNotEmpty) {
-      await LocalDbService().removeSyncedIncidents(successfullySyncedIds);
-    }
+    await LocalDbService().removeSyncedIncidents(syncedIds);
   }
 }

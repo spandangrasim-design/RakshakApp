@@ -10,14 +10,14 @@ class IncidentThreadScreen extends StatefulWidget {
   final String guardName;
 
   const IncidentThreadScreen({
-    Key? key,
+    super.key,
     required this.incidentId,
     required this.token,
     required this.guardName,
-  }) : super(key: key);
+  });
 
   @override
-  _IncidentThreadScreenState createState() => _IncidentThreadScreenState();
+  State<IncidentThreadScreen> createState() => _IncidentThreadScreenState();
 }
 
 class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
@@ -64,7 +64,7 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
     String? base64Image;
     if (_selectedImage != null) {
       final bytes = await _selectedImage!.readAsBytes();
-      base64Image = "data:image/jpeg;base64," + base64Encode(bytes);
+      base64Image = "data:image/jpeg;base64,${base64Encode(bytes)}";
     }
 
     bool success = await IncidentService.postIncidentUpdate(
@@ -114,7 +114,7 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
                     isMe: isGuard,
                     timestamp: update['created_at'],
                   );
-                }).toList(),
+                }),
               ],
             ),
           ),

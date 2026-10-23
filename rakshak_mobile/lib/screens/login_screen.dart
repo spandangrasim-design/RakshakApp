@@ -3,7 +3,7 @@ import '../services/auth_service.dart';
 import 'dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({Key? key}) : super(key: key);
+  const LoginScreen({super.key});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -28,16 +28,15 @@ class _LoginScreenState extends State<LoginScreen> {
       _passwordController.text,
     );
 
+    if (!mounted) return;
     setState(() {
       _isLoading = false;
     });
 
     if (result['success']) {
-      // Navigate to the Patrol Dashboard (to be built next)
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Login Successful! Welcome to Rakshak.'), backgroundColor: Colors.green),
       );
-      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const DashboardScreen()),

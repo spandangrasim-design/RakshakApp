@@ -3,11 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'locked_camera_screen.dart'; // Provides API_BASE_URL
+import '../config/api_config.dart';
 import 'qr_scanner_screen.dart';
 
 class PatrolRouteScreen extends StatefulWidget {
-  const PatrolRouteScreen({Key? key}) : super(key: key);
+  const PatrolRouteScreen({super.key});
 
   @override
   State<PatrolRouteScreen> createState() => _PatrolRouteScreenState();
@@ -17,6 +17,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
   List<dynamic> _rounds = [];
   bool _isLoading = true;
   String? _errorMessage;
+  bool _isOpeningScanner = false;
 
   @override
   void initState() {
@@ -35,7 +36,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
       final token = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
 
       final response = await http.get(
-        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/rounds'),
+        Uri.parse(ApiConfig.roundsUrl),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -62,6 +63,20 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         _errorMessage = 'Network error: Check your connection and try again.';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _openScanner() async {
+    if (_isOpeningScanner) return;
+    setState(() => _isOpeningScanner = true);
+
+    try {
+      await Navigator.push<Object?>(
+        context,
+        MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpeningScanner = false);
     }
   }
 
@@ -170,7 +185,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.03),
+            color: Colors.black.withValues(alpha: 0.03),
             blurRadius: 8,
             offset: const Offset(0, 3),
           ),
@@ -182,7 +197,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           initiallyExpanded: true,
           tilePadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           leading: CircleAvatar(
-            backgroundColor: const Color(0xFF0D9488).withOpacity(0.12),
+            backgroundColor: const Color(0xFF0D9488).withValues(alpha: 0.12),
             child: const Icon(Icons.route, color: Color(0xFF0D9488), size: 22),
           ),
           title: Text(
@@ -270,12 +285,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           IconButton(
             icon: const Icon(Icons.qr_code_scanner, color: Color(0xFF2563EB), size: 20),
             tooltip: 'Scan this checkpoint',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const QrScannerScreen()),
-              );
-            },
+            onPressed: _isOpeningScanner ? null : _openScanner,
           ),
         ],
       ),

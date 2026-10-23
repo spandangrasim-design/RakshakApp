@@ -8,10 +8,10 @@ class HomeIncidentsPreview extends StatefulWidget {
   final String token;
   final String guardName;
 
-  const HomeIncidentsPreview({Key? key, required this.guardId, required this.token, required this.guardName}) : super(key: key);
+  const HomeIncidentsPreview({super.key, required this.guardId, required this.token, required this.guardName});
 
   @override
-  _HomeIncidentsPreviewState createState() => _HomeIncidentsPreviewState();
+  State<HomeIncidentsPreview> createState() => _HomeIncidentsPreviewState();
 }
 
 class _HomeIncidentsPreviewState extends State<HomeIncidentsPreview> {

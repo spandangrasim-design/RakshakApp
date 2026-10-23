@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../config/api_config.dart';
+
 class IncidentService {
-  static const String baseUrl = "https://rakshak-api.spandangrasim.workers.dev/api/v1";
+  static const String baseUrl = ApiConfig.apiBase;
 
   static Future<List<dynamic>> fetchIncidents(String token) async {
     final response = await http.get(

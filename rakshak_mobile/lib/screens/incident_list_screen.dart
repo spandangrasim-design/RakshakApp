@@ -8,14 +8,14 @@ class IncidentListScreen extends StatefulWidget {
   final String guardName;
 
   const IncidentListScreen({
-    Key? key,
+    super.key,
     required this.guardId,
     required this.token,
     required this.guardName,
-  }) : super(key: key);
+  });
 
   @override
-  _IncidentListScreenState createState() => _IncidentListScreenState();
+  State<IncidentListScreen> createState() => _IncidentListScreenState();
 }
 
 class _IncidentListScreenState extends State<IncidentListScreen> {
