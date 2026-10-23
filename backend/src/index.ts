@@ -10,7 +10,7 @@ type Bindings = {
   SUPABASE_SERVICE_ROLE_KEY: string
   JWT_SECRET: string
   QR_SECRET: string 
-  R2_BUCKET: R2Bucket // ADDED: Sprint 4 Cloudflare R2 Storage
+  R2_BUCKET: R2Bucket // Sprint 4 Cloudflare R2 Storage
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -25,7 +25,7 @@ const loginSchema = z.object({
 })
 
 const scanSchema = z.object({
-  client_scan_id: z.string(), // ADDED: Sprint 4 Idempotency UUID
+  client_scan_id: z.string(), // Sprint 4 Idempotency UUID
   checkpoint_id: z.string(),
   qr_lat: z.string(),
   qr_lng: z.string(),
@@ -36,6 +36,39 @@ const scanSchema = z.object({
   photo_url: z.string().optional()
 })
 
+const roundSaveSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().min(1),
+  checkpoints: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      lat: z.string().min(1),
+      lng: z.string().min(1)
+    })
+  )
+})
+
+// Guard Management Schemas
+const createGuardSchema = z.object({
+  full_name: z.string().min(1, 'Full name is required'),
+  employee_code: z.string().min(1, 'Employee code is required'),
+  password: z.string().min(4, 'Password must be at least 4 characters'),
+})
+
+const updateGuardSchema = z.object({
+  full_name: z.string().optional(),
+  password: z.string().optional(),
+  is_active: z.boolean().optional(),
+})
+
+// Helper to initialize Supabase admin client
+const getSupabase = (env: Bindings) =>
+  createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { 
+    auth: { persistSession: false },
+    global: { fetch: (...args) => fetch(...args) } 
+  });
+
 // --- ROUTES ----
 
 // 1. Auth Login Route
@@ -44,14 +77,7 @@ app.post('/api/v1/auth/login', async (c) => {
     const body = await c.req.json()
     const { employee_code, password, device_id } = loginSchema.parse(body)
 
-    const supabase = createClient(
-      c.env.SUPABASE_URL,
-      c.env.SUPABASE_SERVICE_ROLE_KEY,
-      { 
-        auth: { persistSession: false },
-        global: { fetch: (...args) => fetch(...args) } 
-      }
-    )
+    const supabase = getSupabase(c.env);
 
     const { data: guard, error } = await supabase
       .from('guards')
@@ -91,14 +117,286 @@ app.post('/api/v1/auth/login', async (c) => {
   }
 })
 
-// Helper to initialize Supabase admin client
-const getSupabase = (env: Bindings) =>
-  createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-    global: { fetch: (...args) => fetch(...args) }
-  });
+// 2. Patrol Scan Route (Single Live Scan)
+app.post('/api/v1/scans', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing or invalid token' }, 401);
+    }
+    
+    let payload;
+    try {
+      const token = authHeader.split(' ')[1];
+      payload = await verify(token, c.env.JWT_SECRET);
+    } catch (e) {
+      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
+    }
+    const guard_id = payload.sub as string;
 
+    const body = await c.req.json();
+    const { client_scan_id, checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
+
+    const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
+    const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+
+    if (signature !== expectedSignature) {
+      return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
+    }
+
+    const supabase = getSupabase(c.env);
+
+    const { data, error } = await supabase.rpc('log_patrol_scan', {
+      p_client_scan_id: client_scan_id,
+      p_checkpoint_id: checkpoint_id,
+      p_guard_id: guard_id,
+      p_guard_lat: guard_lat,
+      p_guard_lng: guard_lng,
+      p_expected_lat: parseFloat(qr_lat),
+      p_expected_lng: parseFloat(qr_lng),
+      p_uptime_seconds: uptime_seconds || 0,
+      p_photo_url: photo_url || ''
+    });
+
+    if (error) {
+      return c.json({ success: false, message: 'Database error', error }, 500);
+    }
+
+    return c.json({ success: true, verification: data });
+
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return c.json({ success: false, message: 'Invalid data format', errors: error.errors }, 400);
+    }
+    return c.json({ success: false, message: 'Server error' }, 500);
+  }
+});
+
+// 2B. GET Recent Scans for Authenticated Guard (Activity Log)
+app.get('/api/v1/scans', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing token' }, 401);
+    }
+
+    const token = authHeader.split(' ')[1];
+    let payload;
+    try {
+      payload = await verify(token, c.env.JWT_SECRET);
+    } catch (e) {
+      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
+    }
+    const guard_id = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+
+    const { data, error } = await supabase
+      .from('patrol_scans')
+      .select('*')
+      .eq('guard_id', guard_id)
+      .order('scanned_at', { ascending: false })
+      .limit(30);
+
+    if (error) {
+      const fallback = await supabase
+        .from('scans')
+        .select('*')
+        .eq('guard_id', guard_id)
+        .order('created_at', { ascending: false })
+        .limit(30);
+
+      return c.json({ success: true, scans: fallback.data || [] });
+    }
+
+    return c.json({ success: true, scans: data || [] });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// 3. Sprint 4: Auto-Sync Engine (Bulk Offline Upload)
+app.post('/api/v1/patrols/sync', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
+    
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET);
+    const guard_id = payload.sub as string;
+
+    const body = await c.req.json();
+    const scans = body.scans;
+    const results = [];
+
+    const supabase = getSupabase(c.env);
+
+    for (const scan of scans) {
+      const dataToSign = `${scan.checkpoint_id}|${scan.qr_lat}|${scan.qr_lng}`;
+      const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+      
+      if (scan.signature !== expectedSignature) {
+        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'Invalid Signature' });
+        continue;
+      }
+
+      let photoUrl = 'https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev';
+      if (scan.photo_url && scan.photo_url.startsWith('data:image')) {
+        const base64Data = scan.photo_url.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+        const fileName = `scans/${scan.client_scan_id}.jpg`;
+        
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        photoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+      }
+
+      const { data, error } = await supabase.rpc('log_patrol_scan', {
+        p_client_scan_id: scan.client_scan_id,
+        p_checkpoint_id: scan.checkpoint_id,
+        p_guard_id: guard_id,
+        p_guard_lat: scan.guard_lat,
+        p_guard_lng: scan.guard_lng,
+        p_expected_lat: parseFloat(scan.qr_lat),
+        p_expected_lng: parseFloat(scan.qr_lng),
+        p_uptime_seconds: scan.uptime_seconds || 0,
+        p_photo_url: photoUrl
+      });
+
+      if (error) {
+        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'DB Error' });
+      } else {
+        results.push({ client_scan_id: scan.client_scan_id, status: data.status, verification: data });
+      }
+    }
+
+    return c.json({ success: true, synced_items: results });
+
+  } catch (error) {
+    return c.json({ success: false, message: 'Sync failed', error }, 500);
+  }
+});
+
+// ==========================================
+// SHIFT TRACKING API
+// ==========================================
+
+// 1. GET Current Active Shift for Guard
+app.get('/api/v1/shifts/active', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing token' }, 401);
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET);
+    const guard_id = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+
+    const { data: activeShift, error } = await supabase
+      .from('shifts')
+      .select('*')
+      .eq('guard_id', guard_id)
+      .eq('status', 'ACTIVE')
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) return c.json({ success: false, message: error.message }, 500);
+
+    return c.json({
+      success: true,
+      is_active: !!activeShift,
+      shift: activeShift || null
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// 2. POST Start Shift
+app.post('/api/v1/shifts/start', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing token' }, 401);
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET);
+    const guard_id = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+
+    const { data: existingShift } = await supabase
+      .from('shifts')
+      .select('id')
+      .eq('guard_id', guard_id)
+      .eq('status', 'ACTIVE')
+      .maybeSingle();
+
+    if (existingShift) {
+      return c.json({ success: true, message: 'Shift already active', shift: existingShift });
+    }
+
+    const { data: newShift, error } = await supabase
+      .from('shifts')
+      .insert([{
+        guard_id,
+        status: 'ACTIVE',
+        start_time: new Date().toISOString()
+      }])
+      .select()
+      .single();
+
+    if (error) return c.json({ success: false, message: error.message }, 500);
+
+    return c.json({ success: true, message: 'Shift started', shift: newShift }, 201);
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// 3. POST End Shift
+app.post('/api/v1/shifts/end', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Missing token' }, 401);
+    }
+
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET);
+    const guard_id = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+
+    const { data: updatedShifts, error } = await supabase
+      .from('shifts')
+      .update({
+        status: 'COMPLETED',
+        end_time: new Date().toISOString()
+      })
+      .eq('guard_id', guard_id)
+      .eq('status', 'ACTIVE')
+      .select();
+
+    if (error) return c.json({ success: false, message: error.message }, 500);
+
+    return c.json({
+      success: true,
+      message: 'Shift ended',
+      shifts_closed: updatedShifts?.length || 0
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// ==========================================
 // 4. ROUNDS & CHECKPOINTS CRUD API
+// ==========================================
 
 // 4A. GET All Rounds with Checkpoints
 app.get('/api/v1/rounds', async (c) => {
@@ -142,19 +440,6 @@ app.get('/api/v1/rounds', async (c) => {
 });
 
 // 4B. POST Create or Update Round with Checkpoints
-const roundSaveSchema = z.object({
-  id: z.string().uuid().optional(),
-  name: z.string().min(1),
-  checkpoints: z.array(
-    z.object({
-      id: z.string().min(1),
-      name: z.string().min(1),
-      lat: z.string().min(1),
-      lng: z.string().min(1)
-    })
-  )
-});
-
 app.post('/api/v1/rounds', async (c) => {
   try {
     const body = await c.req.json();
@@ -164,7 +449,6 @@ app.post('/api/v1/rounds', async (c) => {
     let activeRoundId = id;
 
     if (activeRoundId) {
-      // Update existing round name
       const { error: updateError } = await supabase
         .from('rounds')
         .update({ name })
@@ -172,10 +456,8 @@ app.post('/api/v1/rounds', async (c) => {
 
       if (updateError) return c.json({ success: false, message: updateError.message }, 500);
 
-      // Delete old checkpoints to replace with current set
       await supabase.from('checkpoints').delete().eq('round_id', activeRoundId);
     } else {
-      // Insert new round
       const { data: newRound, error: insertError } = await supabase
         .from('rounds')
         .insert([{ name }])
@@ -186,14 +468,11 @@ app.post('/api/v1/rounds', async (c) => {
       activeRoundId = newRound.id;
     }
 
-    // Insert checkpoints for this round
     if (checkpoints.length > 0) {
       const rows = checkpoints.map((cp) => {
-        // Generate valid UUID if cp.id is not a valid UUID format
         const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cp.id);
         const checkpointUuid = isValidUUID ? cp.id : crypto.randomUUID();
 
-        // Sign payload matching the crypto secret
         const dataToSign = `${checkpointUuid}|${cp.lat}|${cp.lng}`;
         const signature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
         const signedPayload = `${dataToSign}|${signature}`;
@@ -205,14 +484,12 @@ app.post('/api/v1/rounds', async (c) => {
           lat: cp.lat.toString(),
           lng: cp.lng.toString(),
           qr_payload: signedPayload,
-          // PostGIS geography point format (lng, lat)
           location: `SRID=4326;POINT(${cp.lng} ${cp.lat})`
         };
       });
 
       const { error: cpInsertError } = await supabase.from('checkpoints').insert(rows);
       if (cpInsertError) {
-        console.error('Checkpoints insert error:', cpInsertError);
         return c.json({ success: false, message: cpInsertError.message }, 500);
       }
     }
@@ -241,130 +518,95 @@ app.delete('/api/v1/rounds/:id', async (c) => {
   }
 });
 
-// 2. Patrol Scan Route (Single Live Scan)
-app.post('/api/v1/scans', async (c) => {
+// ==========================================
+// GUARD MANAGEMENT CRUD (NEW)
+// ==========================================
+
+// 1. GET all guards
+app.get('/api/v1/guards', async (c) => {
   try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ success: false, message: 'Missing or invalid token' }, 401);
-    }
-    
-    let payload;
-    try {
-      const token = authHeader.split(' ')[1];
-      payload = await verify(token, c.env.JWT_SECRET);
-    } catch (e) {
-      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
-    }
-    const guard_id = payload.sub as string;
+    const supabase = getSupabase(c.env);
+    const { data: guards, error } = await supabase
+      .from('guards')
+      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .order('created_at', { ascending: false });
 
-    const body = await c.req.json();
-    const { client_scan_id, checkpoint_id, qr_lat, qr_lng, signature, guard_lat, guard_lng, uptime_seconds, photo_url } = scanSchema.parse(body);
-
-    const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
-    const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
-
-    if (signature !== expectedSignature) {
-      return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
-    }
-
-    const supabase = createClient(
-      c.env.SUPABASE_URL,
-      c.env.SUPABASE_SERVICE_ROLE_KEY,
-      { 
-        auth: { persistSession: false },
-        global: { fetch: (...args) => fetch(...args) } 
-      }
-    );
-
-    const { data, error } = await supabase.rpc('log_patrol_scan', {
-      p_client_scan_id: client_scan_id, // ADDED
-      p_checkpoint_id: checkpoint_id,
-      p_guard_id: guard_id,
-      p_guard_lat: guard_lat,
-      p_guard_lng: guard_lng,
-      p_expected_lat: parseFloat(qr_lat),
-      p_expected_lng: parseFloat(qr_lng),
-      p_uptime_seconds: uptime_seconds || 0,
-      p_photo_url: photo_url || ''
-    });
-
-    if (error) {
-      return c.json({ success: false, message: 'Database error', error }, 500);
-    }
-
-    return c.json({ success: true, verification: data });
-
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return c.json({ success: false, message: 'Invalid data format', errors: error.errors }, 400);
-    }
-    return c.json({ success: false, message: 'Server error' }, 500);
+    if (error) throw error;
+    return c.json({ success: true, guards: guards || [] });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to fetch guards' }, 500);
   }
 });
 
-// 3. NEW Sprint 4: Auto-Sync Engine (Bulk Offline Upload)
-app.post('/api/v1/patrols/sync', async (c) => {
+// 2. POST create a new guard
+app.post('/api/v1/guards', async (c) => {
   try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
-    
-    const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET);
-    const guard_id = payload.sub as string;
-
     const body = await c.req.json();
-    const scans = body.scans; // Array of offline scans from SQLite
-    const results = [];
+    const { full_name, employee_code, password } = createGuardSchema.parse(body);
+    const supabase = getSupabase(c.env);
 
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const { data: existing } = await supabase
+      .from('guards')
+      .select('guard_id')
+      .eq('employee_code', employee_code.trim())
+      .maybeSingle();
 
-    for (const scan of scans) {
-      // 3A. Verify Signature
-      const dataToSign = `${scan.checkpoint_id}|${scan.qr_lat}|${scan.qr_lng}`;
-      const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
-      
-      if (scan.signature !== expectedSignature) {
-        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'Invalid Signature' });
-        continue;
-      }
-
-      // 3B. Upload Photo to Cloudflare R2
-      let photoUrl = 'https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev';
-      if (scan.photo_url && scan.photo_url.startsWith('data:image')) {
-        const base64Data = scan.photo_url.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `scans/${scan.client_scan_id}.jpg`;
-        
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        // NOTE: Replace with your actual public R2 dev URL before going to production
-        photoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
-      }
-
-      // 3C. Idempotent DB Insert
-      const { data, error } = await supabase.rpc('log_patrol_scan', {
-        p_client_scan_id: scan.client_scan_id,
-        p_checkpoint_id: scan.checkpoint_id,
-        p_guard_id: guard_id,
-        p_guard_lat: scan.guard_lat,
-        p_guard_lng: scan.guard_lng,
-        p_expected_lat: parseFloat(scan.qr_lat),
-        p_expected_lng: parseFloat(scan.qr_lng),
-        p_uptime_seconds: scan.uptime_seconds || 0,
-        p_photo_url: photoUrl
-      });
-
-      if (error) {
-        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'DB Error' });
-      } else {
-        results.push({ client_scan_id: scan.client_scan_id, status: data.status, verification: data });
-      }
+    if (existing) {
+      return c.json({ success: false, message: 'A guard with this employee code already exists.' }, 400);
     }
 
-    return c.json({ success: true, synced_items: results });
+    const { data: newGuard, error } = await supabase
+      .from('guards')
+      .insert([{
+        full_name: full_name.trim(),
+        employee_code: employee_code.trim(),
+        password_hash: password,
+        is_active: true,
+      }])
+      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .single();
 
-  } catch (error) {
-    return c.json({ success: false, message: 'Sync failed', error }, 500);
+    if (error) throw error;
+    return c.json({ success: true, guard: newGuard }, 201);
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
+    }
+    return c.json({ success: false, message: error.message || 'Failed to create guard' }, 500);
+  }
+});
+
+// 3. PATCH update guard status or password
+app.patch('/api/v1/guards/:id', async (c) => {
+  try {
+    const guardId = c.req.param('id');
+    const body = await c.req.json();
+    const { full_name, password, is_active } = updateGuardSchema.parse(body);
+    const supabase = getSupabase(c.env);
+
+    const updates: Record<string, any> = {};
+    if (full_name !== undefined) updates.full_name = full_name.trim();
+    if (password !== undefined) updates.password_hash = password;
+    if (is_active !== undefined) updates.is_active = is_active;
+
+    if (Object.keys(updates).length === 0) {
+      return c.json({ success: false, message: 'No fields provided to update.' }, 400);
+    }
+
+    const { data: updatedGuard, error } = await supabase
+      .from('guards')
+      .update(updates)
+      .eq('guard_id', guardId)
+      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .single();
+
+    if (error) throw error;
+    return c.json({ success: true, guard: updatedGuard });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
+    }
+    return c.json({ success: false, message: error.message || 'Failed to update guard' }, 500);
   }
 });
 
@@ -392,7 +634,6 @@ app.post('/api/v1/incidents', async (c) => {
     const body = await c.req.json();
     const { client_incident_id, description, priority, photo_url, reported_at } = body;
 
-    // Upload Photo to Cloudflare R2
     let finalPhotoUrl = null;
     if (photo_url && photo_url.startsWith('data:image')) {
       const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
@@ -403,7 +644,7 @@ app.post('/api/v1/incidents', async (c) => {
       finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
     }
 
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     const { data, error } = await supabase
       .from('incidents')
       .upsert({
@@ -429,7 +670,7 @@ app.post('/api/v1/incidents', async (c) => {
 // 2. GET all Incidents (Admin Web Dashboard Feed)
 app.get('/api/v1/incidents', async (c) => {
   try {
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     const { data, error } = await supabase
       .from('incidents')
       .select('*')
@@ -442,11 +683,11 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// 3. GET single Incident + Threaded Updates (Zendesk-style view)
+// 3. GET single Incident + Threaded Updates
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     
     const { data: incident, error: incidentError } = await supabase
       .from('incidents')
@@ -469,7 +710,7 @@ app.get('/api/v1/incidents/:id', async (c) => {
   }
 });
 
-// 4. POST an Update/Comment to an Incident Thread (Web & App)
+// 4. POST an Update/Comment to an Incident Thread
 app.post('/api/v1/incidents/:id/updates', async (c) => {
   try {
     const incidentId = c.req.param('id');
@@ -477,7 +718,6 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const { sender_type, sender_name, message, photo_base64 } = body;
     
     let finalPhotoUrl = null;
-
     if (photo_base64 && photo_base64.startsWith('data:image')) {
       const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
@@ -487,7 +727,7 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
       finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
     }
 
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     const { data, error } = await supabase
       .from('incident_updates')
       .insert([{
@@ -511,7 +751,7 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     
     const { data, error } = await supabase
       .from('incidents')
@@ -531,10 +771,10 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
 // ADMIN WEB DASHBOARD: API CONFIGURATIONS
 // ==========================================
 
-// 1. Fetch current API keys to display in the Web UI
+// 1. Fetch current API keys
 app.get('/api/v1/admin/configs', async (c) => {
   try {
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = getSupabase(c.env);
     const { data, error } = await supabase.from('admin_configurations').select('*');
     
     if (error) throw error;
@@ -544,12 +784,12 @@ app.get('/api/v1/admin/configs', async (c) => {
   }
 });
 
-// 2. Save updated API keys from the Web UI
+// 2. Save updated API keys
 app.post('/api/v1/admin/configs', async (c) => {
   try {
     const body = await c.req.json();
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
-    const { data, error } = await supabase
+    const supabase = getSupabase(c.env);
+    const { error } = await supabase
       .from('admin_configurations')
       .upsert(body, { onConflict: 'key_name' });
       
@@ -562,7 +802,7 @@ app.post('/api/v1/admin/configs', async (c) => {
 
 // --- HELPER: META WHATSAPP API ALERT ---
 async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
-  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  const supabase = getSupabase(env);
   
   const { data: configs, error } = await supabase
     .from('admin_configurations')
@@ -609,7 +849,6 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
       return false;
     }
     
-    console.log(`WhatsApp alert sent successfully to ${managerPhone}`);
     return true;
   } catch (err) {
     console.error("WhatsApp Fetch Error:", err);
@@ -619,7 +858,7 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
 
 // --- HELPER: GOOGLE GMAIL API ALERT ---
 async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
-  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  const supabase = getSupabase(env);
   
   const { data: configs, error } = await supabase
     .from('admin_configurations')
@@ -670,16 +909,13 @@ export default {
     return app.fetch(request, env, ctx)
   },
   
-  // NEW: SPRINT 5 SLA CRON TRIGGER
+  // SPRINT 5 SLA CRON TRIGGER
   scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
     console.log("SLA Cron Trigger fired at:", event.cron);
     
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-    
-    // 1. Calculate the time exactly 10 minutes ago
+    const supabase = getSupabase(env);
     const tenMinutesAgo = new Date(Date.now() - 10 * 60000).toISOString();
     
-    // 2. Find P1/P2 incidents still 'OPEN' and older than 10 minutes
     const { data: incidents, error } = await supabase
       .from('incidents')
       .select('*')
@@ -692,17 +928,14 @@ export default {
       return;
     }
 
-    // 3. Process each breached incident
     for (const incident of incidents) {
       console.log(`Escalating Incident: ${incident.client_incident_id}`);
       
-      // Fire Email and WhatsApp concurrently
       await Promise.all([
         sendGoogleEmergencyEmail(env, incident.client_incident_id, incident.priority, incident.description, incident.photo_url),
         sendWhatsAppAlert(env, incident.client_incident_id, incident.priority, incident.description)
       ]);
 
-      // 4. Mark as ESCALATED so the system doesn't spam the manager every 10 minutes
       await supabase
         .from('incidents')
         .update({ status: 'ESCALATED' })

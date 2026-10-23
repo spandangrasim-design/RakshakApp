@@ -5,8 +5,9 @@ import { ReportsPage } from './pages/ReportsPage';
 import QRGenerator from './pages/QRGenerator';
 import AdminConfigsPage from './pages/AdminConfigsPage'; 
 import IncidentsDashboard from './pages/IncidentsDashboard';
-import IncidentDetails from './pages/IncidentDetails'; // <-- NEW: Imported the Details page
-import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle } from 'lucide-react'; 
+import IncidentDetails from './pages/IncidentDetails';
+import { GuardsView } from './pages/GuardsView'; // <-- NEW: Imported GuardsView
+import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users } from 'lucide-react'; // <-- NEW: Added Users icon
 
 // 1. Create a Layout Wrapper for authenticated pages with navigation tabs
 const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => void, children: React.ReactNode }) => {
@@ -55,6 +56,19 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                             >
                                 <AlertTriangle className="h-4 w-4" />
                                 Incidents
+                            </Link>
+
+                            {/* GUARDS MANAGEMENT LINK */}
+                            <Link
+                                to="/guards"
+                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                    location.pathname === '/guards'
+                                        ? 'bg-blue-50 text-blue-700'
+                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                }`}
+                            >
+                                <Users className="h-4 w-4" />
+                                Guards
                             </Link>
 
                             <Link
@@ -175,13 +189,27 @@ export const App: React.FC = () => {
                     }
                 />
 
-                {/* NEW: TICKET DETAILS ROUTE (ServiceNow Style) */}
+                {/* TICKET DETAILS ROUTE */}
                 <Route
                     path="/incidents/:id"
                     element={
                         token ? (
                             <AdminLayout user={user} onLogout={handleLogout}>
                                 <IncidentDetails user={user} />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
+                {/* Protected Route: Guard Management */}
+                <Route
+                    path="/guards"
+                    element={
+                        token ? (
+                            <AdminLayout user={user} onLogout={handleLogout}>
+                                <GuardsView />
                             </AdminLayout>
                         ) : (
                             <Navigate to="/login" replace />

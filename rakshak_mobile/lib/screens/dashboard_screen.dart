@@ -1,10 +1,16 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'login_screen.dart';
 import 'qr_scanner_screen.dart'; 
 import 'incident_report_screen.dart'; 
+import 'patrol_route_screen.dart';
+import 'activity_log_screen.dart';
+import 'locked_camera_screen.dart'; // Provides API_BASE_URL
 import '../widgets/offline_banner.dart'; 
-import '../widgets/home_incidents_preview.dart'; // NEW: Imported the incidents preview widget
+import '../widgets/home_incidents_preview.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({Key? key}) : super(key: key);
@@ -15,11 +21,12 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   String _guardName = 'Guard';
-  String _guardId = ''; // NEW: State to hold guard ID for API
-  String _token = ''; // NEW: State to hold JWT for API
+  String _guardId = '';
+  String _token = '';
   bool _isShiftActive = false;
+  bool _isShiftLoading = false;
   bool? _lastScanVerified; 
-  bool _isLoadingPrefs = true; // NEW: Ensures we have token before rendering tickets
+  bool _isLoadingPrefs = true;
 
   @override
   void initState() {
@@ -29,12 +36,115 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadGuardData() async {
     final prefs = await SharedPreferences.getInstance();
+    final savedGuardName = prefs.getString('guard_name') ?? 'Security Guard';
+    final savedGuardId = prefs.getString('guard_id') ?? '';
+    final savedToken = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+    final localShiftState = prefs.getBool('is_shift_active') ?? false;
+
     setState(() {
-      _guardName = prefs.getString('guard_name') ?? 'Security Guard';
-      _guardId = prefs.getString('guard_id') ?? ''; // Fetch saved guard_id
-      _token = prefs.getString('token') ?? ''; // Fetch saved JWT token
+      _guardName = savedGuardName;
+      _guardId = savedGuardId;
+      _token = savedToken;
+      _isShiftActive = localShiftState;
       _isLoadingPrefs = false;
     });
+
+    if (_token.isNotEmpty) {
+      await _syncActiveShiftWithServer();
+    }
+  }
+
+  // Fetch true server shift state
+  Future<void> _syncActiveShiftWithServer() async {
+    try {
+      final response = await http.get(
+        Uri.parse('${LockedCameraScreen.API_BASE_URL}/api/v1/shifts/active'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      ).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          final bool serverShiftActive = data['is_active'] == true;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool('is_shift_active', serverShiftActive);
+
+          if (mounted) {
+            setState(() {
+              _isShiftActive = serverShiftActive;
+            });
+          }
+        }
+      }
+    } catch (_) {
+      // Offline fallback: keep localShiftState
+    }
+  }
+
+  Future<void> _toggleShift() async {
+    if (_isShiftLoading) return;
+
+    setState(() => _isShiftLoading = true);
+
+    final endpoint = _isShiftActive ? '/api/v1/shifts/end' : '/api/v1/shifts/start';
+    final targetState = !_isShiftActive;
+
+    try {
+      final response = await http.post(
+        Uri.parse('${LockedCameraScreen.API_BASE_URL}$endpoint'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_shift_active', targetState);
+
+        if (mounted) {
+          setState(() {
+            _isShiftActive = targetState;
+            _isShiftLoading = false;
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(_isShiftActive ? 'Shift Started and logged online.' : 'Shift Ended and logged online.'),
+              backgroundColor: _isShiftActive ? Colors.green.shade700 : Colors.orange.shade800,
+            ),
+          );
+        }
+        return;
+      }
+
+      throw Exception('Server returned ${response.statusCode}');
+    } catch (e) {
+      // Fallback: persist locally and notify user of network lag
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_shift_active', targetState);
+
+      if (mounted) {
+        setState(() {
+          _isShiftActive = targetState;
+          _isShiftLoading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _isShiftActive
+                  ? 'Shift Started locally (will sync once connected).'
+                  : 'Shift Ended locally (will sync once connected).',
+            ),
+            backgroundColor: Colors.amber.shade900,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _handleLogout() async {
@@ -45,18 +155,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (context) => const LoginScreen()),
-    );
-  }
-
-  void _toggleShift() {
-    setState(() {
-      _isShiftActive = !_isShiftActive;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(_isShiftActive ? 'Shift Started' : 'Shift Ended'),
-        backgroundColor: _isShiftActive ? Colors.green : Colors.orange,
-      ),
     );
   }
 
@@ -160,21 +258,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                         ElevatedButton(
-                          onPressed: _toggleShift,
+                          onPressed: _isShiftLoading ? null : _toggleShift,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: _isShiftActive ? Colors.red.shade600 : const Color(0xFF1E3A8A),
                             foregroundColor: Colors.white,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                           ),
-                          child: Text(_isShiftActive ? 'End Shift' : 'Start Shift'),
+                          child: _isShiftLoading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                )
+                              : Text(_isShiftActive ? 'End Shift' : 'Start Shift'),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 20),
 
-                  // NEW: Ticketing / Incidents Widget integration
+                  // Active Incidents Preview
                   if (!_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty) ...[
                     HomeIncidentsPreview(
                       guardId: _guardId,
@@ -269,7 +373,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         subtitle: 'Log security issue',
                         color: const Color(0xFFDC2626),
                         onTap: () {
-                          // WIRE-UP: Navigates to the Incident Report form
                           Navigator.push(
                             context,
                             MaterialPageRoute(builder: (context) => const IncidentReportScreen()),
@@ -281,14 +384,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         title: 'Patrol Route',
                         subtitle: 'Check assigned checkpoints',
                         color: const Color(0xFF0D9488),
-                        onTap: () {},
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const PatrolRouteScreen()),
+                          );
+                        },
                       ),
                       _buildActionCard(
                         icon: Icons.history,
                         title: 'Activity Log',
                         subtitle: 'Recent scans',
                         color: const Color(0xFF475569),
-                        onTap: () {},
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const ActivityLogScreen()),
+                          );
+                        },
                       ),
                     ],
                   ),
