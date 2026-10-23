@@ -28,7 +28,21 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _startScanner();
+      if (!mounted) return;
+      // Wait for the screen transition animation to complete so native view is ready
+      final routeAnimation = ModalRoute.of(context)?.animation;
+      if (routeAnimation != null && !routeAnimation.isCompleted) {
+        routeAnimation.addStatusListener((status) {
+          if (status == AnimationStatus.completed && mounted) {
+            _startScanner();
+          }
+        });
+      } else {
+        // Fallback delay if transition animation cannot be observed
+        Future.delayed(const Duration(milliseconds: 250), () {
+          if (mounted) _startScanner();
+        });
+      }
     });
   }
 
@@ -49,6 +63,7 @@ class _QrScannerScreenState extends State<QrScannerScreen>
 
       try {
         await _scannerController.start();
+        if (mounted) setState(() {});
       } catch (error) {
         debugPrint('Could not start QR scanner: $error');
       }
@@ -70,8 +85,6 @@ class _QrScannerScreenState extends State<QrScannerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Permission dialogs can trigger lifecycle changes before the first
-      // camera start has completed. The pending start will handle that case.
       if (_scannerController.value.isInitialized &&
           !_isNavigatingAway &&
           !_isProcessing) {
@@ -180,9 +193,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
-                      Text(
+                      const Text(
                         'Allow camera access and close any other app using the camera, then try again.',
-                        style: const TextStyle(
+                        style: TextStyle(
                             color: Colors.white70, fontSize: 13),
                         textAlign: TextAlign.center,
                       ),

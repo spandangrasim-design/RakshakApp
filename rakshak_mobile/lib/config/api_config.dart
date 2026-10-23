@@ -18,6 +18,6 @@ class ApiConfig {
   // can't be seen from the app. If the app now reports "HTTP 404" for shifts
   // or for syncing offline scans, change them to '$apiBase/shifts' and
   // '$apiBase/patrols/sync'.
-  static const String shiftsBase = '$host/shifts';
-  static const String patrolSyncUrl = '$host/patrols/sync';
+  static const String shiftsBase = '$apiBase/shifts';
+  static const String patrolSyncUrl = '$apiBase/patrols/sync';
 }
