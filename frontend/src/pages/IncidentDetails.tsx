@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Send, Paperclip, X, CheckCircle, AlertTriangle, Clock, Image as ImageIcon } from 'lucide-react';
+import { getSecureMediaUrl } from '../utils/secureMedia';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
@@ -36,7 +37,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Reply form states
   const [replyMessage, setReplyMessage] = useState('');
   const [selectedPhotoBase64, setSelectedPhotoBase64] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -71,7 +71,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [updates]);
 
-  // Handle Photo Selection & Base64 Conversion
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -103,7 +102,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
     }
   };
 
-  // Submit Reply with Base64 Photo
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id || (!replyMessage.trim() && !selectedPhotoBase64)) return;
@@ -115,7 +113,7 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
         sender_type: 'admin',
         sender_name: user?.full_name || 'Admin Operations',
         message: replyMessage.trim(),
-        photo_base64: selectedPhotoBase64, // Sends base64 to Cloudflare R2
+        photo_base64: selectedPhotoBase64,
       };
 
       const res = await fetch(`${API_BASE_URL}/incidents/${id}/updates`, {
@@ -139,7 +137,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
     }
   };
 
-  // Mark Incident as RESOLVED
   const handleResolveIncident = async () => {
     if (!id || !window.confirm('Are you sure you want to resolve this ticket?')) return;
 
@@ -195,6 +192,8 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
     );
   }
 
+  const initialPhotoUrl = getSecureMediaUrl(incident.photo_url);
+
   return (
     <div className="mx-auto max-w-5xl p-6 space-y-6">
       {/* Top Header */}
@@ -249,16 +248,19 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
         <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Initial Guard Report</div>
         <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{incident.description}</p>
 
-        {incident.photo_url && (
+        {initialPhotoUrl && (
           <div>
             <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
               <ImageIcon className="h-3.5 w-3.5" /> Initial Photo Evidence:
             </p>
-            <a href={incident.photo_url} target="_blank" rel="noopener noreferrer">
+            <a href={initialPhotoUrl} target="_blank" rel="noopener noreferrer">
               <img
-                src={incident.photo_url}
+                src={initialPhotoUrl}
                 alt="Incident Evidence"
                 className="max-h-64 rounded-lg border border-slate-200 object-cover hover:opacity-95 transition"
+                onError={(e) => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
               />
             </a>
           </div>
@@ -280,6 +282,8 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
           ) : (
             updates.map((update) => {
               const isAdmin = update.sender_type === 'admin';
+              const updatePhotoUrl = getSecureMediaUrl(update.photo_url);
+
               return (
                 <div
                   key={update.id}
@@ -299,13 +303,16 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
 
                     {update.message && <p className="whitespace-pre-wrap leading-relaxed">{update.message}</p>}
 
-                    {update.photo_url && (
+                    {updatePhotoUrl && (
                       <div className="pt-1">
-                        <a href={update.photo_url} target="_blank" rel="noopener noreferrer">
+                        <a href={updatePhotoUrl} target="_blank" rel="noopener noreferrer">
                           <img
-                            src={update.photo_url}
+                            src={updatePhotoUrl}
                             alt="Attachment"
                             className="max-h-56 rounded-lg border border-white/20 object-cover hover:opacity-95 transition"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
                           />
                         </a>
                       </div>
@@ -321,7 +328,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
 
       {/* Reply Input Bar with Photo Picker */}
       <div className="sticky bottom-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-lg">
-        {/* Selected Image Preview Thumbnail */}
         {selectedPhotoBase64 && (
           <div className="mb-3 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
             <img
@@ -344,7 +350,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
         )}
 
         <form onSubmit={handleSendReply} className="flex items-end gap-2">
-          {/* Hidden File Input */}
           <input
             type="file"
             ref={fileInputRef}
@@ -353,7 +358,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
             className="hidden"
           />
 
-          {/* Attach Button */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -363,7 +367,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
             <Paperclip className="h-5 w-5" />
           </button>
 
-          {/* Message Text Input */}
           <textarea
             rows={1}
             value={replyMessage}
@@ -378,7 +381,6 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
             }}
           />
 
-          {/* Send Button */}
           <button
             type="submit"
             disabled={isSending || (!replyMessage.trim() && !selectedPhotoBase64)}

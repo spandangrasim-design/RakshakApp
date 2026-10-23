@@ -10,11 +10,11 @@ import {
   AlertTriangle,
   RefreshCw,
   X,
-  Maximize2,
-  Download
+  Maximize2
 } from 'lucide-react';
 import { PatrolRound, CheckpointScanDetail } from '../types/patrol';
 import { PatrolMapModal } from '../components/reports/PatrolMapModal';
+import { getSecureMediaUrl } from '../utils/secureMedia';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
@@ -25,24 +25,20 @@ export const ReportsPage: React.FC = () => {
   const [pageSize] = useState<number>(10);
   const [totalCount, setTotalCount] = useState<number>(0);
   
-  // Selected Round Drill-Down State
   const [selectedRound, setSelectedRound] = useState<PatrolRound | null>(null);
   const [roundScans, setRoundScans] = useState<CheckpointScanDetail[]>([]);
   const [scansLoading, setScansLoading] = useState<boolean>(false);
   const [mapOpen, setMapOpen] = useState<boolean>(false);
 
-  // Enlarged Photo Lightbox State
   const [enlargedPhotos, setEnlargedPhotos] = useState<{
     checkpointName: string;
     selfieUrl?: string | null;
     locationPhotoUrl?: string | null;
   } | null>(null);
 
-  // Export Menu State
   const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
-  // Close export dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
@@ -53,7 +49,6 @@ export const ReportsPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch Patrol Rounds (Paginated)
   const fetchRounds = async (targetPage: number) => {
     try {
       setLoading(true);
@@ -74,7 +69,6 @@ export const ReportsPage: React.FC = () => {
     fetchRounds(page);
   }, [page]);
 
-  // Fetch Scans for Selected Round
   const handleSelectRound = async (round: PatrolRound) => {
     setSelectedRound(round);
     setScansLoading(true);
@@ -90,7 +84,6 @@ export const ReportsPage: React.FC = () => {
     }
   };
 
-  // Generic Download Engine for Excel and CSV
   const triggerDownload = (dataRows: any[], fileNamePrefix: string, sheetName: string, format: 'xlsx' | 'csv') => {
     if (!dataRows || dataRows.length === 0) return;
 
@@ -117,7 +110,6 @@ export const ReportsPage: React.FC = () => {
     setExportMenuOpen(false);
   };
 
-  // Export Master Rounds Summary (All visible rounds)
   const exportMasterRoundsSummary = (format: 'xlsx' | 'csv') => {
     if (!rounds.length) return;
 
@@ -134,7 +126,6 @@ export const ReportsPage: React.FC = () => {
     triggerDownload(rows, 'Rakshak_Patrol_Summary', 'Rounds Summary', format);
   };
 
-  // Export Stop-by-Stop Checkpoint Audits for Currently Selected Round
   const exportInspectedRoundAudit = (format: 'xlsx' | 'csv') => {
     if (!roundScans.length || !selectedRound) return;
 
@@ -157,8 +148,8 @@ export const ReportsPage: React.FC = () => {
       'Guard Lng': s.guard_lng ?? 'N/A',
       'Expected Lat': s.expected_lat ?? 'N/A',
       'Expected Lng': s.expected_lng ?? 'N/A',
-      'Selfie URL': s.selfie_url || s.photo_url || '',
-      'Location Photo URL': s.location_photo_url || s.photo_url || '',
+      'Selfie URL': getSecureMediaUrl(s.selfie_url || s.photo_url) || '',
+      'Location Photo URL': getSecureMediaUrl(s.location_photo_url || s.photo_url) || '',
       'Remarks': s.remarks || ''
     }));
 
@@ -357,7 +348,7 @@ export const ReportsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Selected Round Drill-Down (Side-by-Side Photos & Scans) */}
+        {/* Selected Round Drill-Down */}
         {selectedRound && (
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
@@ -378,8 +369,8 @@ export const ReportsPage: React.FC = () => {
                 {roundScans.map((scan: any, idx: number) => {
                   const scanTime = scan.scanned_at || scan.scan_time;
                   const distanceMeters = scan.calculated_distance_m ?? scan.distance_meters;
-                  const selfie = scan.selfie_url || scan.photo_url;
-                  const locationPhoto = scan.location_photo_url || scan.photo_url;
+                  const selfie = getSecureMediaUrl(scan.selfie_url || scan.photo_url);
+                  const locationPhoto = getSecureMediaUrl(scan.location_photo_url || scan.photo_url);
                   const checkpointName = scan.checkpoint_name || scan.checkpoint_id;
 
                   return (

@@ -10,7 +10,7 @@ type Bindings = {
   SUPABASE_SERVICE_ROLE_KEY: string
   JWT_SECRET: string
   QR_SECRET: string 
-  R2_BUCKET: R2Bucket // Sprint 4 Cloudflare R2 Storage
+  R2_BUCKET: R2Bucket // Cloudflare R2 Private Storage
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -25,7 +25,7 @@ const loginSchema = z.object({
 })
 
 const scanSchema = z.object({
-  client_scan_id: z.string(), // Sprint 4 Idempotency UUID
+  client_scan_id: z.string(),
   checkpoint_id: z.string(),
   qr_lat: z.string(),
   qr_lng: z.string(),
@@ -69,9 +69,64 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
-// --- ROUTES ----
+// ==========================================
+// SECURE PRIVATE R2 MEDIA STREAMING ROUTE
+// ==========================================
+// Accepts JWT via "Authorization: Bearer <token>" (Mobile App) 
+// OR "?token=<token>" query parameter (Web HTML <img> tags)
+app.get('/api/v1/media/*', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    const queryToken = c.req.query('token');
 
-// 1. Auth Login Route
+    let token = '';
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else if (queryToken) {
+      token = queryToken.trim();
+    }
+
+    if (!token) {
+      return c.json({ error_code: 'UNAUTHORIZED', message: 'Missing authentication token.' }, 401);
+    }
+
+    // Verify JWT Token
+    try {
+      await verify(token, c.env.JWT_SECRET, 'HS256');
+    } catch (e) {
+      return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
+    }
+
+    // Extract R2 file key from URL path
+    const url = new URL(c.req.url);
+    const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
+
+    if (!fileKey || fileKey.includes('..')) {
+      return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid file key.' }, 400);
+    }
+
+    // Fetch binary directly from the private R2 bucket
+    const object = await c.env.R2_BUCKET.get(fileKey);
+    if (!object) {
+      return c.json({ error_code: 'NOT_FOUND', message: 'Image not found.' }, 404);
+    }
+
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('etag', object.httpEtag);
+    headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
+    headers.set('Cache-Control', 'private, max-age=86400'); // Cache for 24h on authenticated device
+    headers.set('Access-Control-Allow-Origin', '*');
+
+    return new Response(object.body, { status: 200, headers });
+  } catch (error: any) {
+    return c.json({ error_code: 'SERVER_ERROR', message: error.message || 'Failed to stream media.' }, 500);
+  }
+});
+
+// ==========================================
+// 1. AUTH ROUTES
+// ==========================================
 app.post('/api/v1/auth/login', async (c) => {
   try {
     const body = await c.req.json()
@@ -117,7 +172,9 @@ app.post('/api/v1/auth/login', async (c) => {
   }
 })
 
-// 2. Patrol Scan Route (Single Live Scan)
+// ==========================================
+// 2. PATROL SCANS API
+// ==========================================
 app.post('/api/v1/scans', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -172,7 +229,6 @@ app.post('/api/v1/scans', async (c) => {
   }
 });
 
-// 2B. GET Recent Scans for Authenticated Guard (Activity Log)
 app.get('/api/v1/scans', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -208,7 +264,7 @@ app.get('/api/v1/scans', async (c) => {
   }
 });
 
-// 3. Sprint 4: Auto-Sync Engine (Bulk Offline Upload)
+// Bulk Offline Patrol Scan Sync
 app.post('/api/v1/patrols/sync', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -218,6 +274,7 @@ app.post('/api/v1/patrols/sync', async (c) => {
     const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
     const guard_id = payload.sub as string;
 
+    const url = new URL(c.req.url);
     const body = await c.req.json();
     const scans = body.scans;
     const results = [];
@@ -233,14 +290,15 @@ app.post('/api/v1/patrols/sync', async (c) => {
         continue;
       }
 
-      let photoUrl = 'https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev';
+      let photoUrl = '';
       if (scan.photo_url && scan.photo_url.startsWith('data:image')) {
         const base64Data = scan.photo_url.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
         const fileName = `scans/${scan.client_scan_id}.jpg`;
         
         await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        photoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+        // Secure Worker proxy route
+        photoUrl = `${url.origin}/api/v1/media/${fileName}`; 
       }
 
       const { data, error } = await supabase.rpc('log_patrol_scan', {
@@ -270,10 +328,8 @@ app.post('/api/v1/patrols/sync', async (c) => {
 });
 
 // ==========================================
-// SHIFT TRACKING API
+// 3. SHIFT TRACKING API
 // ==========================================
-
-// 1. GET Current Active Shift for Guard
 app.get('/api/v1/shifts/active', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -308,7 +364,6 @@ app.get('/api/v1/shifts/active', async (c) => {
   }
 });
 
-// 2. POST Start Shift
 app.post('/api/v1/shifts/start', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -351,7 +406,6 @@ app.post('/api/v1/shifts/start', async (c) => {
   }
 });
 
-// 3. POST End Shift
 app.post('/api/v1/shifts/end', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -390,8 +444,6 @@ app.post('/api/v1/shifts/end', async (c) => {
 // ==========================================
 // 4. ROUNDS & CHECKPOINTS CRUD API
 // ==========================================
-
-// 4A. GET All Rounds with Checkpoints
 app.get('/api/v1/rounds', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -432,7 +484,6 @@ app.get('/api/v1/rounds', async (c) => {
   }
 });
 
-// 4B. POST Create or Update Round with Checkpoints
 app.post('/api/v1/rounds', async (c) => {
   try {
     const body = await c.req.json();
@@ -496,7 +547,6 @@ app.post('/api/v1/rounds', async (c) => {
   }
 });
 
-// 4C. DELETE Round
 app.delete('/api/v1/rounds/:id', async (c) => {
   try {
     const roundId = c.req.param('id');
@@ -512,10 +562,8 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 });
 
 // ==========================================
-// GUARD MANAGEMENT CRUD (NEW)
+// 5. GUARD MANAGEMENT CRUD
 // ==========================================
-
-// 1. GET all guards
 app.get('/api/v1/guards', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -531,7 +579,6 @@ app.get('/api/v1/guards', async (c) => {
   }
 });
 
-// 2. POST create a new guard
 app.post('/api/v1/guards', async (c) => {
   try {
     const body = await c.req.json();
@@ -569,7 +616,6 @@ app.post('/api/v1/guards', async (c) => {
   }
 });
 
-// 3. PATCH update guard status or password
 app.patch('/api/v1/guards/:id', async (c) => {
   try {
     const guardId = c.req.param('id');
@@ -604,10 +650,10 @@ app.patch('/api/v1/guards/:id', async (c) => {
 });
 
 // ==========================================
-// SPRINT 5: TICKETING & INCIDENT COMMAND
+// 6. TICKETING & INCIDENT COMMAND (R2 SECURED)
 // ==========================================
 
-// 1. POST a New Incident (Created by Guard Mobile App)
+// Create a New Incident
 app.post('/api/v1/incidents', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -624,6 +670,7 @@ app.post('/api/v1/incidents', async (c) => {
     }
     const guard_id = payload.sub as string;
 
+    const url = new URL(c.req.url);
     const body = await c.req.json();
     const { client_incident_id, title, description, priority, photo_url, reported_at } = body;
 
@@ -636,8 +683,11 @@ app.post('/api/v1/incidents', async (c) => {
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
       const fileName = `incidents/${incidentUuid}.jpg`;
       
+      // Save directly to Private R2 Bucket
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+      
+      // Store the secure authenticated proxy path
+      finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
     }
 
     const supabase = getSupabase(c.env);
@@ -664,7 +714,7 @@ app.post('/api/v1/incidents', async (c) => {
   }
 });
 
-// 2. GET all Incidents (Admin Web Dashboard Feed)
+// GET all Incidents (Admin Web Dashboard Feed)
 app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -680,7 +730,7 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// 3. GET single Incident + Threaded Updates
+// GET Single Incident + Threaded Updates
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
@@ -707,10 +757,11 @@ app.get('/api/v1/incidents/:id', async (c) => {
   }
 });
 
-// 4. POST an Update/Comment to an Incident Thread
+// POST an Update/Comment to an Incident Thread
 app.post('/api/v1/incidents/:id/updates', async (c) => {
   try {
     const incidentId = c.req.param('id');
+    const url = new URL(c.req.url);
     const body = await c.req.json();
     const { sender_type, sender_name, message, photo_base64 } = body;
     
@@ -720,8 +771,11 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
       const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
       
+      // Save directly to Private R2 Bucket
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      finalPhotoUrl = `https://pub-e772f9cb2c7c4e53801177d8059805a8.r2.dev/${fileName}`; 
+      
+      // Store the secure authenticated proxy path
+      finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
     }
 
     const supabase = getSupabase(c.env);
@@ -744,7 +798,7 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
   }
 });
 
-// 5. PATCH to Mark Incident as RESOLVED
+// PATCH to Mark Incident as RESOLVED
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
@@ -765,10 +819,8 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
 });
 
 // ==========================================
-// ADMIN WEB DASHBOARD: API CONFIGURATIONS
+// 7. ADMIN WEB DASHBOARD: CONFIGS
 // ==========================================
-
-// 1. Fetch current API keys
 app.get('/api/v1/admin/configs', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -781,7 +833,6 @@ app.get('/api/v1/admin/configs', async (c) => {
   }
 });
 
-// 2. Save updated API keys
 app.post('/api/v1/admin/configs', async (c) => {
   try {
     const body = await c.req.json();
@@ -900,7 +951,7 @@ async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, prior
   }
 }
 
-// --- EXPORT ---
+// --- WORKER EXPORT ---
 export default {
   fetch: async (request: Request, env: Bindings, ctx: ExecutionContext) => {
     return app.fetch(request, env, ctx)

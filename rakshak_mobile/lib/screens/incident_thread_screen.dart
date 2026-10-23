@@ -88,7 +88,43 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
     setState(() => isPosting = false);
   }
 
-  void _showEnlargedPhoto(String url) {
+  /// Converts any image URL (legacy pub-*.r2.dev, full URL, or relative key) 
+  /// into the authenticated Worker media streaming endpoint
+  String? _resolveSecurePhotoUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty || rawUrl == 'null') {
+      return null;
+    }
+    final trimmed = rawUrl.trim();
+    if (trimmed.startsWith('data:image/')) {
+      return trimmed;
+    }
+
+    const workerMediaBase = 'https://rakshak-api.spandangrasim.workers.dev/api/v1/media';
+
+    // Case 1: Legacy public R2 dev URL
+    if (trimmed.contains('.r2.dev/')) {
+      final fileKey = trimmed.split('.r2.dev/').last;
+      return '$workerMediaBase/$fileKey';
+    }
+
+    // Case 2: Already an authenticated Worker URL
+    if (trimmed.contains('/api/v1/media/')) {
+      return trimmed.split('?').first;
+    }
+
+    // Case 3: Other external HTTP/HTTPS URL
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+
+    // Case 4: Relative key (e.g., incidents/abc.jpg)
+    final cleanKey = trimmed.replaceFirst(RegExp(r'^/+'), '');
+    return '$workerMediaBase/$cleanKey';
+  }
+
+  void _showEnlargedPhoto(String secureUrl) {
+    final isBase64 = secureUrl.startsWith('data:image/');
+
     showDialog(
       context: context,
       builder: (_) => Dialog(
@@ -100,15 +136,28 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
             InteractiveViewer(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  url,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => Container(
-                    padding: const EdgeInsets.all(24),
-                    color: Colors.white,
-                    child: const Text("Unable to load full-size photo proof."),
-                  ),
-                ),
+                child: isBase64
+                    ? Image.memory(
+                        base64Decode(secureUrl.split(',').last),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => _errorContainer(),
+                      )
+                    : Image.network(
+                        secureUrl,
+                        headers: {'Authorization': 'Bearer ${widget.token}'},
+                        fit: BoxFit.contain,
+                        loadingBuilder: (context, child, progress) {
+                          if (progress == null) return child;
+                          return Container(
+                            height: 250,
+                            color: Colors.black26,
+                            child: const Center(
+                              child: CircularProgressIndicator(color: Colors.white),
+                            ),
+                          );
+                        },
+                        errorBuilder: (_, __, ___) => _errorContainer(),
+                      ),
               ),
             ),
             IconButton(
@@ -121,53 +170,87 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
     );
   }
 
-  Widget _buildNetworkImage(String? photoUrl) {
-    if (photoUrl == null || photoUrl.isEmpty || !photoUrl.startsWith('http')) {
+  Widget _errorContainer() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock_outline, color: Colors.red),
+          SizedBox(width: 8),
+          Text(
+            "Unable to load full-size protected photo.",
+            style: TextStyle(color: Colors.black87, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNetworkImage(String? rawPhotoUrl) {
+    final secureUrl = _resolveSecurePhotoUrl(rawPhotoUrl);
+    if (secureUrl == null) {
       return const SizedBox.shrink();
     }
 
+    final isBase64 = secureUrl.startsWith('data:image/');
+
     return GestureDetector(
-      onTap: () => _showEnlargedPhoto(photoUrl),
+      onTap: () => _showEnlargedPhoto(secureUrl),
       child: Padding(
         padding: const EdgeInsets.only(top: 8.0),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
-          child: Image.network(
-            photoUrl,
-            height: 160,
-            width: double.infinity,
-            fit: BoxFit.cover,
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) return child;
-              return Container(
-                height: 160,
-                color: Colors.grey.shade100,
-                child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-              );
-            },
-            errorBuilder: (context, error, stackTrace) {
-              return Container(
-                height: 80,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
+          child: isBase64
+              ? Image.memory(
+                  base64Decode(secureUrl.split(',').last),
+                  height: 160,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                )
+              : Image.network(
+                  secureUrl,
+                  headers: {'Authorization': 'Bearer ${widget.token}'},
+                  height: 160,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return Container(
+                      height: 160,
+                      color: Colors.grey.shade100,
+                      child: const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      height: 80,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      alignment: Alignment.center,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.lock_outline, color: Colors.grey.shade400, size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            "Protected photo evidence unavailable",
+                            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
-                alignment: Alignment.center,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.broken_image_outlined, color: Colors.grey.shade400),
-                    const SizedBox(width: 8),
-                    Text(
-                      "Photo evidence unavailable",
-                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
         ),
       ),
     );
@@ -211,7 +294,7 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
                   timestamp: incident!['reported_at'] ?? '',
                 ),
                 ...updates.map((update) {
-                  final isGuard = update['sender_type'] == 'GUARD';
+                  final isGuard = update['sender_type'] == 'GUARD' || update['sender_type'] == 'guard';
                   return _buildChatBubble(
                     sender: "${update['sender_name']} (${update['sender_type']})",
                     message: update['message'] ?? '',

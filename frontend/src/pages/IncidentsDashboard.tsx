@@ -9,10 +9,9 @@ import {
   ChevronsRight, 
   Settings, 
   RefreshCw,
-  Image as ImageIcon,
-  Check,
-  Eye
+  Image as ImageIcon
 } from 'lucide-react';
+import { getSecureMediaUrl } from '../utils/secureMedia';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
@@ -41,14 +40,11 @@ export const IncidentsDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // Search & Filter State
   const [searchField, setSearchField] = useState<'number' | 'short_description' | 'caller'>('number');
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Quick Photo Preview Lightbox Modal
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
 
-  // Pagination State (SNOW standard: 20 per page)
   const [page, setPage] = useState<number>(1);
   const pageSize = 20;
 
@@ -70,14 +66,12 @@ export const IncidentsDashboard: React.FC = () => {
     fetchIncidents();
   }, []);
 
-  // Format ID to ServiceNow INC Format (e.g., INC0010015)
   const getIncidentNumber = (item: IncidentRecord) => {
     const raw = item.incident_id || item.id || item.client_incident_id || '10001';
     const numPart = raw.replace(/[^0-9]/g, '').slice(-5) || '10001';
     return `INC00${numPart.padStart(5, '0')}`;
   };
 
-  // Filtered dataset
   const filteredData = useMemo(() => {
     return incidents.filter((item) => {
       if (!searchQuery.trim()) return true;
@@ -117,7 +111,6 @@ export const IncidentsDashboard: React.FC = () => {
     });
   };
 
-  // Render Priority with SNOW Colored Indicator Dots
   const renderPriority = (p?: string) => {
     const priority = (p || 'P4').toUpperCase();
     if (priority.includes('1') || priority === 'CRITICAL' || priority === 'P1') {
@@ -151,7 +144,6 @@ export const IncidentsDashboard: React.FC = () => {
     );
   };
 
-  // Map state to ServiceNow values (New, In Progress, Resolved, Closed)
   const getSnowState = (status?: string) => {
     const s = (status || 'OPEN').toUpperCase();
     if (s === 'RESOLVED') return 'Resolved';
@@ -164,7 +156,6 @@ export const IncidentsDashboard: React.FC = () => {
     <div className="min-h-screen bg-[#f4f5f7] text-[#293e40] font-sans text-xs">
       {/* Top ServiceNow Header Bar */}
       <div className="bg-[#e6e8ea] border-b border-[#bdc3c7] px-4 py-2 flex flex-wrap items-center justify-between gap-3">
-        {/* Left Section: Header, New Button, Search Dropdown */}
         <div className="flex items-center gap-3">
           <span className="text-base font-bold text-slate-800 tracking-tight">Incidents</span>
 
@@ -176,7 +167,6 @@ export const IncidentsDashboard: React.FC = () => {
             New
           </button>
 
-          {/* ServiceNow Search Dropdown + Search Box */}
           <div className="flex items-center border border-[#9ca3af] rounded bg-white overflow-hidden shadow-inner">
             <select
               value={searchField}
@@ -203,7 +193,6 @@ export const IncidentsDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Section: Pagination & Total Record Count */}
         <div className="flex items-center gap-4 text-slate-600">
           <button
             onClick={fetchIncidents}
@@ -251,10 +240,9 @@ export const IncidentsDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* ServiceNow Main Data Grid */}
+      {/* Main Table Grid */}
       <div className="overflow-x-auto bg-white border-b border-slate-300">
         <table className="w-full text-left border-collapse">
-          {/* Header */}
           <thead className="bg-[#f0f2f4] text-slate-700 border-b border-slate-300 select-none">
             <tr>
               <th className="w-7 px-2 py-2 text-center border-r border-slate-200">
@@ -283,7 +271,6 @@ export const IncidentsDashboard: React.FC = () => {
             </tr>
           </thead>
 
-          {/* Table Body */}
           <tbody className="divide-y divide-slate-200">
             {loading ? (
               <tr>
@@ -302,6 +289,7 @@ export const IncidentsDashboard: React.FC = () => {
                 const rowId = item.incident_id || item.id || '';
                 const incNumber = getIncidentNumber(item);
                 const isSelected = selectedIds.has(rowId);
+                const securePhoto = getSecureMediaUrl(item.photo_url);
 
                 return (
                   <tr
@@ -310,7 +298,6 @@ export const IncidentsDashboard: React.FC = () => {
                       isSelected ? 'bg-[#e7f1ff]' : 'odd:bg-white even:bg-[#fafafa]'
                     }`}
                   >
-                    {/* Checkbox */}
                     <td className="px-2 py-1.5 text-center border-r border-slate-200">
                       <input
                         type="checkbox"
@@ -320,7 +307,6 @@ export const IncidentsDashboard: React.FC = () => {
                       />
                     </td>
 
-                    {/* Info Preview Button (i) */}
                     <td className="px-2 py-1.5 text-center border-r border-slate-200">
                       <button
                         type="button"
@@ -332,7 +318,6 @@ export const IncidentsDashboard: React.FC = () => {
                       </button>
                     </td>
 
-                    {/* Number (ServiceNow Blue Link) */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap font-medium">
                       <button
                         type="button"
@@ -343,12 +328,10 @@ export const IncidentsDashboard: React.FC = () => {
                       </button>
                     </td>
 
-                    {/* Opened */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap text-slate-600 font-mono text-[11px]">
                       {item.reported_at ? new Date(item.reported_at).toLocaleString() : 'N/A'}
                     </td>
 
-                    {/* Short Description */}
                     <td 
                       className="px-3 py-1.5 border-r border-slate-200 max-w-xs truncate text-slate-900 font-medium" 
                       title={item.description || item.title}
@@ -356,32 +339,28 @@ export const IncidentsDashboard: React.FC = () => {
                       {item.description || item.title || 'Security patrol incident'}
                     </td>
 
-                    {/* Caller */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap text-slate-800">
                       {item.guards?.full_name || 'Rahul Sharma'}
                     </td>
 
-                    {/* Priority */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap">
                       {renderPriority(item.priority)}
                     </td>
 
-                    {/* State */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap text-slate-700">
                       {getSnowState(item.status)}
                     </td>
 
-                    {/* Category */}
                     <td className="px-3 py-1.5 border-r border-slate-200 text-slate-600 whitespace-nowrap">
                       {item.category || 'Security / Patrol'}
                     </td>
 
-                    {/* Evidence Photo Preview */}
+                    {/* Evidence Photo Preview with secure gateway fallback */}
                     <td className="px-3 py-1.5 border-r border-slate-200 text-center whitespace-nowrap">
-                      {item.photo_url ? (
+                      {securePhoto ? (
                         <button
                           type="button"
-                          onClick={() => setPreviewPhoto(item.photo_url!)}
+                          onClick={() => setPreviewPhoto(securePhoto)}
                           className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800 hover:underline"
                         >
                           <ImageIcon className="w-3.5 h-3.5" /> View Photo
@@ -391,22 +370,18 @@ export const IncidentsDashboard: React.FC = () => {
                       )}
                     </td>
 
-                    {/* Assignment Group */}
                     <td className="px-3 py-1.5 border-r border-slate-200 text-slate-600 whitespace-nowrap">
                       {item.assignment_group || 'Site Security L1'}
                     </td>
 
-                    {/* Assigned To */}
                     <td className="px-3 py-1.5 border-r border-slate-200 text-slate-400 italic whitespace-nowrap">
                       {item.assigned_to || '(empty)'}
                     </td>
 
-                    {/* Updated */}
                     <td className="px-3 py-1.5 border-r border-slate-200 whitespace-nowrap text-slate-600 font-mono text-[11px]">
                       {item.updated_at ? new Date(item.updated_at).toLocaleString() : new Date(item.reported_at).toLocaleString()}
                     </td>
 
-                    {/* Updated By */}
                     <td className="px-3 py-1.5 whitespace-nowrap text-slate-600">
                       {item.updated_by || 'system'}
                     </td>
@@ -442,6 +417,9 @@ export const IncidentsDashboard: React.FC = () => {
                 src={previewPhoto} 
                 alt="Incident Evidence" 
                 className="w-full h-full object-contain" 
+                onError={(e) => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
               />
             </div>
           </div>
