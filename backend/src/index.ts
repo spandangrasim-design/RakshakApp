@@ -195,18 +195,11 @@ app.get('/api/v1/scans', async (c) => {
       .from('scans')
       .select('*')
       .eq('guard_id', guard_id)
-      .order('scanned_at', { ascending: false })
+      .order('scan_time', { ascending: false })
       .limit(30);
 
     if (error) {
-      const fallback = await supabase
-        .from('scans')
-        .select('*')
-        .eq('guard_id', guard_id)
-        .order('created_at', { ascending: false })
-        .limit(30);
-
-      return c.json({ success: true, scans: fallback.data || [] });
+      return c.json({ success: false, message: error.message }, 500);
     }
 
     return c.json({ success: true, scans: data || [] });
@@ -634,7 +627,6 @@ app.post('/api/v1/incidents', async (c) => {
     const body = await c.req.json();
     const { client_incident_id, title, description, priority, photo_url, reported_at } = body;
 
-    // Validate or generate a valid UUID for client_incident_id
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
