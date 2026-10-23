@@ -52,12 +52,30 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
       setLoading(true);
       const res = await fetch(`${API_BASE_URL}/incidents/${id}`);
       const data = await res.json();
-      if (data.success) {
+      
+      if (data.success && data.incident) {
         setIncident(data.incident);
         setUpdates(data.updates || []);
+      } else {
+        // Fallback: Fetch all incidents to find a matching ID or client_incident_id
+        const allRes = await fetch(`${API_BASE_URL}/incidents`);
+        const allData = await allRes.json();
+        const found = (allData.incidents || []).find(
+          (inc: any) => inc.client_incident_id === id || inc.id === id || inc.incident_id === id
+        );
+
+        if (found) {
+          setIncident(found);
+          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${found.client_incident_id || found.id}`);
+          const updatesData = await updatesRes.json();
+          setUpdates(updatesData.updates || []);
+        } else {
+          setIncident(null);
+        }
       }
     } catch (err) {
       console.error('Failed to load incident details:', err);
+      setIncident(null);
     } finally {
       setLoading(false);
     }
@@ -116,7 +134,8 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
         photo_base64: selectedPhotoBase64,
       };
 
-      const res = await fetch(`${API_BASE_URL}/incidents/${id}/updates`, {
+      const targetId = incident?.client_incident_id || id;
+      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}/updates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -142,7 +161,8 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
 
     setIsResolving(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/incidents/${id}/resolve`, {
+      const targetId = incident?.client_incident_id || id;
+      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}/resolve`, {
         method: 'PATCH',
       });
       const data = await res.json();
@@ -211,7 +231,7 @@ export const IncidentDetails: React.FC<IncidentDetailsProps> = ({ user }) => {
                 {incident.priority}
               </span>
               <h1 className="text-xl font-bold text-slate-900 font-mono">
-                #{incident.client_incident_id.substring(0, 8)}
+                #{incident.client_incident_id ? incident.client_incident_id.substring(0, 8) : 'Incident'}
               </h1>
               <span
                 className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${

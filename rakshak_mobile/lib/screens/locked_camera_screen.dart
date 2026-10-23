@@ -347,7 +347,7 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.between,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text('Live GPS Lock:',
                         style: TextStyle(
