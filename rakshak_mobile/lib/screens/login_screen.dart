@@ -65,7 +65,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const Icon(Icons.security, size: 80, color: Color(0xFF1E3A8A)),
               const SizedBox(height: 16),
               const Text(
-                'Rakshak Patrol',
+                'Rakshak',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 28,

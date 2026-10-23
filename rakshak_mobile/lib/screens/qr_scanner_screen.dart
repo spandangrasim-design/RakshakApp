@@ -95,7 +95,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> with WidgetsBindingOb
           MobileScanner(
             controller: _scannerController,
             onDetect: _onDetect,
-            errorBuilder: (context, error) {
+            errorBuilder: (context, error, child) {
               return Center(
                 child: Padding(
                   padding: const EdgeInsets.all(24.0),
