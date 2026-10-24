@@ -930,29 +930,54 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
     const supabase = getSupabase(c.env);
-    
-    let { data: incident } = await supabase
+
+    // 1. First locate the record by either client_incident_id or primary key id
+    const { data: existing } = await supabase
       .from('incidents')
       .select('client_incident_id, id')
       .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
       .maybeSingle();
 
-    const targetId = incident?.client_incident_id || incidentId;
+    const targetId = existing?.client_incident_id || existing?.id || incidentId;
 
+    // 2. Perform the update
     const { data, error } = await supabase
       .from('incidents')
-      .update({ status: 'RESOLVED' })
+      .update({ 
+        status: 'RESOLVED',
+        resolved_at: new Date().toISOString()
+      })
       .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
       .select()
       .maybeSingle();
       
-    if (error) throw error;
+    if (error) {
+      console.error('Supabase resolve error:', error);
+      return c.json({ success: false, message: error.message }, 500);
+    }
+
     return c.json({ success: true, incident: data });
-  } catch (error) {
-    return c.json({ success: false, message: 'Failed to resolve incident' }, 500);
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to resolve incident' }, 500);
   }
 });
+// DELETE Incident
+app.delete('/api/v1/incidents/:id', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const supabase = getSupabase(c.env);
 
+    const { error } = await supabase
+      .from('incidents')
+      .delete()
+      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`);
+
+    if (error) return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: true, message: 'Incident deleted successfully' });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to delete incident' }, 500);
+  }
+});
 // ==========================================
 // 7. ADMIN WEB DASHBOARD: CONFIGS
 // ==========================================
