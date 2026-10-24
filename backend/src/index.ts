@@ -86,14 +86,12 @@ app.get('/api/v1/media/*', async (c) => {
       token = queryToken.trim();
     }
 
-    // Allowed web dashboard origins
     const isFromDashboard = 
       origin.includes('rakshakapp.pages.dev') || 
       referer.includes('rakshakapp.pages.dev') ||
       origin.includes('localhost') || 
       referer.includes('localhost');
 
-    // If a token is provided, verify it with JWT
     if (token) {
       try {
         await verify(token, c.env.JWT_SECRET, 'HS256');
@@ -101,11 +99,9 @@ app.get('/api/v1/media/*', async (c) => {
         return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
       }
     } else if (!isFromDashboard) {
-      // Block unauthenticated direct access from external sources
       return c.json({ error_code: 'UNAUTHORIZED', message: 'Missing authentication token.' }, 401);
     }
 
-    // Extract and sanitize R2 object key from URL path
     const url = new URL(c.req.url);
     const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
 
@@ -113,7 +109,6 @@ app.get('/api/v1/media/*', async (c) => {
       return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid file key.' }, 400);
     }
 
-    // Fetch binary directly from private Cloudflare R2 bucket
     const object = await c.env.R2_BUCKET.get(fileKey);
     if (!object) {
       return c.json({ error_code: 'NOT_FOUND', message: 'Image not found in storage.' }, 404);
@@ -223,7 +218,6 @@ app.post('/api/v1/scans', async (c) => {
 
     const url = new URL(c.req.url);
 
-    // Save Base64 photos directly to Private R2
     const uploadToR2 = async (base64Str?: string, prefix: string = 'scan') => {
       if (!base64Str || !base64Str.startsWith('data:image')) return null;
       try {
@@ -244,7 +238,6 @@ app.post('/api/v1/scans', async (c) => {
 
     const supabase = getSupabase(c.env);
 
-    // Write to Supabase using log_patrol_scan stored procedure
     const { data, error } = await supabase.rpc('log_patrol_scan', {
       p_client_scan_id: client_scan_id,
       p_checkpoint_id: checkpoint_id,
@@ -261,7 +254,6 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Database error', error }, 500);
     }
 
-    // Persist separate selfie and location proof URLs into the scans table
     await supabase
       .from('scans')
       .update({
@@ -315,7 +307,6 @@ app.get('/api/v1/scans', async (c) => {
   }
 });
 
-// GET Checkpoint Scans for a specific Round
 app.get('/api/v1/rounds/:id/scans', async (c) => {
   try {
     const roundId = c.req.param('id');
@@ -357,7 +348,6 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
   }
 });
 
-// Bulk Offline Patrol Scan Sync
 app.post('/api/v1/patrols/sync', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -836,7 +826,7 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// GET Single Incident + Threaded Updates (Dual lookup by client_incident_id OR id)
+// GET Single Incident + Threaded Updates (Newest comments first at TOP)
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
@@ -866,11 +856,12 @@ app.get('/api/v1/incidents/:id', async (c) => {
 
     const resolvedLookupId = incident.client_incident_id || incident.id || incidentId;
 
+    // Fetch updates ordered with newest comment at the TOP (descending)
     const { data: updates, error: updatesError } = await supabase
       .from('incident_updates')
       .select('*')
       .eq('incident_id', resolvedLookupId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false });
 
     if (updatesError) throw updatesError;
     return c.json({ success: true, incident, updates: updates || [] });
@@ -925,13 +916,13 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
   }
 });
 
-// PATCH to Mark Incident as RESOLVED
-app.patch('/api/v1/incidents/:id/resolve', async (c) => {
+// PATCH: General Incident Field Updates (Triggered by ServiceNow "Update" button)
+app.patch('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
+    const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // 1. First locate the record by either client_incident_id or primary key id
     const { data: existing } = await supabase
       .from('incidents')
       .select('client_incident_id, id')
@@ -940,8 +931,47 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
 
     const targetId = existing?.client_incident_id || existing?.id || incidentId;
 
-    // 2. Perform the update
+    const updates: Record<string, any> = {};
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.title !== undefined) updates.title = body.title;
+    if (body.priority !== undefined) updates.priority = body.priority;
+    if (body.status !== undefined) updates.status = body.status;
+    if (body.category !== undefined) updates.category = body.category;
+    if (body.impact !== undefined) updates.impact = body.impact;
+    if (body.urgency !== undefined) updates.urgency = body.urgency;
+    if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
+    if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to;
+
     const { data, error } = await supabase
+      .from('incidents')
+      .update(updates)
+      .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
+      .select()
+      .maybeSingle();
+
+    if (error) throw error;
+    return c.json({ success: true, incident: data });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to update incident' }, 500);
+  }
+});
+
+// PATCH to Mark Incident as RESOLVED (Safe fallback if resolved_at is not present in schema)
+app.patch('/api/v1/incidents/:id/resolve', async (c) => {
+  try {
+    const incidentId = c.req.param('id');
+    const supabase = getSupabase(c.env);
+
+    const { data: existing } = await supabase
+      .from('incidents')
+      .select('client_incident_id, id')
+      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
+      .maybeSingle();
+
+    const targetId = existing?.client_incident_id || existing?.id || incidentId;
+
+    // First attempt: Try updating with resolved_at timestamp
+    let { data, error } = await supabase
       .from('incidents')
       .update({ 
         status: 'RESOLVED',
@@ -951,6 +981,19 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       .select()
       .maybeSingle();
       
+    // Resilient fallback: If resolved_at column does not exist yet in schema, update status only
+    if (error && error.message?.includes('resolved_at')) {
+      const fallback = await supabase
+        .from('incidents')
+        .update({ status: 'RESOLVED' })
+        .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
+        .select()
+        .maybeSingle();
+
+      data = fallback.data;
+      error = fallback.error;
+    }
+
     if (error) {
       console.error('Supabase resolve error:', error);
       return c.json({ success: false, message: error.message }, 500);
@@ -961,6 +1004,7 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
     return c.json({ success: false, message: error.message || 'Failed to resolve incident' }, 500);
   }
 });
+
 // DELETE Incident
 app.delete('/api/v1/incidents/:id', async (c) => {
   try {
@@ -978,6 +1022,7 @@ app.delete('/api/v1/incidents/:id', async (c) => {
     return c.json({ success: false, message: error.message || 'Failed to delete incident' }, 500);
   }
 });
+
 // ==========================================
 // 7. ADMIN WEB DASHBOARD: CONFIGS
 // ==========================================

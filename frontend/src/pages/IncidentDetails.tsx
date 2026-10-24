@@ -34,6 +34,8 @@ interface Incident {
   assigned_to?: string;
   contact_type?: string;
   location?: string;
+  impact?: string;
+  urgency?: string;
 }
 
 interface IncidentUpdate {
@@ -46,6 +48,19 @@ interface IncidentUpdate {
   created_at: string;
 }
 
+// ITIL ServiceNow Standard Impact x Urgency Calculation Matrix
+const calculatePriority = (impact: string, urgency: string): { label: string; code: string } => {
+  const imp = impact.charAt(0); // '1', '2', or '3'
+  const urg = urgency.charAt(0); // '1', '2', or '3'
+
+  if (imp === '1' && urg === '1') return { label: '1 - Critical', code: 'P1' };
+  if ((imp === '1' && urg === '2') || (imp === '2' && urg === '1')) return { label: '2 - High', code: 'P2' };
+  if ((imp === '1' && urg === '3') || (imp === '2' && urg === '2') || (imp === '3' && urg === '1')) {
+    return { label: '3 - Moderate', code: 'P3' };
+  }
+  return { label: '4 - Low', code: 'P4' };
+};
+
 export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -54,11 +69,14 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Editable fields to mirror ServiceNow form
+  // Managed ITIL Form Fields
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
-  const [priority, setPriority] = useState('2 - High');
-  const [state, setState] = useState('In Progress');
+  const [impact, setImpact] = useState('2 - Medium');
+  const [urgency, setUrgency] = useState('2 - Medium');
+  const [priorityLabel, setPriorityLabel] = useState('2 - High');
+  const [priorityCode, setPriorityCode] = useState('P2');
+  const [state, setState] = useState('Active');
   const [assignmentGroup, setAssignmentGroup] = useState('Security Operations L1');
   const [assignedTo, setAssignedTo] = useState('Rahul Sharma');
 
@@ -67,9 +85,25 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [selectedPhotoBase64, setSelectedPhotoBase64] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Automatically recalculate priority whenever Impact or Urgency changes
+  const handleImpactChange = (newImpact: string) => {
+    setImpact(newImpact);
+    const result = calculatePriority(newImpact, urgency);
+    setPriorityLabel(result.label);
+    setPriorityCode(result.code);
+  };
+
+  const handleUrgencyChange = (newUrgency: string) => {
+    setUrgency(newUrgency);
+    const result = calculatePriority(impact, newUrgency);
+    setPriorityLabel(result.label);
+    setPriorityCode(result.code);
+  };
 
   const fetchIncidentDetails = async () => {
     if (!id) return;
@@ -79,9 +113,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       const data = await res.json();
       
       let currentInc: Incident | null = null;
+      let rawUpdates: IncidentUpdate[] = [];
+
       if (data.success && data.incident) {
         currentInc = data.incident;
-        setUpdates(data.updates || []);
+        rawUpdates = data.updates || [];
       } else {
         const allRes = await fetch(`${API_BASE_URL}/incidents`);
         const allData = await allRes.json();
@@ -91,7 +127,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         if (currentInc) {
           const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id || currentInc.id}`);
           const updatesData = await updatesRes.json();
-          setUpdates(updatesData.updates || []);
+          rawUpdates = updatesData.updates || [];
         }
       }
 
@@ -99,15 +135,28 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         setIncident(currentInc);
         setShortDescription(currentInc.description || currentInc.title || 'Security Patrol Incident');
         setCategory(currentInc.category || 'Security / Patrol');
-        setPriority(
-          currentInc.priority === 'P1' ? '1 - Critical' :
-          currentInc.priority === 'P2' ? '2 - High' :
-          currentInc.priority === 'P3' ? '3 - Moderate' : '4 - Low'
-        );
+        
+        const initImpact = currentInc.impact || '2 - Medium';
+        const initUrgency = currentInc.urgency || '2 - Medium';
+        setImpact(initImpact);
+        setUrgency(initUrgency);
+
+        const calculated = calculatePriority(initImpact, initUrgency);
+        setPriorityLabel(calculated.label);
+        setPriorityCode(calculated.code);
+
         setState(
           currentInc.status === 'RESOLVED' ? 'Resolved' :
           currentInc.status === 'CLOSED' ? 'Closed' : 'Active'
         );
+        setAssignmentGroup(currentInc.assignment_group || 'Security Operations L1');
+        setAssignedTo(currentInc.assigned_to || 'Rahul Sharma');
+
+        // Sort comments: Newest at the TOP, older at the bottom
+        const sortedUpdates = [...rawUpdates].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setUpdates(sortedUpdates);
       }
     } catch (err) {
       console.error('Failed to load incident details:', err);
@@ -119,6 +168,43 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   useEffect(() => {
     fetchIncidentDetails();
   }, [id]);
+
+  // Saves changes to the backend
+  const handleUpdateIncident = async () => {
+    if (!incident) return;
+    setIsUpdating(true);
+
+    try {
+      const targetId = incident.client_incident_id || incident.id || id;
+      const payload = {
+        description: shortDescription,
+        category,
+        impact,
+        urgency,
+        priority: priorityCode,
+        status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
+        assignment_group: assignmentGroup,
+        assigned_to: assignedTo,
+      };
+
+      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        alert('Incident record successfully updated.');
+      } else {
+        alert(data.message || 'Failed to update record.');
+      }
+    } catch (err) {
+      alert('Network error while saving changes.');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   const handleResolveIncident = async () => {
     if (!incident) return;
@@ -194,7 +280,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const data = await res.json();
       if (data.success && data.update) {
-        setUpdates((prev) => [...prev, data.update]);
+        // Prepend new comment to the TOP so the newest comment stays up
+        setUpdates((prev) => [data.update, ...prev]);
         setWorkNoteMessage('');
         setSelectedPhotoBase64(null);
         setSelectedFileName(null);
@@ -228,7 +315,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     );
   }
 
-  // Display Number: INC00xxxxx based on first 7 alphanumeric chars or sequential fallback
   const incDisplayNumber = incident.client_incident_id
     ? `INC${incident.client_incident_id.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`
     : 'INC0011211';
@@ -266,10 +352,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
           <button
             type="button"
-            onClick={() => alert('Incident details updated.')}
-            className="rounded border border-[#9ca3af] bg-white hover:bg-slate-50 px-3 py-1 font-semibold text-slate-800 shadow-sm transition"
+            onClick={handleUpdateIncident}
+            disabled={isUpdating}
+            className="rounded border border-[#9ca3af] bg-white hover:bg-slate-50 px-3 py-1 font-semibold text-slate-800 shadow-sm transition disabled:opacity-50"
           >
-            Update
+            {isUpdating ? 'Saving...' : 'Update'}
           </button>
 
           {state !== 'Resolved' && (
@@ -296,7 +383,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       {/* Main ServiceNow Form Layout */}
       <div className="max-w-7xl mx-auto mt-4 px-4">
         <div className="bg-white border border-[#bdc3c7] rounded-sm shadow-sm p-6 space-y-4">
-          {/* Two-Column Grid of Standard ServiceNow Fields */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-3">
             {/* Left Column */}
             <div className="space-y-3">
@@ -370,7 +456,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Impact</label>
                 <div className="flex-1">
-                  <select defaultValue="2 - Medium" className="w-full border border-[#bdc3c7] rounded px-2 py-1 bg-white outline-none">
+                  <select 
+                    value={impact}
+                    onChange={(e) => handleImpactChange(e.target.value)}
+                    className="w-full border border-[#bdc3c7] rounded px-2 py-1 bg-white outline-none"
+                  >
                     <option>1 - High</option>
                     <option>2 - Medium</option>
                     <option>3 - Low</option>
@@ -382,7 +472,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Urgency</label>
                 <div className="flex-1">
-                  <select defaultValue="2 - Medium" className="w-full border border-[#bdc3c7] rounded px-2 py-1 bg-white outline-none">
+                  <select 
+                    value={urgency}
+                    onChange={(e) => handleUrgencyChange(e.target.value)}
+                    className="w-full border border-[#bdc3c7] rounded px-2 py-1 bg-white outline-none"
+                  >
                     <option>1 - High</option>
                     <option>2 - Medium</option>
                     <option>3 - Low</option>
@@ -390,14 +484,14 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Priority */}
+              {/* Priority (Auto-Calculated) */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Priority</label>
                 <div className="flex-1">
                   <input
                     type="text"
                     disabled
-                    value={priority}
+                    value={priorityLabel}
                     className="w-full bg-[#f3f4f6] border border-[#bdc3c7] rounded px-2.5 py-1 text-slate-700 font-semibold outline-none"
                   />
                 </div>
@@ -599,9 +693,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
           </div>
 
-          {/* Chronological Activity Feed */}
+          {/* Chronological Activity Feed (Newest at TOP) */}
           <div className="mt-6 space-y-3 pt-4 border-t border-slate-200">
-            <span className="font-bold text-slate-700 text-xs block">Activity Feed</span>
+            <span className="font-bold text-slate-700 text-xs block">Activity Feed (Latest at Top)</span>
 
             {updates.length === 0 ? (
               <div className="p-4 border border-dashed border-slate-200 rounded text-center text-slate-400 italic">
@@ -613,7 +707,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 const photo = getSecureMediaUrl(update.photo_url);
 
                 return (
-                  <div key={update.id} className="border-l-2 border-slate-300 pl-3 py-1 space-y-1">
+                  <div key={update.id} className="border-l-2 border-blue-500 pl-3 py-1 space-y-1">
                     <div className="flex items-center gap-2 text-[11px] text-slate-500">
                       <span className="font-bold text-slate-800">{update.sender_name}</span>
                       <span>•</span>
