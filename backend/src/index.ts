@@ -76,6 +76,8 @@ app.get('/api/v1/media/*', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
     const queryToken = c.req.query('token');
+    const referer = c.req.header('Referer') || '';
+    const origin = c.req.header('Origin') || '';
 
     let token = '';
     if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -84,16 +86,26 @@ app.get('/api/v1/media/*', async (c) => {
       token = queryToken.trim();
     }
 
-    if (!token) {
+    // Allowed web dashboard origins
+    const isFromDashboard = 
+      origin.includes('rakshakapp.pages.dev') || 
+      referer.includes('rakshakapp.pages.dev') ||
+      origin.includes('localhost') || 
+      referer.includes('localhost');
+
+    // If a token is provided, verify it with JWT
+    if (token) {
+      try {
+        await verify(token, c.env.JWT_SECRET, 'HS256');
+      } catch (e) {
+        return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
+      }
+    } else if (!isFromDashboard) {
+      // Block unauthenticated direct access from external sources
       return c.json({ error_code: 'UNAUTHORIZED', message: 'Missing authentication token.' }, 401);
     }
 
-    try {
-      await verify(token, c.env.JWT_SECRET, 'HS256');
-    } catch (e) {
-      return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
-    }
-
+    // Extract and sanitize R2 object key from URL path
     const url = new URL(c.req.url);
     const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
 
@@ -101,9 +113,10 @@ app.get('/api/v1/media/*', async (c) => {
       return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid file key.' }, 400);
     }
 
+    // Fetch binary directly from private Cloudflare R2 bucket
     const object = await c.env.R2_BUCKET.get(fileKey);
     if (!object) {
-      return c.json({ error_code: 'NOT_FOUND', message: 'Image not found.' }, 404);
+      return c.json({ error_code: 'NOT_FOUND', message: 'Image not found in storage.' }, 404);
     }
 
     const headers = new Headers();
