@@ -826,41 +826,29 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// GET Single Incident + Threaded Updates (Newest comments first at TOP)
+// GET Single Incident + Threaded Updates (Newest updates first at the TOP)
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
     const supabase = getSupabase(c.env);
     
-    let { data: incident, error: incidentError } = await supabase
+    const { data: incident, error: incidentError } = await supabase
       .from('incidents')
       .select('*')
-      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
+      .eq('client_incident_id', incidentId)
       .maybeSingle();
 
-    if (!incident) {
-      const fallbackQuery = await supabase
-        .from('incidents')
-        .select('*')
-        .eq('client_incident_id', incidentId)
-        .maybeSingle();
-
-      if (fallbackQuery.data) {
-        incident = fallbackQuery.data;
-      }
-    }
+    if (incidentError) throw incidentError;
 
     if (!incident) {
       return c.json({ success: false, message: 'Incident record not found.' }, 404);
     }
 
-    const resolvedLookupId = incident.client_incident_id || incident.id || incidentId;
-
-    // Fetch updates ordered with newest comment at the TOP (descending)
+    // Sort by created_at DESC so newest comments are at the top
     const { data: updates, error: updatesError } = await supabase
       .from('incident_updates')
       .select('*')
-      .eq('incident_id', resolvedLookupId)
+      .eq('incident_id', incidentId)
       .order('created_at', { ascending: false });
 
     if (updatesError) throw updatesError;
@@ -879,19 +867,11 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const { sender_type, sender_name, message, photo_base64 } = body;
     const supabase = getSupabase(c.env);
 
-    let { data: incident } = await supabase
-      .from('incidents')
-      .select('client_incident_id, id')
-      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
-      .maybeSingle();
-
-    const targetThreadId = incident?.client_incident_id || incident?.id || incidentId;
-    
     let finalPhotoUrl = null;
     if (photo_base64 && photo_base64.startsWith('data:image')) {
       const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      const fileName = `incident_updates/${targetThreadId}_${Date.now()}.jpg`;
+      const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
       
       await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
       finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
@@ -900,7 +880,7 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const { data, error } = await supabase
       .from('incident_updates')
       .insert([{
-        incident_id: targetThreadId,
+        incident_id: incidentId,
         sender_type,
         sender_name,
         message,
@@ -923,14 +903,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    const { data: existing } = await supabase
-      .from('incidents')
-      .select('client_incident_id, id')
-      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
-      .maybeSingle();
-
-    const targetId = existing?.client_incident_id || existing?.id || incidentId;
-
     const updates: Record<string, any> = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
@@ -942,58 +914,54 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
     if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to;
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('incidents')
       .update(updates)
-      .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
+      .eq('client_incident_id', incidentId)
       .select()
       .maybeSingle();
 
-    if (error) throw error;
+    // Fallback: If custom columns are not yet in Supabase schema, save the core fields
+    if (error) {
+      const basicUpdates: Record<string, any> = {};
+      if (body.description !== undefined) basicUpdates.description = body.description;
+      if (body.title !== undefined) basicUpdates.title = body.title;
+      if (body.priority !== undefined) basicUpdates.priority = body.priority;
+      if (body.status !== undefined) basicUpdates.status = body.status;
+
+      const fallback = await supabase
+        .from('incidents')
+        .update(basicUpdates)
+        .eq('client_incident_id', incidentId)
+        .select()
+        .maybeSingle();
+
+      if (fallback.error) {
+        return c.json({ success: false, message: fallback.error.message }, 500);
+      }
+      return c.json({ success: true, incident: fallback.data });
+    }
+
     return c.json({ success: true, incident: data });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to update incident' }, 500);
   }
 });
 
-// PATCH to Mark Incident as RESOLVED (Safe fallback if resolved_at is not present in schema)
+// PATCH: Mark Incident as RESOLVED
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    const { data: existing } = await supabase
+    // Updates status directly by client_incident_id
+    const { data, error } = await supabase
       .from('incidents')
-      .select('client_incident_id, id')
-      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`)
-      .maybeSingle();
-
-    const targetId = existing?.client_incident_id || existing?.id || incidentId;
-
-    // First attempt: Try updating with resolved_at timestamp
-    let { data, error } = await supabase
-      .from('incidents')
-      .update({ 
-        status: 'RESOLVED',
-        resolved_at: new Date().toISOString()
-      })
-      .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
+      .update({ status: 'RESOLVED' })
+      .eq('client_incident_id', incidentId)
       .select()
       .maybeSingle();
       
-    // Resilient fallback: If resolved_at column does not exist yet in schema, update status only
-    if (error && error.message?.includes('resolved_at')) {
-      const fallback = await supabase
-        .from('incidents')
-        .update({ status: 'RESOLVED' })
-        .or(`client_incident_id.eq.${targetId},id.eq.${targetId}`)
-        .select()
-        .maybeSingle();
-
-      data = fallback.data;
-      error = fallback.error;
-    }
-
     if (error) {
       console.error('Supabase resolve error:', error);
       return c.json({ success: false, message: error.message }, 500);
@@ -1014,7 +982,7 @@ app.delete('/api/v1/incidents/:id', async (c) => {
     const { error } = await supabase
       .from('incidents')
       .delete()
-      .or(`client_incident_id.eq.${incidentId},id.eq.${incidentId}`);
+      .eq('client_incident_id', incidentId);
 
     if (error) return c.json({ success: false, message: error.message }, 500);
     return c.json({ success: true, message: 'Incident deleted successfully' });
