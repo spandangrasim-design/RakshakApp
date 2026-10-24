@@ -55,12 +55,22 @@ const createGuardSchema = z.object({
   full_name: z.string().min(1, 'Full name is required'),
   employee_code: z.string().min(1, 'Employee code is required'),
   password: z.string().min(4, 'Password must be at least 4 characters'),
+  role: z.string().optional(),
+  site_location: z.string().optional(),
+  shift_timing: z.string().optional(),
+  assigned_round_id: z.string().uuid().nullable().optional(),
+  reporting_to: z.string().uuid().nullable().optional(),
 })
 
 const updateGuardSchema = z.object({
   full_name: z.string().optional(),
   password: z.string().optional(),
   is_active: z.boolean().optional(),
+  role: z.string().optional(),
+  site_location: z.string().optional(),
+  shift_timing: z.string().optional(),
+  assigned_round_id: z.string().uuid().nullable().optional(),
+  reporting_to: z.string().uuid().nullable().optional(),
 })
 
 const getSupabase = (env: Bindings) =>
@@ -139,7 +149,7 @@ app.post('/api/v1/auth/login', async (c) => {
 
     const { data: guard, error } = await supabase
       .from('guards')
-      .select('guard_id, full_name, employee_code, password_hash, is_active')
+      .select('guard_id, full_name, employee_code, password_hash, is_active, role, site_location, shift_timing, assigned_round_id')
       .eq('employee_code', employee_code)
       .single()
 
@@ -149,7 +159,7 @@ app.post('/api/v1/auth/login', async (c) => {
 
     const payload = {
       sub: guard.guard_id,
-      role: 'guard',
+      role: guard.role || 'guard',
       device_id: device_id || 'unknown',
       exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60) 
     }
@@ -162,7 +172,10 @@ app.post('/api/v1/auth/login', async (c) => {
       guard: {
         guard_id: guard.guard_id,
         full_name: guard.full_name,
-        employee_code: guard.employee_code
+        employee_code: guard.employee_code,
+        role: guard.role || 'Guard',
+        site_location: guard.site_location || 'Main Plant',
+        assigned_round_id: guard.assigned_round_id || null
       },
       active_shift: null 
     }, 200)
@@ -663,14 +676,28 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 });
 
 // ==========================================
-// 5. GUARD MANAGEMENT CRUD
+// 5. GUARD MANAGEMENT CRUD & HIERARCHY
 // ==========================================
 app.get('/api/v1/guards', async (c) => {
   try {
     const supabase = getSupabase(c.env);
+    
+    // Fetch guards with joined rounds and hierarchy fields
     const { data: guards, error } = await supabase
       .from('guards')
-      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .select(`
+        guard_id,
+        full_name,
+        employee_code,
+        role,
+        site_location,
+        shift_timing,
+        is_active,
+        created_at,
+        assigned_round_id,
+        reporting_to,
+        rounds:assigned_round_id ( id, name )
+      `)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -683,7 +710,16 @@ app.get('/api/v1/guards', async (c) => {
 app.post('/api/v1/guards', async (c) => {
   try {
     const body = await c.req.json();
-    const { full_name, employee_code, password } = createGuardSchema.parse(body);
+    const { 
+      full_name, 
+      employee_code, 
+      password, 
+      role, 
+      site_location, 
+      shift_timing, 
+      assigned_round_id, 
+      reporting_to 
+    } = createGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
 
     const { data: existing } = await supabase
@@ -702,9 +738,25 @@ app.post('/api/v1/guards', async (c) => {
         full_name: full_name.trim(),
         employee_code: employee_code.trim(),
         password_hash: password,
+        role: role || 'Guard',
+        site_location: site_location || 'Main Plant & Gate 1',
+        shift_timing: shift_timing || 'Morning (06:00 - 14:00)',
+        assigned_round_id: assigned_round_id || null,
+        reporting_to: reporting_to || null,
         is_active: true,
       }])
-      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .select(`
+        guard_id, 
+        full_name, 
+        employee_code, 
+        role, 
+        site_location, 
+        shift_timing, 
+        is_active, 
+        created_at,
+        assigned_round_id,
+        reporting_to
+      `)
       .single();
 
     if (error) throw error;
@@ -721,13 +773,27 @@ app.patch('/api/v1/guards/:id', async (c) => {
   try {
     const guardId = c.req.param('id');
     const body = await c.req.json();
-    const { full_name, password, is_active } = updateGuardSchema.parse(body);
+    const { 
+      full_name, 
+      password, 
+      is_active, 
+      role, 
+      site_location, 
+      shift_timing, 
+      assigned_round_id, 
+      reporting_to 
+    } = updateGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
 
     const updates: Record<string, any> = {};
     if (full_name !== undefined) updates.full_name = full_name.trim();
-    if (password !== undefined) updates.password_hash = password;
+    if (password !== undefined && password.trim() !== '') updates.password_hash = password;
     if (is_active !== undefined) updates.is_active = is_active;
+    if (role !== undefined) updates.role = role;
+    if (site_location !== undefined) updates.site_location = site_location;
+    if (shift_timing !== undefined) updates.shift_timing = shift_timing;
+    if (assigned_round_id !== undefined) updates.assigned_round_id = assigned_round_id || null;
+    if (reporting_to !== undefined) updates.reporting_to = reporting_to || null;
 
     if (Object.keys(updates).length === 0) {
       return c.json({ success: false, message: 'No fields provided to update.' }, 400);
@@ -737,7 +803,19 @@ app.patch('/api/v1/guards/:id', async (c) => {
       .from('guards')
       .update(updates)
       .eq('guard_id', guardId)
-      .select('guard_id, full_name, employee_code, is_active, created_at')
+      .select(`
+        guard_id,
+        full_name,
+        employee_code,
+        role,
+        site_location,
+        shift_timing,
+        is_active,
+        created_at,
+        assigned_round_id,
+        reporting_to,
+        rounds:assigned_round_id ( id, name )
+      `)
       .single();
 
     if (error) throw error;
@@ -747,6 +825,59 @@ app.patch('/api/v1/guards/:id', async (c) => {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
     }
     return c.json({ success: false, message: error.message || 'Failed to update guard' }, 500);
+  }
+});
+
+// Mobile App Route: Fetch assigned route and checkpoints for currently logged-in guard
+app.get('/api/v1/guards/my-assigned-route', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Unauthorized' }, 401);
+    }
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const guard_id = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+
+    const { data: guard, error: gError } = await supabase
+      .from('guards')
+      .select('guard_id, full_name, role, assigned_round_id')
+      .eq('guard_id', guard_id)
+      .single();
+
+    if (gError || !guard || !guard.assigned_round_id) {
+      return c.json({ success: true, has_route: false, message: 'No patrol route currently assigned to you.' });
+    }
+
+    const { data: round, error: rError } = await supabase
+      .from('rounds')
+      .select('id, name')
+      .eq('id', guard.assigned_round_id)
+      .single();
+
+    if (rError || !round) {
+      return c.json({ success: true, has_route: false, message: 'Assigned route not found.' });
+    }
+
+    const { data: checkpoints } = await supabase
+      .from('checkpoints')
+      .select('checkpoint_id, name, lat, lng, qr_payload')
+      .eq('round_id', round.id);
+
+    return c.json({
+      success: true,
+      has_route: true,
+      route: {
+        id: round.id,
+        name: round.name,
+        total_checkpoints: checkpoints?.length || 0,
+        checkpoints: checkpoints || []
+      }
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
   }
 });
 
@@ -839,7 +970,7 @@ async function resolveIncidentRecord(supabase: any, rawParam: string) {
 
   if (match) return match;
 
-  // Search in memory across recent incidents for UUID prefixes or INC ticket numbers
+  // Search across recent incidents for UUID prefixes or INC ticket numbers
   const { data: all } = await supabase
     .from('incidents')
     .select('*')
@@ -935,14 +1066,12 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // 1. Fetch current incident state to detect changes
     const current = await resolveIncidentRecord(supabase, rawParam);
     if (!current) {
       return c.json({ success: false, message: 'Incident not found.' }, 404);
     }
     const incidentId = current.client_incident_id;
 
-    // 2. Prepare database updates
     const updates: Record<string, any> = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
@@ -961,7 +1090,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       .select()
       .maybeSingle();
 
-    // Fallback if custom columns are not yet in Supabase schema
     if (updateErr) {
       const basicUpdates: Record<string, any> = {};
       if (body.description !== undefined) basicUpdates.description = body.description;
@@ -978,7 +1106,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       updatedIncident = fallback.data;
     }
 
-    // 3. Compile audit trail note if fields changed
     const changes: string[] = [];
     if (body.priority && body.priority !== current.priority) {
       changes.push(`Priority changed from ${current.priority} to ${body.priority}`);
@@ -1046,7 +1173,6 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       }, 400);
     }
 
-    // 1. Update Incident record with Resolution Information
     let { data: resolvedIncident, error: incError } = await supabase
       .from('incidents')
       .update({ 
@@ -1061,7 +1187,6 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       .maybeSingle();
 
     if (incError) {
-      // Fallback if schema doesn't have custom columns
       const fallback = await supabase
         .from('incidents')
         .update({ status: 'RESOLVED' })
@@ -1071,7 +1196,6 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       resolvedIncident = fallback.data;
     }
 
-    // 2. Post resolution note into incident_updates timeline
     const activityMessage = `✅ INCIDENT RESOLVED\nResolution Code: ${resolutionCode}\nResolution Notes: ${resolutionNotes.trim()}`;
 
     const { data: newUpdate } = await supabase
