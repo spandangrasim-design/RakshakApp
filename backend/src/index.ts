@@ -18,6 +18,12 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('/*', cors())
 
 // --- SCHEMAS ---
+const sanitizeUuid = z
+  .string()
+  .optional()
+  .nullable()
+  .transform((v) => (!v || v.trim() === '' ? null : v.trim()));
+
 const loginSchema = z.object({
   employee_code: z.string().min(1),
   password: z.string().min(6),
@@ -55,11 +61,11 @@ const createGuardSchema = z.object({
   full_name: z.string().min(1, 'Full name is required'),
   employee_code: z.string().min(1, 'Employee code is required'),
   password: z.string().min(4, 'Password must be at least 4 characters'),
-  role: z.string().optional(),
-  site_location: z.string().optional(),
-  shift_timing: z.string().optional(),
-  assigned_round_id: z.string().uuid().nullable().optional(),
-  reporting_to: z.string().uuid().nullable().optional(),
+  role: z.string().optional().default('Guard'),
+  site_location: z.string().optional().default('Main Plant & Gate 1'),
+  shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
+  assigned_round_id: sanitizeUuid,
+  reporting_to: sanitizeUuid,
 })
 
 const updateGuardSchema = z.object({
@@ -69,8 +75,8 @@ const updateGuardSchema = z.object({
   role: z.string().optional(),
   site_location: z.string().optional(),
   shift_timing: z.string().optional(),
-  assigned_round_id: z.string().uuid().nullable().optional(),
-  reporting_to: z.string().uuid().nullable().optional(),
+  assigned_round_id: sanitizeUuid,
+  reporting_to: sanitizeUuid,
 })
 
 const getSupabase = (env: Bindings) =>
@@ -679,31 +685,6 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 // 5. GUARD MANAGEMENT CRUD & HIERARCHY
 // ==========================================
 
-// Helper to sanitize UUID inputs (converts "" to null)
-const sanitizeUuid = z.string().optional().nullable().transform(v => (!v || v.trim() === '' ? null : v.trim()));
-
-const createGuardSchema = z.object({
-  full_name: z.string().min(1, 'Full name is required'),
-  employee_code: z.string().min(1, 'Employee code is required'),
-  password: z.string().min(4, 'Password must be at least 4 characters'),
-  role: z.string().optional().default('Guard'),
-  site_location: z.string().optional().default('Main Plant & Gate 1'),
-  shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
-  assigned_round_id: sanitizeUuid,
-  reporting_to: sanitizeUuid,
-});
-
-const updateGuardSchema = z.object({
-  full_name: z.string().optional(),
-  password: z.string().optional(),
-  is_active: z.boolean().optional(),
-  role: z.string().optional(),
-  site_location: z.string().optional(),
-  shift_timing: z.string().optional(),
-  assigned_round_id: sanitizeUuid,
-  reporting_to: sanitizeUuid,
-});
-
 // GET all guards + mapped round names (bulletproof in-memory join)
 app.get('/api/v1/guards', async (c) => {
   try {
@@ -808,7 +789,6 @@ app.patch('/api/v1/guards/:id', async (c) => {
 
     if (error) throw error;
 
-    // Attach round info if assigned
     let roundInfo = null;
     if (updatedGuard?.assigned_round_id) {
       const { data: rData } = await supabase
@@ -941,7 +921,6 @@ app.post('/api/v1/incidents', async (c) => {
   }
 });
 
-// GET all Incidents (Admin Web Dashboard Feed)
 app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -957,11 +936,9 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-// Helper: Resolve true incident record regardless of ID representation
 async function resolveIncidentRecord(supabase: any, rawParam: string) {
   const target = decodeURIComponent(rawParam).trim().toLowerCase();
 
-  // Try exact client_incident_id match
   let { data: match } = await supabase
     .from('incidents')
     .select('*')
@@ -970,7 +947,6 @@ async function resolveIncidentRecord(supabase: any, rawParam: string) {
 
   if (match) return match;
 
-  // Search across recent incidents for UUID prefixes or INC ticket numbers
   const { data: all } = await supabase
     .from('incidents')
     .select('*')
@@ -991,7 +967,6 @@ async function resolveIncidentRecord(supabase: any, rawParam: string) {
   return match || null;
 }
 
-// GET Single Incident + Threaded Updates (Newest updates first at the TOP)
 app.get('/api/v1/incidents/:id', async (c) => {
   try {
     const rawParam = c.req.param('id');
@@ -1004,7 +979,6 @@ app.get('/api/v1/incidents/:id', async (c) => {
 
     const targetId = incident.client_incident_id;
 
-    // Sort by created_at DESC so newest comments are at the top
     const { data: updates, error: updatesError } = await supabase
       .from('incident_updates')
       .select('*')
@@ -1018,7 +992,6 @@ app.get('/api/v1/incidents/:id', async (c) => {
   }
 });
 
-// POST an Update/Comment to an Incident Thread
 app.post('/api/v1/incidents/:id/updates', async (c) => {
   try {
     const rawParam = c.req.param('id');
@@ -1059,7 +1032,6 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
   }
 });
 
-// PATCH: General Incident Field Updates + Auto-Audit Logging
 app.patch('/api/v1/incidents/:id', async (c) => {
   try {
     const rawParam = c.req.param('id');
@@ -1152,7 +1124,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
   }
 });
 
-// PATCH: Mark Incident as RESOLVED with mandatory Resolution Information
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const rawParam = c.req.param('id');
@@ -1220,7 +1191,6 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   }
 });
 
-// DELETE Incident
 app.delete('/api/v1/incidents/:id', async (c) => {
   try {
     const rawParam = c.req.param('id');
