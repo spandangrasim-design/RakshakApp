@@ -13,14 +13,14 @@ import {
   Calendar, 
   Send, 
   X,
-  ChevronDown
+  AlertCircle,
+  CheckCircle2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
 interface Incident {
-  id?: string;
   client_incident_id: string;
   title?: string;
   description: string;
@@ -28,14 +28,15 @@ interface Incident {
   status: string;
   photo_url: string | null;
   reported_at: string;
-  guard_id?: string;
   category?: string;
   assignment_group?: string;
   assigned_to?: string;
-  contact_type?: string;
-  location?: string;
   impact?: string;
   urgency?: string;
+  resolution_code?: string;
+  resolution_notes?: string;
+  resolved_by?: string;
+  resolved_at?: string;
 }
 
 interface IncidentUpdate {
@@ -48,10 +49,9 @@ interface IncidentUpdate {
   created_at: string;
 }
 
-// ITIL ServiceNow Standard Impact x Urgency Calculation Matrix
 const calculatePriority = (impact: string, urgency: string): { label: string; code: string } => {
-  const imp = impact.charAt(0); // '1', '2', or '3'
-  const urg = urgency.charAt(0); // '1', '2', or '3'
+  const imp = impact.charAt(0);
+  const urg = urgency.charAt(0);
 
   if (imp === '1' && urg === '1') return { label: '1 - Critical', code: 'P1' };
   if ((imp === '1' && urg === '2') || (imp === '2' && urg === '1')) return { label: '2 - High', code: 'P2' };
@@ -69,16 +69,24 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Managed ITIL Form Fields
+  // Tab State: 'notes' or 'resolution'
+  const [activeTab, setActiveTab] = useState<'notes' | 'resolution'>('notes');
+
+  // Form Fields
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
   const [impact, setImpact] = useState('2 - Medium');
   const [urgency, setUrgency] = useState('2 - Medium');
-  const [priorityLabel, setPriorityLabel] = useState('2 - High');
-  const [priorityCode, setPriorityCode] = useState('P2');
+  const [priorityLabel, setPriorityLabel] = useState('3 - Moderate');
+  const [priorityCode, setPriorityCode] = useState('P3');
   const [state, setState] = useState('Active');
   const [assignmentGroup, setAssignmentGroup] = useState('Security Operations L1');
   const [assignedTo, setAssignedTo] = useState('Rahul Sharma');
+
+  // Resolution Information (Mandatory for Resolve)
+  const [resolutionCode, setResolutionCode] = useState('Solved (Permanently)');
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [resolutionError, setResolutionError] = useState(false);
 
   // Work note input
   const [workNoteMessage, setWorkNoteMessage] = useState('');
@@ -89,8 +97,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [isResolving, setIsResolving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const resolutionNotesRef = useRef<HTMLTextAreaElement>(null);
 
-  // Automatically recalculate priority whenever Impact or Urgency changes
   const handleImpactChange = (newImpact: string) => {
     setImpact(newImpact);
     const result = calculatePriority(newImpact, urgency);
@@ -118,17 +126,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       if (data.success && data.incident) {
         currentInc = data.incident;
         rawUpdates = data.updates || [];
-      } else {
-        const allRes = await fetch(`${API_BASE_URL}/incidents`);
-        const allData = await allRes.json();
-        currentInc = (allData.incidents || []).find(
-          (inc: any) => inc.client_incident_id === id || inc.id === id || inc.incident_id === id
-        );
-        if (currentInc) {
-          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id || currentInc.id}`);
-          const updatesData = await updatesRes.json();
-          rawUpdates = updatesData.updates || [];
-        }
       }
 
       if (currentInc) {
@@ -152,7 +149,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         setAssignmentGroup(currentInc.assignment_group || 'Security Operations L1');
         setAssignedTo(currentInc.assigned_to || 'Rahul Sharma');
 
-        // Sort comments: Newest at the TOP, older at the bottom
+        if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
+        if (currentInc.resolution_notes) setResolutionNotes(currentInc.resolution_notes);
+
+        // Sort comments: Newest on TOP
         const sortedUpdates = [...rawUpdates].sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
@@ -169,13 +169,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchIncidentDetails();
   }, [id]);
 
-  // Saves changes to the backend
+  // Saves field adjustments and writes changes to the activity timeline
   const handleUpdateIncident = async () => {
     if (!incident) return;
     setIsUpdating(true);
 
     try {
-      const targetId = incident.client_incident_id || incident.id || id;
       const payload = {
         description: shortDescription,
         category,
@@ -185,9 +184,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
         assignment_group: assignmentGroup,
         assigned_to: assignedTo,
+        updated_by: user?.full_name || 'System Administrator',
+        work_note: workNoteMessage.trim() || undefined,
       };
 
-      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}`, {
+      const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -195,7 +196,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const data = await res.json();
       if (data.success) {
-        alert('Incident record successfully updated.');
+        if (data.activity) {
+          setUpdates((prev) => [data.activity, ...prev]);
+        }
+        setWorkNoteMessage('');
+        alert('Incident record and audit trail updated successfully.');
       } else {
         alert(data.message || 'Failed to update record.');
       }
@@ -206,19 +211,49 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     }
   };
 
+  // Enforces Resolution Information tab fields before resolving
   const handleResolveIncident = async () => {
     if (!incident) return;
+
+    if (!resolutionNotes.trim()) {
+      setActiveTab('resolution');
+      setResolutionError(true);
+      setTimeout(() => resolutionNotesRef.current?.focus(), 150);
+      alert('Resolution notes are mandatory. Please provide Resolution Information to resolve this ticket.');
+      return;
+    }
+
+    setResolutionError(false);
     setIsResolving(true);
+
     try {
-      const targetId = incident.client_incident_id || incident.id || id;
-      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}/resolve`, {
+      const payload = {
+        resolution_code: resolutionCode,
+        resolution_notes: resolutionNotes.trim(),
+        resolved_by: user?.full_name || 'System Administrator',
+      };
+
+      const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}/resolve`, {
         method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
+
       const data = await res.json();
       if (data.success) {
-        setIncident((prev) => prev ? { ...prev, status: 'RESOLVED' } : null);
+        setIncident((prev) => prev ? { 
+          ...prev, 
+          status: 'RESOLVED',
+          resolution_code: resolutionCode,
+          resolution_notes: resolutionNotes.trim(),
+        } : null);
         setState('Resolved');
-        alert('Incident successfully marked as Resolved.');
+
+        if (data.activity) {
+          setUpdates((prev) => [data.activity, ...prev]);
+        }
+        setActiveTab('notes');
+        alert('Incident successfully resolved and logged to timeline.');
       } else {
         alert(data.message || 'Could not resolve incident.');
       }
@@ -232,8 +267,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const handleDeleteIncident = async () => {
     if (!incident || !window.confirm('Are you sure you want to delete this incident record?')) return;
     try {
-      const targetId = incident.client_incident_id || incident.id || id;
-      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}`, { method: 'DELETE' });
+      const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}`, { 
+        method: 'DELETE' 
+      });
       const data = await res.json();
       if (data.success) {
         navigate('/incidents');
@@ -264,7 +300,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     setIsSending(true);
 
     try {
-      const targetId = incident?.client_incident_id || incident?.id || id;
       const payload = {
         sender_type: 'admin',
         sender_name: user?.full_name || 'System Administrator',
@@ -272,7 +307,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         photo_base64: selectedPhotoBase64,
       };
 
-      const res = await fetch(`${API_BASE_URL}/incidents/${targetId}/updates`, {
+      const res = await fetch(`${API_BASE_URL}/incidents/${incident?.client_incident_id}/updates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -280,7 +315,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const data = await res.json();
       if (data.success && data.update) {
-        // Prepend new comment to the TOP so the newest comment stays up
         setUpdates((prev) => [data.update, ...prev]);
         setWorkNoteMessage('');
         setSelectedPhotoBase64(null);
@@ -386,7 +420,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-3">
             {/* Left Column */}
             <div className="space-y-3">
-              {/* Number */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Number</label>
                 <div className="flex-1">
@@ -399,7 +432,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Caller */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Caller</label>
                 <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white overflow-hidden">
@@ -417,25 +449,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Location */}
-              <div className="flex items-center">
-                <label className="w-36 text-right pr-4 font-semibold text-slate-600">Location</label>
-                <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white overflow-hidden">
-                  <input
-                    type="text"
-                    defaultValue="Birla Cellulosic Gate #2"
-                    className="w-full px-2.5 py-1 outline-none text-slate-800"
-                  />
-                  <button className="px-2 border-l border-[#bdc3c7] hover:bg-slate-100 py-1 text-slate-500">
-                    <Search className="w-3.5 h-3.5" />
-                  </button>
-                  <button className="px-2 border-l border-[#bdc3c7] hover:bg-slate-100 py-1 text-slate-500">
-                    <Info className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Category */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Category</label>
                 <div className="flex-1">
@@ -452,7 +465,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Impact */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Impact</label>
                 <div className="flex-1">
@@ -468,7 +480,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Urgency */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Urgency</label>
                 <div className="flex-1">
@@ -484,7 +495,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Priority (Auto-Calculated) */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Priority</label>
                 <div className="flex-1">
@@ -500,7 +510,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
             {/* Right Column */}
             <div className="space-y-3">
-              {/* Opened Date */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Opened</label>
                 <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-[#f3f4f6] px-2.5 py-1">
@@ -514,37 +523,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Opened by */}
-              <div className="flex items-center">
-                <label className="w-36 text-right pr-4 font-semibold text-slate-600">Opened by</label>
-                <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white overflow-hidden">
-                  <input
-                    type="text"
-                    defaultValue="System Administrator"
-                    className="w-full px-2.5 py-1 outline-none text-slate-800"
-                  />
-                  <button className="px-2 border-l border-[#bdc3c7] hover:bg-slate-100 py-1 text-slate-500">
-                    <Search className="w-3.5 h-3.5" />
-                  </button>
-                  <button className="px-2 border-l border-[#bdc3c7] hover:bg-slate-100 py-1 text-slate-500">
-                    <Info className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Contact type */}
-              <div className="flex items-center">
-                <label className="w-36 text-right pr-4 font-semibold text-slate-600">Contact type</label>
-                <div className="flex-1">
-                  <select defaultValue="Mobile App / Patrol" className="w-full border border-[#bdc3c7] rounded px-2 py-1 bg-white outline-none">
-                    <option>Mobile App / Patrol</option>
-                    <option>Phone</option>
-                    <option>Walk-in</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* State */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">State</label>
                 <div className="flex-1">
@@ -561,7 +539,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Assignment group */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Assignment group</label>
                 <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white overflow-hidden">
@@ -580,7 +557,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Assigned to */}
               <div className="flex items-center">
                 <label className="w-36 text-right pr-4 font-semibold text-slate-600">Assigned to</label>
                 <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white overflow-hidden">
@@ -601,7 +577,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
           </div>
 
-          {/* Full-Width Short Description */}
           <div className="flex items-start pt-2 border-t border-slate-100">
             <label className="w-36 text-right pr-4 font-semibold text-slate-600 pt-1">Short description</label>
             <div className="flex-1 flex items-center border border-[#bdc3c7] rounded bg-white">
@@ -615,7 +590,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
           </div>
 
-          {/* Initial Guard Evidence Photo (If Uploaded) */}
           {initialPhotoUrl && (
             <div className="flex items-start pt-2 border-t border-slate-100">
               <label className="w-36 text-right pr-4 font-semibold text-slate-600 pt-1">Evidence Photo</label>
@@ -633,112 +607,242 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           )}
         </div>
 
-        {/* Notes & Activity Stream Section (ServiceNow Tab) */}
-        <div className="bg-white border border-[#bdc3c7] rounded-sm shadow-sm mt-4 p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-            <span className="font-bold text-sm text-slate-800">Notes & Activity Stream</span>
-            <ChevronDown className="w-4 h-4 text-slate-500 cursor-pointer" />
+        {/* Tabbed Section: [Notes & Activity] vs [Resolution Information] */}
+        <div className="bg-white border border-[#bdc3c7] rounded-sm shadow-sm mt-4 overflow-hidden">
+          {/* ServiceNow Style Tab Headers */}
+          <div className="flex items-center border-b border-[#bdc3c7] bg-[#f0f2f4]">
+            <button
+              type="button"
+              onClick={() => setActiveTab('notes')}
+              className={`px-5 py-2.5 font-bold text-xs border-r border-[#bdc3c7] transition ${
+                activeTab === 'notes'
+                  ? 'bg-white text-slate-900 border-t-2 border-t-[#0072ce]'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Notes & Activity Stream ({updates.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('resolution')}
+              className={`px-5 py-2.5 font-bold text-xs border-r border-[#bdc3c7] transition flex items-center gap-1.5 ${
+                activeTab === 'resolution'
+                  ? 'bg-white text-slate-900 border-t-2 border-t-[#0072ce]'
+                  : 'text-slate-600 hover:bg-slate-100'
+              } ${resolutionError ? 'bg-rose-50 text-rose-700' : ''}`}
+            >
+              Resolution Information
+              {state === 'Resolved' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+              {resolutionError && <AlertCircle className="w-3.5 h-3.5 text-rose-500 animate-bounce" />}
+            </button>
           </div>
 
-          {/* Additional Comments (Work Notes Input) */}
-          <div className="space-y-2">
-            <label className="font-semibold text-slate-600">Work notes (Internal activity log)</label>
-            
-            {selectedPhotoBase64 && (
-              <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded">
-                <img src={selectedPhotoBase64} alt="Preview" className="h-10 w-10 object-cover rounded" />
-                <span className="text-xs text-amber-800 truncate flex-1">{selectedFileName}</span>
-                <button type="button" onClick={() => setSelectedPhotoBase64(null)} className="text-slate-400 hover:text-slate-700">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+          {/* TAB 1: Notes & Activity Stream */}
+          {activeTab === 'notes' && (
+            <div className="p-6 space-y-4">
+              <div className="space-y-2">
+                <label className="font-semibold text-slate-600">Work notes (Internal activity log)</label>
+                
+                {selectedPhotoBase64 && (
+                  <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded">
+                    <img src={selectedPhotoBase64} alt="Preview" className="h-10 w-10 object-cover rounded" />
+                    <span className="text-xs text-amber-800 truncate flex-1">{selectedFileName}</span>
+                    <button type="button" onClick={() => setSelectedPhotoBase64(null)} className="text-slate-400 hover:text-slate-700">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
 
-            <div className="relative">
-              <textarea
-                rows={3}
-                value={workNoteMessage}
-                onChange={(e) => setWorkNoteMessage(e.target.value)}
-                placeholder="Type additional comments or dispatch instructions for the security guard..."
-                className="w-full border border-[#bdc3c7] rounded bg-[#fffae6] p-2.5 outline-none focus:border-amber-400 text-slate-800 font-sans"
-              />
-
-              <div className="flex items-center justify-between mt-2">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileChange}
-                    accept="image/*"
-                    className="hidden"
+                <div className="relative">
+                  <textarea
+                    rows={3}
+                    value={workNoteMessage}
+                    onChange={(e) => setWorkNoteMessage(e.target.value)}
+                    placeholder="Type comments, downgrade reasons, or guard instructions..."
+                    className="w-full border border-[#bdc3c7] rounded bg-[#fffae6] p-2.5 outline-none focus:border-amber-400 text-slate-800 font-sans"
                   />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1 text-slate-600 hover:text-slate-900 border border-slate-300 rounded px-2.5 py-1 bg-slate-50 hover:bg-slate-100"
-                  >
-                    <Paperclip className="w-3.5 h-3.5" /> Attach Photo
-                  </button>
-                </div>
 
-                <button
-                  type="button"
-                  onClick={handlePostWorkNote}
-                  disabled={isSending || (!workNoteMessage.trim() && !selectedPhotoBase64)}
-                  className="rounded bg-[#1f8466] hover:bg-[#186a52] text-white px-4 py-1.5 font-semibold flex items-center gap-1.5 shadow-sm transition disabled:opacity-40"
-                >
-                  <Send className="w-3.5 h-3.5" /> Post Work Note
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Chronological Activity Feed (Newest at TOP) */}
-          <div className="mt-6 space-y-3 pt-4 border-t border-slate-200">
-            <span className="font-bold text-slate-700 text-xs block">Activity Feed (Latest at Top)</span>
-
-            {updates.length === 0 ? (
-              <div className="p-4 border border-dashed border-slate-200 rounded text-center text-slate-400 italic">
-                No activity logs or guard responses recorded yet.
-              </div>
-            ) : (
-              updates.map((update) => {
-                const isAdmin = update.sender_type === 'admin';
-                const photo = getSecureMediaUrl(update.photo_url);
-
-                return (
-                  <div key={update.id} className="border-l-2 border-blue-500 pl-3 py-1 space-y-1">
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                      <span className="font-bold text-slate-800">{update.sender_name}</span>
-                      <span>•</span>
-                      <span>{new Date(update.created_at).toLocaleString()}</span>
-                      <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded uppercase font-semibold text-slate-600">
-                        {isAdmin ? 'Internal Note' : 'Guard Response'}
-                      </span>
+                  <div className="flex items-center justify-between mt-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileChange}
+                        accept="image/*"
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex items-center gap-1 text-slate-600 hover:text-slate-900 border border-slate-300 rounded px-2.5 py-1 bg-slate-50 hover:bg-slate-100"
+                      >
+                        <Paperclip className="w-3.5 h-3.5" /> Attach Photo
+                      </button>
                     </div>
 
-                    {update.message && (
-                      <p className="text-slate-800 bg-[#f9fafb] p-2 rounded border border-slate-200 font-sans">
-                        {update.message}
+                    <button
+                      type="button"
+                      onClick={handlePostWorkNote}
+                      disabled={isSending || (!workNoteMessage.trim() && !selectedPhotoBase64)}
+                      className="rounded bg-[#1f8466] hover:bg-[#186a52] text-white px-4 py-1.5 font-semibold flex items-center gap-1.5 shadow-sm transition disabled:opacity-40"
+                    >
+                      <Send className="w-3.5 h-3.5" /> Post Work Note
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Activity Feed */}
+              <div className="mt-6 space-y-3 pt-4 border-t border-slate-200">
+                <span className="font-bold text-slate-700 text-xs block">Activity Feed (Latest at Top)</span>
+
+                {updates.length === 0 ? (
+                  <div className="p-4 border border-dashed border-slate-200 rounded text-center text-slate-400 italic">
+                    No activity logs or guard responses recorded yet.
+                  </div>
+                ) : (
+                  updates.map((update) => {
+                    const isAdmin = update.sender_type === 'admin';
+                    const photo = getSecureMediaUrl(update.photo_url);
+
+                    return (
+                      <div key={update.id} className="border-l-2 border-blue-500 pl-3 py-1 space-y-1">
+                        <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                          <span className="font-bold text-slate-800">{update.sender_name}</span>
+                          <span>•</span>
+                          <span>{new Date(update.created_at).toLocaleString()}</span>
+                          <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded uppercase font-semibold text-slate-600">
+                            {isAdmin ? 'Internal Note' : 'Guard Response'}
+                          </span>
+                        </div>
+
+                        {update.message && (
+                          <p className="text-slate-800 bg-[#f9fafb] p-2 rounded border border-slate-200 font-sans whitespace-pre-line">
+                            {update.message}
+                          </p>
+                        )}
+
+                        {photo && (
+                          <div className="pt-1">
+                            <a href={photo} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={photo}
+                                alt="Attachment"
+                                className="max-h-40 rounded border border-slate-200 object-contain hover:shadow"
+                              />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: Resolution Information (Mandatory for Resolve) */}
+          {activeTab === 'resolution' && (
+            <div className="p-6 space-y-4 bg-white">
+              <div className="rounded border border-amber-200 bg-amber-50/60 p-3 text-xs text-amber-900 flex items-center gap-2">
+                <Info className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                <span>
+                  ServiceNow Compliance: Resolution Code and Resolution Notes are <strong>mandatory</strong> before resolving an incident.
+                </span>
+              </div>
+
+              <div className="space-y-4 max-w-3xl">
+                {/* Resolution Code */}
+                <div className="flex items-center">
+                  <label className="w-40 text-right pr-4 font-semibold text-slate-700">
+                    <span className="text-rose-500 font-bold mr-1">*</span>Resolution code
+                  </label>
+                  <div className="flex-1">
+                    <select
+                      value={resolutionCode}
+                      onChange={(e) => setResolutionCode(e.target.value)}
+                      className="w-full border border-[#bdc3c7] rounded px-3 py-1.5 bg-white font-medium outline-none text-slate-800"
+                    >
+                      <option>Solved (Permanently)</option>
+                      <option>Solved (Work Around)</option>
+                      <option>Resolved by Patrol Guard</option>
+                      <option>Not an Incident / False Alarm</option>
+                      <option>Closed / Withdrawn by Reporter</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Resolution Notes */}
+                <div className="flex items-start">
+                  <label className="w-40 text-right pr-4 font-semibold text-slate-700 pt-1.5">
+                    <span className="text-rose-500 font-bold mr-1">*</span>Resolution notes
+                  </label>
+                  <div className="flex-1 space-y-1">
+                    <textarea
+                      ref={resolutionNotesRef}
+                      rows={4}
+                      value={resolutionNotes}
+                      onChange={(e) => {
+                        setResolutionNotes(e.target.value);
+                        if (e.target.value.trim()) setResolutionError(false);
+                      }}
+                      placeholder="Explain root cause, physical verification steps taken, and how the incident was solved..."
+                      className={`w-full border rounded p-2.5 outline-none font-sans text-slate-800 ${
+                        resolutionError 
+                          ? 'border-rose-500 bg-rose-50/40 ring-1 ring-rose-500' 
+                          : 'border-[#bdc3c7] bg-white focus:border-blue-500'
+                      }`}
+                    />
+                    {resolutionError && (
+                      <p className="text-[11px] font-semibold text-rose-600 flex items-center gap-1">
+                        <AlertCircle className="w-3.5 h-3.5" /> Resolution notes cannot be blank.
                       </p>
                     )}
-
-                    {photo && (
-                      <div className="pt-1">
-                        <a href={photo} target="_blank" rel="noopener noreferrer">
-                          <img
-                            src={photo}
-                            alt="Attachment"
-                            className="max-h-40 rounded border border-slate-200 object-contain hover:shadow"
-                          />
-                        </a>
-                      </div>
-                    )}
                   </div>
-                );
-              })
-            )}
-          </div>
+                </div>
+
+                {/* Resolved By & Resolved At metadata */}
+                <div className="flex items-center pt-2">
+                  <label className="w-40 text-right pr-4 font-semibold text-slate-600">Resolved by</label>
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      disabled
+                      value={incident.resolved_by || user?.full_name || 'System Administrator'}
+                      className="w-full bg-[#f3f4f6] border border-[#bdc3c7] rounded px-2.5 py-1 text-slate-700 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center">
+                  <label className="w-40 text-right pr-4 font-semibold text-slate-600">Resolved at</label>
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      disabled
+                      value={incident.resolved_at ? new Date(incident.resolved_at).toLocaleString() : 'Pending resolution'}
+                      className="w-full bg-[#f3f4f6] border border-[#bdc3c7] rounded px-2.5 py-1 text-slate-700 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Direct Action in Tab */}
+                {state !== 'Resolved' && (
+                  <div className="pt-3 pl-40">
+                    <button
+                      type="button"
+                      onClick={handleResolveIncident}
+                      disabled={isResolving}
+                      className="rounded bg-[#1f8466] hover:bg-[#186a52] text-white px-5 py-2 font-bold text-xs shadow transition disabled:opacity-50 flex items-center gap-2"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      {isResolving ? 'Resolving Incident...' : 'Save & Resolve Incident'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

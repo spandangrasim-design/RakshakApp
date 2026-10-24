@@ -896,13 +896,25 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
   }
 });
 
-// PATCH: General Incident Field Updates (Triggered by ServiceNow "Update" button)
+// PATCH: General Incident Field Updates + Auto-Audit Logging
 app.patch('/api/v1/incidents/:id', async (c) => {
   try {
     const incidentId = c.req.param('id');
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
+    // 1. Fetch current incident state to detect changes
+    const { data: current, error: fetchErr } = await supabase
+      .from('incidents')
+      .select('*')
+      .eq('client_incident_id', incidentId)
+      .maybeSingle();
+
+    if (fetchErr || !current) {
+      return c.json({ success: false, message: 'Incident not found.' }, 404);
+    }
+
+    // 2. Prepare database updates
     const updates: Record<string, any> = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
@@ -914,60 +926,124 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
     if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to;
 
-    let { data, error } = await supabase
+    const { data: updatedIncident, error: updateErr } = await supabase
       .from('incidents')
       .update(updates)
       .eq('client_incident_id', incidentId)
       .select()
       .maybeSingle();
 
-    // Fallback: If custom columns are not yet in Supabase schema, save the core fields
-    if (error) {
-      const basicUpdates: Record<string, any> = {};
-      if (body.description !== undefined) basicUpdates.description = body.description;
-      if (body.title !== undefined) basicUpdates.title = body.title;
-      if (body.priority !== undefined) basicUpdates.priority = body.priority;
-      if (body.status !== undefined) basicUpdates.status = body.status;
-
-      const fallback = await supabase
-        .from('incidents')
-        .update(basicUpdates)
-        .eq('client_incident_id', incidentId)
-        .select()
-        .maybeSingle();
-
-      if (fallback.error) {
-        return c.json({ success: false, message: fallback.error.message }, 500);
-      }
-      return c.json({ success: true, incident: fallback.data });
+    if (updateErr) {
+      return c.json({ success: false, message: updateErr.message }, 500);
     }
 
-    return c.json({ success: true, incident: data });
+    // 3. Compile audit trail note if fields changed
+    const changes: string[] = [];
+    if (body.priority && body.priority !== current.priority) {
+      changes.push(`Priority changed from ${current.priority} to ${body.priority}`);
+    }
+    if (body.impact && body.impact !== current.impact) {
+      changes.push(`Impact changed from "${current.impact || 'None'}" to "${body.impact}"`);
+    }
+    if (body.urgency && body.urgency !== current.urgency) {
+      changes.push(`Urgency changed from "${current.urgency || 'None'}" to "${body.urgency}"`);
+    }
+    if (body.status && body.status !== current.status) {
+      changes.push(`State changed from ${current.status} to ${body.status}`);
+    }
+
+    let createdActivity = null;
+    const combinedMessage = [
+      body.work_note ? body.work_note.trim() : '',
+      changes.length > 0 ? `Field Changes: ${changes.join(', ')}` : ''
+    ].filter(Boolean).join('\n\n');
+
+    if (combinedMessage) {
+      const { data: logData } = await supabase
+        .from('incident_updates')
+        .insert([{
+          incident_id: incidentId,
+          sender_type: 'admin',
+          sender_name: body.updated_by || 'System Administrator',
+          message: combinedMessage,
+          photo_url: null
+        }])
+        .select()
+        .single();
+
+      createdActivity = logData;
+    }
+
+    return c.json({ 
+      success: true, 
+      incident: updatedIncident, 
+      activity: createdActivity 
+    });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to update incident' }, 500);
   }
 });
 
-// PATCH: Mark Incident as RESOLVED
+// PATCH: Mark Incident as RESOLVED with mandatory Resolution Information
 app.patch('/api/v1/incidents/:id/resolve', async (c) => {
   try {
     const incidentId = c.req.param('id');
+    const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // Updates status directly by client_incident_id
-    const { data, error } = await supabase
+    const resolutionCode = body.resolution_code || 'Solved (Permanently)';
+    const resolutionNotes = body.resolution_notes;
+    const resolvedBy = body.resolved_by || 'System Administrator';
+
+    if (!resolutionNotes || resolutionNotes.trim() === '') {
+      return c.json({ 
+        success: false, 
+        message: 'Resolution notes are mandatory to resolve this incident.' 
+      }, 400);
+    }
+
+    // 1. Update Incident record with Resolution Information
+    const { data: resolvedIncident, error: incError } = await supabase
       .from('incidents')
-      .update({ status: 'RESOLVED' })
+      .update({ 
+        status: 'RESOLVED',
+        resolution_code: resolutionCode,
+        resolution_notes: resolutionNotes.trim(),
+        resolved_by: resolvedBy,
+        resolved_at: new Date().toISOString()
+      })
       .eq('client_incident_id', incidentId)
       .select()
       .maybeSingle();
-      
-    if (error) {
-      console.error('Supabase resolve error:', error);
-      return c.json({ success: false, message: error.message }, 500);
+
+    if (incError) {
+      // Fallback if schema doesn't have custom columns
+      await supabase
+        .from('incidents')
+        .update({ status: 'RESOLVED' })
+        .eq('client_incident_id', incidentId);
     }
 
-    return c.json({ success: true, incident: data });
+    // 2. Post resolution note into incident_updates timeline
+    const activityMessage = `✅ INCIDENT RESOLVED\nResolution Code: ${resolutionCode}\nResolution Notes: ${resolutionNotes.trim()}`;
+
+    const { data: newUpdate } = await supabase
+      .from('incident_updates')
+      .insert([{
+        incident_id: incidentId,
+        sender_type: 'admin',
+        sender_name: resolvedBy,
+        message: activityMessage,
+        photo_url: null
+      }])
+      .select()
+      .single();
+
+    return c.json({ 
+      success: true, 
+      incident: resolvedIncident || { status: 'RESOLVED' }, 
+      activity: newUpdate 
+    });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to resolve incident' }, 500);
   }
