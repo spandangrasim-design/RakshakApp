@@ -69,10 +69,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Tab State: 'notes' or 'resolution'
   const [activeTab, setActiveTab] = useState<'notes' | 'resolution'>('notes');
 
-  // Form Fields
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
   const [impact, setImpact] = useState('2 - Medium');
@@ -83,12 +81,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [assignmentGroup, setAssignmentGroup] = useState('Security Operations L1');
   const [assignedTo, setAssignedTo] = useState('Rahul Sharma');
 
-  // Resolution Information (Mandatory for Resolve)
   const [resolutionCode, setResolutionCode] = useState('Solved (Permanently)');
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [resolutionError, setResolutionError] = useState(false);
 
-  // Work note input
   const [workNoteMessage, setWorkNoteMessage] = useState('');
   const [selectedPhotoBase64, setSelectedPhotoBase64] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -117,7 +113,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     if (!id) return;
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE_URL}/incidents/${id}`);
+      
+      // Step 1: Direct API fetch
+      const res = await fetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`);
       const data = await res.json();
       
       let currentInc: Incident | null = null;
@@ -126,6 +124,28 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       if (data.success && data.incident) {
         currentInc = data.incident;
         rawUpdates = data.updates || [];
+      } else {
+        // Step 2: Automatic client-side fallback across all incidents
+        const allRes = await fetch(`${API_BASE_URL}/incidents`);
+        const allData = await allRes.json();
+        const list: Incident[] = allData.incidents || [];
+        
+        currentInc = list.find((inc: any) => {
+          const cId = (inc.client_incident_id || '').toLowerCase();
+          const target = id.toLowerCase();
+          if (cId === target) return true;
+          if (cId && (cId.includes(target) || target.includes(cId))) return true;
+          if (inc.incident_id && String(inc.incident_id).toLowerCase() === target) return true;
+          
+          const incNum = `inc${cId.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`;
+          return incNum === target;
+        }) || null;
+
+        if (currentInc) {
+          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id}`);
+          const updatesData = await updatesRes.json();
+          rawUpdates = updatesData.updates || [];
+        }
       }
 
       if (currentInc) {
@@ -152,14 +172,16 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
         if (currentInc.resolution_notes) setResolutionNotes(currentInc.resolution_notes);
 
-        // Sort comments: Newest on TOP
         const sortedUpdates = [...rawUpdates].sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
         setUpdates(sortedUpdates);
+      } else {
+        setIncident(null);
       }
     } catch (err) {
       console.error('Failed to load incident details:', err);
+      setIncident(null);
     } finally {
       setLoading(false);
     }
@@ -169,7 +191,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchIncidentDetails();
   }, [id]);
 
-  // Saves field adjustments and writes changes to the activity timeline
   const handleUpdateIncident = async () => {
     if (!incident) return;
     setIsUpdating(true);
@@ -211,7 +232,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     }
   };
 
-  // Enforces Resolution Information tab fields before resolving
   const handleResolveIncident = async () => {
     if (!incident) return;
 
@@ -339,9 +359,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     return (
       <div className="p-8 text-center bg-[#f4f5f7] min-h-screen">
         <h2 className="text-base font-bold text-slate-700">Incident Not Found</h2>
+        <p className="text-xs text-slate-500 mt-1">Requested ticket: <span className="font-mono font-semibold">{id}</span></p>
         <button
           onClick={() => navigate('/incidents')}
-          className="mt-3 rounded bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white"
+          className="mt-4 rounded bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white shadow hover:bg-blue-700 transition"
         >
           Back to Incidents
         </button>
@@ -609,7 +630,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
         {/* Tabbed Section: [Notes & Activity] vs [Resolution Information] */}
         <div className="bg-white border border-[#bdc3c7] rounded-sm shadow-sm mt-4 overflow-hidden">
-          {/* ServiceNow Style Tab Headers */}
           <div className="flex items-center border-b border-[#bdc3c7] bg-[#f0f2f4]">
             <button
               type="button"
@@ -752,7 +772,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               </div>
 
               <div className="space-y-4 max-w-3xl">
-                {/* Resolution Code */}
                 <div className="flex items-center">
                   <label className="w-40 text-right pr-4 font-semibold text-slate-700">
                     <span className="text-rose-500 font-bold mr-1">*</span>Resolution code
@@ -772,7 +791,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   </div>
                 </div>
 
-                {/* Resolution Notes */}
                 <div className="flex items-start">
                   <label className="w-40 text-right pr-4 font-semibold text-slate-700 pt-1.5">
                     <span className="text-rose-500 font-bold mr-1">*</span>Resolution notes
@@ -801,7 +819,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   </div>
                 </div>
 
-                {/* Resolved By & Resolved At metadata */}
                 <div className="flex items-center pt-2">
                   <label className="w-40 text-right pr-4 font-semibold text-slate-600">Resolved by</label>
                   <div className="flex-1">
@@ -826,7 +843,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   </div>
                 </div>
 
-                {/* Direct Action in Tab */}
                 {state !== 'Resolved' && (
                   <div className="pt-3 pl-40">
                     <button
