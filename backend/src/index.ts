@@ -678,54 +678,73 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 // ==========================================
 // 5. GUARD MANAGEMENT CRUD & HIERARCHY
 // ==========================================
+
+// Helper to sanitize UUID inputs (converts "" to null)
+const sanitizeUuid = z.string().optional().nullable().transform(v => (!v || v.trim() === '' ? null : v.trim()));
+
+const createGuardSchema = z.object({
+  full_name: z.string().min(1, 'Full name is required'),
+  employee_code: z.string().min(1, 'Employee code is required'),
+  password: z.string().min(4, 'Password must be at least 4 characters'),
+  role: z.string().optional().default('Guard'),
+  site_location: z.string().optional().default('Main Plant & Gate 1'),
+  shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
+  assigned_round_id: sanitizeUuid,
+  reporting_to: sanitizeUuid,
+});
+
+const updateGuardSchema = z.object({
+  full_name: z.string().optional(),
+  password: z.string().optional(),
+  is_active: z.boolean().optional(),
+  role: z.string().optional(),
+  site_location: z.string().optional(),
+  shift_timing: z.string().optional(),
+  assigned_round_id: sanitizeUuid,
+  reporting_to: sanitizeUuid,
+});
+
+// GET all guards + mapped round names (bulletproof in-memory join)
 app.get('/api/v1/guards', async (c) => {
   try {
     const supabase = getSupabase(c.env);
     
-    // Fetch guards with joined rounds and hierarchy fields
     const { data: guards, error } = await supabase
       .from('guards')
-      .select(`
-        guard_id,
-        full_name,
-        employee_code,
-        role,
-        site_location,
-        shift_timing,
-        is_active,
-        created_at,
-        assigned_round_id,
-        reporting_to,
-        rounds:assigned_round_id ( id, name )
-      `)
+      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    return c.json({ success: true, guards: guards || [] });
+
+    // Fetch rounds and join in memory (avoids PostgREST schema cache relationship errors)
+    const { data: rounds } = await supabase
+      .from('rounds')
+      .select('id, name');
+
+    const roundsMap = new Map((rounds || []).map((r: any) => [r.id, r]));
+
+    const guardsWithRounds = (guards || []).map((g: any) => ({
+      ...g,
+      rounds: g.assigned_round_id ? roundsMap.get(g.assigned_round_id) || null : null
+    }));
+
+    return c.json({ success: true, guards: guardsWithRounds });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to fetch guards' }, 500);
   }
 });
 
+// Create new guard
 app.post('/api/v1/guards', async (c) => {
   try {
     const body = await c.req.json();
-    const { 
-      full_name, 
-      employee_code, 
-      password, 
-      role, 
-      site_location, 
-      shift_timing, 
-      assigned_round_id, 
-      reporting_to 
-    } = createGuardSchema.parse(body);
+    const parsed = createGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
 
     const { data: existing } = await supabase
       .from('guards')
       .select('guard_id')
-      .eq('employee_code', employee_code.trim())
+      .eq('employee_code', parsed.employee_code.trim())
       .maybeSingle();
 
     if (existing) {
@@ -735,28 +754,17 @@ app.post('/api/v1/guards', async (c) => {
     const { data: newGuard, error } = await supabase
       .from('guards')
       .insert([{
-        full_name: full_name.trim(),
-        employee_code: employee_code.trim(),
-        password_hash: password,
-        role: role || 'Guard',
-        site_location: site_location || 'Main Plant & Gate 1',
-        shift_timing: shift_timing || 'Morning (06:00 - 14:00)',
-        assigned_round_id: assigned_round_id || null,
-        reporting_to: reporting_to || null,
+        full_name: parsed.full_name.trim(),
+        employee_code: parsed.employee_code.trim(),
+        password_hash: parsed.password,
+        role: parsed.role,
+        site_location: parsed.site_location,
+        shift_timing: parsed.shift_timing,
+        assigned_round_id: parsed.assigned_round_id,
+        reporting_to: parsed.reporting_to,
         is_active: true,
       }])
-      .select(`
-        guard_id, 
-        full_name, 
-        employee_code, 
-        role, 
-        site_location, 
-        shift_timing, 
-        is_active, 
-        created_at,
-        assigned_round_id,
-        reporting_to
-      `)
+      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
       .single();
 
     if (error) throw error;
@@ -769,31 +777,23 @@ app.post('/api/v1/guards', async (c) => {
   }
 });
 
+// Update guard details, hierarchy, or patrol route assignment
 app.patch('/api/v1/guards/:id', async (c) => {
   try {
     const guardId = c.req.param('id');
     const body = await c.req.json();
-    const { 
-      full_name, 
-      password, 
-      is_active, 
-      role, 
-      site_location, 
-      shift_timing, 
-      assigned_round_id, 
-      reporting_to 
-    } = updateGuardSchema.parse(body);
+    const parsed = updateGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
 
     const updates: Record<string, any> = {};
-    if (full_name !== undefined) updates.full_name = full_name.trim();
-    if (password !== undefined && password.trim() !== '') updates.password_hash = password;
-    if (is_active !== undefined) updates.is_active = is_active;
-    if (role !== undefined) updates.role = role;
-    if (site_location !== undefined) updates.site_location = site_location;
-    if (shift_timing !== undefined) updates.shift_timing = shift_timing;
-    if (assigned_round_id !== undefined) updates.assigned_round_id = assigned_round_id || null;
-    if (reporting_to !== undefined) updates.reporting_to = reporting_to || null;
+    if (parsed.full_name !== undefined) updates.full_name = parsed.full_name.trim();
+    if (parsed.password !== undefined && parsed.password.trim() !== '') updates.password_hash = parsed.password;
+    if (parsed.is_active !== undefined) updates.is_active = parsed.is_active;
+    if (parsed.role !== undefined) updates.role = parsed.role;
+    if (parsed.site_location !== undefined) updates.site_location = parsed.site_location;
+    if (parsed.shift_timing !== undefined) updates.shift_timing = parsed.shift_timing;
+    if (parsed.assigned_round_id !== undefined) updates.assigned_round_id = parsed.assigned_round_id;
+    if (parsed.reporting_to !== undefined) updates.reporting_to = parsed.reporting_to;
 
     if (Object.keys(updates).length === 0) {
       return c.json({ success: false, message: 'No fields provided to update.' }, 400);
@@ -803,23 +803,23 @@ app.patch('/api/v1/guards/:id', async (c) => {
       .from('guards')
       .update(updates)
       .eq('guard_id', guardId)
-      .select(`
-        guard_id,
-        full_name,
-        employee_code,
-        role,
-        site_location,
-        shift_timing,
-        is_active,
-        created_at,
-        assigned_round_id,
-        reporting_to,
-        rounds:assigned_round_id ( id, name )
-      `)
-      .single();
+      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
+      .maybeSingle();
 
     if (error) throw error;
-    return c.json({ success: true, guard: updatedGuard });
+
+    // Attach round info if assigned
+    let roundInfo = null;
+    if (updatedGuard?.assigned_round_id) {
+      const { data: rData } = await supabase
+        .from('rounds')
+        .select('id, name')
+        .eq('id', updatedGuard.assigned_round_id)
+        .maybeSingle();
+      roundInfo = rData;
+    }
+
+    return c.json({ success: true, guard: { ...updatedGuard, rounds: roundInfo } });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
@@ -828,7 +828,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
   }
 });
 
-// Mobile App Route: Fetch assigned route and checkpoints for currently logged-in guard
+// Mobile App Route: Fetch assigned route for currently logged-in guard
 app.get('/api/v1/guards/my-assigned-route', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -845,7 +845,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
       .from('guards')
       .select('guard_id, full_name, role, assigned_round_id')
       .eq('guard_id', guard_id)
-      .single();
+      .maybeSingle();
 
     if (gError || !guard || !guard.assigned_round_id) {
       return c.json({ success: true, has_route: false, message: 'No patrol route currently assigned to you.' });
@@ -855,7 +855,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
       .from('rounds')
       .select('id, name')
       .eq('id', guard.assigned_round_id)
-      .single();
+      .maybeSingle();
 
     if (rError || !round) {
       return c.json({ success: true, has_route: false, message: 'Assigned route not found.' });

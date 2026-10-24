@@ -7,6 +7,7 @@ import {
   Route,
   Clock,
   Building2,
+  Edit2,
   X
 } from 'lucide-react';
 
@@ -40,9 +41,10 @@ export const GuardsView: React.FC = () => {
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
   const [assigningGuard, setAssigningGuard] = useState<Guard | null>(null);
+  const [editingGuard, setEditingGuard] = useState<Guard | null>(null);
   const [resettingGuard, setResettingGuard] = useState<Guard | null>(null);
 
-  // Form States
+  // Add Form State
   const [newGuard, setNewGuard] = useState({
     full_name: '',
     employee_code: '',
@@ -51,7 +53,15 @@ export const GuardsView: React.FC = () => {
     site_location: 'Main Plant & Gate 1',
     shift_timing: 'Morning (06:00 - 14:00)',
     assigned_round_id: '',
-    reporting_to: '',
+  });
+
+  // Edit Form State
+  const [editForm, setEditForm] = useState({
+    full_name: '',
+    role: 'Guard',
+    site_location: 'Main Plant & Gate 1',
+    shift_timing: 'Morning (06:00 - 14:00)',
+    assigned_round_id: '',
   });
 
   const [selectedRoundId, setSelectedRoundId] = useState('');
@@ -83,16 +93,26 @@ export const GuardsView: React.FC = () => {
 
   const handleCreateGuard = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newGuard.full_name || !newGuard.employee_code || !newGuard.password) {
+    if (!newGuard.full_name.trim() || !newGuard.employee_code.trim() || !newGuard.password.trim()) {
       alert('Please fill all required fields');
       return;
     }
 
     try {
+      const payload = {
+        full_name: newGuard.full_name.trim(),
+        employee_code: newGuard.employee_code.trim(),
+        password: newGuard.password,
+        role: newGuard.role,
+        site_location: newGuard.site_location,
+        shift_timing: newGuard.shift_timing,
+        assigned_round_id: newGuard.assigned_round_id ? newGuard.assigned_round_id : null,
+      };
+
       const res = await fetch(`${API_BASE_URL}/guards`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newGuard),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.success) {
@@ -106,7 +126,6 @@ export const GuardsView: React.FC = () => {
           site_location: 'Main Plant & Gate 1',
           shift_timing: 'Morning (06:00 - 14:00)',
           assigned_round_id: '',
-          reporting_to: '',
         });
         fetchData();
       } else {
@@ -117,13 +136,59 @@ export const GuardsView: React.FC = () => {
     }
   };
 
+  // Open Edit Modal
+  const openEditModal = (guard: Guard) => {
+    setEditingGuard(guard);
+    setEditForm({
+      full_name: guard.full_name,
+      role: guard.role || 'Guard',
+      site_location: guard.site_location || 'Main Plant & Gate 1',
+      shift_timing: guard.shift_timing || 'Morning (06:00 - 14:00)',
+      assigned_round_id: guard.assigned_round_id || '',
+    });
+  };
+
+  // Save Edit Changes
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGuard) return;
+
+    try {
+      const payload = {
+        full_name: editForm.full_name.trim(),
+        role: editForm.role,
+        site_location: editForm.site_location,
+        shift_timing: editForm.shift_timing,
+        assigned_round_id: editForm.assigned_round_id ? editForm.assigned_round_id : null,
+      };
+
+      const res = await fetch(`${API_BASE_URL}/guards/${editingGuard.guard_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        alert(`Details updated for ${editForm.full_name}.`);
+        setEditingGuard(null);
+        fetchData();
+      } else {
+        alert(data.message || 'Failed to update details.');
+      }
+    } catch (err) {
+      alert('Network error updating details.');
+    }
+  };
+
+  // Quick Route Assignment
   const handleSaveRouteAssignment = async () => {
     if (!assigningGuard) return;
     try {
       const res = await fetch(`${API_BASE_URL}/guards/${assigningGuard.guard_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assigned_round_id: selectedRoundId || null }),
+        body: JSON.stringify({ assigned_round_id: selectedRoundId ? selectedRoundId : null }),
       });
       const data = await res.json();
       if (data.success) {
@@ -199,6 +264,7 @@ export const GuardsView: React.FC = () => {
         return 'bg-purple-100 text-purple-800 border-purple-200';
       case 'Security Manager':
         return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'Shift Supervisor':
       case 'Supervisor':
         return 'bg-amber-100 text-amber-800 border-amber-200';
       default:
@@ -317,7 +383,7 @@ export const GuardsView: React.FC = () => {
                         <td className="px-4 py-3 text-slate-700 font-medium">
                           <div className="flex items-center gap-1">
                             <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                            {guard.site_location || 'Main Plant'}
+                            {guard.site_location || 'Main Plant & Gate 1'}
                           </div>
                         </td>
 
@@ -355,19 +421,27 @@ export const GuardsView: React.FC = () => {
                         </td>
 
                         <td className="px-4 py-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* Edit Details Action Button */}
+                            <button
+                              onClick={() => openEditModal(guard)}
+                              className="px-2 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-[11px] font-semibold flex items-center gap-1"
+                              title="Edit user details"
+                            >
+                              <Edit2 className="w-3 h-3" /> Edit
+                            </button>
                             <button
                               onClick={() => {
                                 setResettingGuard(guard);
                                 setNewPassword('');
                               }}
-                              className="px-2.5 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
+                              className="px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
                             >
                               Reset Password
                             </button>
                             <button
                               onClick={() => handleToggleStatus(guard)}
-                              className={`px-2.5 py-1 rounded border text-[11px] font-semibold ${
+                              className={`px-2 py-1 rounded border text-[11px] font-semibold ${
                                 guard.is_active
                                   ? 'border-rose-200 text-rose-600 hover:bg-rose-50'
                                   : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
@@ -387,7 +461,109 @@ export const GuardsView: React.FC = () => {
         </div>
       </div>
 
-      {/* MODAL 1: Assign Patrol Route to Guard */}
+      {/* MODAL 1: Edit Personnel Details */}
+      {editingGuard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h3 className="text-base font-bold text-slate-900">
+                Edit Details: {editingGuard.full_name}
+              </h3>
+              <button onClick={() => setEditingGuard(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  value={editForm.full_name}
+                  onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Role / Rank</label>
+                  <select
+                    value={editForm.role}
+                    onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                  >
+                    <option value="Guard">Guard / Patrol Staff</option>
+                    <option value="Shift Supervisor">Shift Supervisor</option>
+                    <option value="Security Manager">Security Manager</option>
+                    <option value="Chief Security Officer">Chief Security Officer / Admin</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Assigned Route / Round</label>
+                  <select
+                    value={editForm.assigned_round_id}
+                    onChange={(e) => setEditForm({ ...editForm, assigned_round_id: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                  >
+                    <option value="">-- None (Free Roam) --</option>
+                    {rounds.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Site / Deployment Area</label>
+                  <input
+                    type="text"
+                    value={editForm.site_location}
+                    onChange={(e) => setEditForm({ ...editForm, site_location: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Shift Timing</label>
+                  <select
+                    value={editForm.shift_timing}
+                    onChange={(e) => setEditForm({ ...editForm, shift_timing: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                  >
+                    <option>Morning (06:00 - 14:00)</option>
+                    <option>Evening (14:00 - 22:00)</option>
+                    <option>Night (22:00 - 06:00)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setEditingGuard(null)}
+                  className="px-4 py-2 border rounded-xl font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl font-bold text-white shadow"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Quick Assign Route to Guard */}
       {assigningGuard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
@@ -403,7 +579,7 @@ export const GuardsView: React.FC = () => {
 
             <p className="text-xs text-slate-600">
               Assign a mandatory route for <strong className="text-slate-900">{assigningGuard.full_name}</strong>.
-              When this guard logs into the mobile app, their assigned checkpoints will load automatically.
+              When this guard logs into the mobile app, their checkpoints will load automatically.
             </p>
 
             <div className="space-y-2">
@@ -442,7 +618,7 @@ export const GuardsView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 2: Register Personnel with Hierarchy */}
+      {/* MODAL 3: Register New Personnel */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
@@ -459,10 +635,10 @@ export const GuardsView: React.FC = () => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Ramesh Patel"
+                  placeholder="e.g. Kaushik Vegad"
                   value={newGuard.full_name}
                   onChange={(e) => setNewGuard({ ...newGuard, full_name: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500"
+                  className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
                 />
               </div>
 
@@ -472,21 +648,21 @@ export const GuardsView: React.FC = () => {
                   <input
                     type="text"
                     required
-                    placeholder="e.g. guard102"
+                    placeholder="e.g. kaushik"
                     value={newGuard.employee_code}
                     onChange={(e) => setNewGuard({ ...newGuard, employee_code: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 font-mono"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 font-mono text-slate-800"
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">App Login Password *</label>
+                  <label className="font-bold text-slate-700 block mb-1">Password *</label>
                   <input
                     type="password"
                     required
                     placeholder="Min 6 characters"
                     value={newGuard.password}
                     onChange={(e) => setNewGuard({ ...newGuard, password: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
                   />
                 </div>
               </div>
@@ -497,10 +673,10 @@ export const GuardsView: React.FC = () => {
                   <select
                     value={newGuard.role}
                     onChange={(e) => setNewGuard({ ...newGuard, role: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
                   >
                     <option value="Guard">Guard / Patrol Staff</option>
-                    <option value="Supervisor">Shift Supervisor</option>
+                    <option value="Shift Supervisor">Shift Supervisor</option>
                     <option value="Security Manager">Security Manager</option>
                     <option value="Chief Security Officer">Chief Security Officer / Admin</option>
                   </select>
@@ -511,7 +687,7 @@ export const GuardsView: React.FC = () => {
                   <select
                     value={newGuard.assigned_round_id}
                     onChange={(e) => setNewGuard({ ...newGuard, assigned_round_id: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
                   >
                     <option value="">-- None --</option>
                     {rounds.map((r) => (
@@ -530,7 +706,7 @@ export const GuardsView: React.FC = () => {
                     type="text"
                     value={newGuard.site_location}
                     onChange={(e) => setNewGuard({ ...newGuard, site_location: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
                   />
                 </div>
 
@@ -539,7 +715,7 @@ export const GuardsView: React.FC = () => {
                   <select
                     value={newGuard.shift_timing}
                     onChange={(e) => setNewGuard({ ...newGuard, shift_timing: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white"
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
                   >
                     <option>Morning (06:00 - 14:00)</option>
                     <option>Evening (14:00 - 22:00)</option>
@@ -548,7 +724,7 @@ export const GuardsView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-3">
+              <div className="flex justify-end gap-2 pt-3 border-t">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
@@ -568,7 +744,7 @@ export const GuardsView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 3: Reset Password */}
+      {/* MODAL 4: Reset Password */}
       {resettingGuard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
@@ -581,7 +757,7 @@ export const GuardsView: React.FC = () => {
               placeholder="New password (min 6 characters)"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg p-2 text-xs outline-none focus:border-blue-500 font-mono"
+              className="w-full border border-slate-300 rounded-lg p-2 text-xs outline-none focus:border-blue-500 font-mono text-slate-800"
             />
             <div className="flex justify-end gap-2 pt-2">
               <button
