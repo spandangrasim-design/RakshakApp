@@ -170,8 +170,8 @@ export const GuardsView: React.FC = () => {
         alert(`Password reset successful for ${resettingGuard.full_name}.`);
         setResettingGuard(null);
         setNewPassword('');
-      } catch (err) {
-        alert('Failed to reset password.');
+      } else {
+        alert(data.message || 'Failed to reset password.');
       }
     } catch (err) {
       alert('Failed to reset password.');
