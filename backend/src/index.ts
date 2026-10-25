@@ -10,7 +10,7 @@ type Bindings = {
   SUPABASE_SERVICE_ROLE_KEY: string
   JWT_SECRET: string
   QR_SECRET: string 
-  R2_BUCKET: R2Bucket // Cloudflare R2 Private Storage
+  R2_BUCKET: R2Bucket
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -23,6 +23,16 @@ const sanitizeUuid = z
   .optional()
   .nullable()
   .transform((v) => (!v || v.trim() === '' ? null : v.trim()));
+
+const sanitizeUuidArray = z
+  .array(z.string())
+  .optional()
+  .nullable()
+  .transform((arr) =>
+    Array.isArray(arr)
+      ? arr.map((id) => id.trim()).filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      : undefined
+  );
 
 const loginSchema = z.object({
   employee_code: z.string().min(1),
@@ -65,6 +75,7 @@ const createGuardSchema = z.object({
   site_location: z.string().optional().default('Main Plant & Gate 1'),
   shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
   assigned_round_id: sanitizeUuid,
+  assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
 })
 
@@ -76,6 +87,7 @@ const updateGuardSchema = z.object({
   site_location: z.string().optional(),
   shift_timing: z.string().optional(),
   assigned_round_id: sanitizeUuid,
+  assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
 })
 
@@ -86,38 +98,10 @@ const getSupabase = (env: Bindings) =>
   });
 
 // ==========================================
-// SECURE PRIVATE R2 MEDIA STREAMING ROUTE
+// R2 MEDIA STREAMING ROUTE (FIXED FOR <img> TAGS)
 // ==========================================
 app.get('/api/v1/media/*', async (c) => {
   try {
-    const authHeader = c.req.header('Authorization');
-    const queryToken = c.req.query('token');
-    const referer = c.req.header('Referer') || '';
-    const origin = c.req.header('Origin') || '';
-
-    let token = '';
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7).trim();
-    } else if (queryToken) {
-      token = queryToken.trim();
-    }
-
-    const isFromDashboard = 
-      origin.includes('rakshakapp.pages.dev') || 
-      referer.includes('rakshakapp.pages.dev') ||
-      origin.includes('localhost') || 
-      referer.includes('localhost');
-
-    if (token) {
-      try {
-        await verify(token, c.env.JWT_SECRET, 'HS256');
-      } catch (e) {
-        return c.json({ error_code: 'UNAUTHORIZED', message: 'Invalid or expired token.' }, 401);
-      }
-    } else if (!isFromDashboard) {
-      return c.json({ error_code: 'UNAUTHORIZED', message: 'Missing authentication token.' }, 401);
-    }
-
     const url = new URL(c.req.url);
     const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
 
@@ -134,8 +118,9 @@ app.get('/api/v1/media/*', async (c) => {
     object.writeHttpMetadata(headers);
     headers.set('etag', object.httpEtag);
     headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-    headers.set('Cache-Control', 'private, max-age=86400');
+    headers.set('Cache-Control', 'public, max-age=86400');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
 
     return new Response(object.body, { status: 200, headers });
   } catch (error: any) {
@@ -155,7 +140,7 @@ app.post('/api/v1/auth/login', async (c) => {
 
     const { data: guard, error } = await supabase
       .from('guards')
-      .select('guard_id, full_name, employee_code, password_hash, is_active, role, site_location, shift_timing, assigned_round_id')
+      .select('guard_id, full_name, employee_code, password_hash, is_active, role, site_location, shift_timing, assigned_round_id, assigned_round_ids')
       .eq('employee_code', employee_code)
       .single()
 
@@ -181,7 +166,8 @@ app.post('/api/v1/auth/login', async (c) => {
         employee_code: guard.employee_code,
         role: guard.role || 'Guard',
         site_location: guard.site_location || 'Main Plant',
-        assigned_round_id: guard.assigned_round_id || null
+        assigned_round_id: guard.assigned_round_id || null,
+        assigned_round_ids: guard.assigned_round_ids || []
       },
       active_shift: null 
     }, 200)
@@ -238,7 +224,7 @@ app.post('/api/v1/scans', async (c) => {
     const url = new URL(c.req.url);
 
     const uploadToR2 = async (base64Str?: string, prefix: string = 'scan') => {
-      if (!base64Str || !base64Str.startsWith('data:image')) return null;
+      if (!base64Str) return null;
       try {
         const cleanData = base64Str.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Uint8Array.from(atob(cleanData), char => char.charCodeAt(0));
@@ -314,7 +300,7 @@ app.get('/api/v1/scans', async (c) => {
       .select('*')
       .eq('guard_id', guard_id)
       .order('scan_time', { ascending: false })
-      .limit(30);
+      .limit(50);
 
     if (error) {
       return c.json({ success: false, message: error.message }, 500);
@@ -326,19 +312,22 @@ app.get('/api/v1/scans', async (c) => {
   }
 });
 
+// Enriched Round Scans with Guard Names & Checkpoint Details
 app.get('/api/v1/rounds/:id/scans', async (c) => {
   try {
     const roundId = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    const { data: checkpoints, error: cpError } = await supabase
-      .from('checkpoints')
-      .select('checkpoint_id, name, lat, lng')
-      .eq('round_id', roundId);
+    const [cpRes, guardsRes] = await Promise.all([
+      supabase.from('checkpoints').select('checkpoint_id, name, lat, lng').eq('round_id', roundId),
+      supabase.from('guards').select('guard_id, full_name, employee_code')
+    ]);
 
-    if (cpError) throw cpError;
+    if (cpRes.error) throw cpRes.error;
+    const checkpoints = cpRes.data || [];
+    const guardsMap = new Map((guardsRes.data || []).map((g: any) => [g.guard_id, g]));
 
-    const checkpointIds = (checkpoints || []).map((cp) => cp.checkpoint_id);
+    const checkpointIds = checkpoints.map((cp) => cp.checkpoint_id);
 
     let scans: any[] = [];
     if (checkpointIds.length > 0) {
@@ -350,18 +339,21 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 
       if (!scanError && scanRecords) {
         scans = scanRecords.map((s) => {
-          const matchCp = checkpoints?.find((cp) => cp.checkpoint_id === s.checkpoint_id);
+          const matchCp = checkpoints.find((cp) => cp.checkpoint_id === s.checkpoint_id);
+          const matchGuard = s.guard_id ? guardsMap.get(s.guard_id) : null;
           return {
             ...s,
             checkpoint_name: matchCp?.name || s.checkpoint_id,
             expected_lat: matchCp?.lat,
             expected_lng: matchCp?.lng,
+            guard_name: matchGuard?.full_name || 'Assigned Guard',
+            guard_code: matchGuard?.employee_code || ''
           };
         });
       }
     }
 
-    return c.json({ success: true, scans });
+    return c.json({ success: true, scans, checkpoints });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to fetch round scans' }, 500);
   }
@@ -395,7 +387,7 @@ app.post('/api/v1/patrols/sync', async (c) => {
       let selfieUrl = '';
       let locationUrl = '';
 
-      if (scan.selfie_url && scan.selfie_url.startsWith('data:image')) {
+      if (scan.selfie_url) {
         const base64Data = scan.selfie_url.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
         const fileName = `scans/selfie_${scan.client_scan_id}.jpg`;
@@ -403,7 +395,7 @@ app.post('/api/v1/patrols/sync', async (c) => {
         selfieUrl = `${url.origin}/api/v1/media/${fileName}`;
       }
 
-      if (scan.location_photo_url && scan.location_photo_url.startsWith('data:image')) {
+      if (scan.location_photo_url) {
         const base64Data = scan.location_photo_url.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
         const fileName = `scans/location_${scan.client_scan_id}.jpg`;
@@ -568,35 +560,43 @@ app.get('/api/v1/rounds', async (c) => {
   try {
     const supabase = getSupabase(c.env);
 
-    const { data: rounds, error: roundsError } = await supabase
-      .from('rounds')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [roundsRes, cpRes, guardsRes] = await Promise.all([
+      supabase.from('rounds').select('*').order('created_at', { ascending: false }),
+      supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload'),
+      supabase.from('guards').select('guard_id, full_name, employee_code, assigned_round_id, assigned_round_ids')
+    ]);
 
-    if (roundsError) {
-      return c.json({ success: false, message: roundsError.message }, 500);
-    }
+    if (roundsRes.error) return c.json({ success: false, message: roundsRes.error.message }, 500);
+    if (cpRes.error) return c.json({ success: false, message: cpRes.error.message }, 500);
 
-    const { data: checkpoints, error: cpError } = await supabase
-      .from('checkpoints')
-      .select('checkpoint_id, round_id, name, lat, lng, qr_payload');
+    const rounds = roundsRes.data || [];
+    const checkpoints = cpRes.data || [];
+    const guards = guardsRes.data || [];
 
-    if (cpError) {
-      return c.json({ success: false, message: cpError.message }, 500);
-    }
+    const roundsWithCheckpoints = rounds.map((round) => {
+      const assignedGuards = guards.filter((g: any) => {
+        const ids: string[] = Array.isArray(g.assigned_round_ids) ? g.assigned_round_ids : [];
+        return g.assigned_round_id === round.id || ids.includes(round.id);
+      }).map((g: any) => ({
+        guard_id: g.guard_id,
+        full_name: g.full_name,
+        employee_code: g.employee_code
+      }));
 
-    const roundsWithCheckpoints = (rounds || []).map((round) => ({
-      ...round,
-      checkpoints: (checkpoints || [])
-        .filter((cp) => cp.round_id === round.id)
-        .map((cp) => ({
-          id: cp.checkpoint_id,
-          name: cp.name,
-          lat: cp.lat,
-          lng: cp.lng,
-          qr_payload: cp.qr_payload
-        }))
-    }));
+      return {
+        ...round,
+        assigned_guards: assignedGuards,
+        checkpoints: checkpoints
+          .filter((cp) => cp.round_id === round.id)
+          .map((cp) => ({
+            id: cp.checkpoint_id,
+            name: cp.name,
+            lat: cp.lat,
+            lng: cp.lng,
+            qr_payload: cp.qr_payload
+          }))
+      };
+    });
 
     return c.json({ success: true, rounds: roundsWithCheckpoints });
   } catch (error: any) {
@@ -682,32 +682,51 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 });
 
 // ==========================================
-// 5. GUARD MANAGEMENT CRUD & HIERARCHY
+// 5. GUARD MANAGEMENT CRUD & MULTI-ROUTE HIERARCHY
 // ==========================================
-
-// GET all guards + mapped round names (bulletproof in-memory join)
 app.get('/api/v1/guards', async (c) => {
   try {
     const supabase = getSupabase(c.env);
     
     const { data: guards, error } = await supabase
       .from('guards')
-      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
+      .select('*')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
-    // Fetch rounds and join in memory (avoids PostgREST schema cache relationship errors)
     const { data: rounds } = await supabase
       .from('rounds')
       .select('id, name');
 
     const roundsMap = new Map((rounds || []).map((r: any) => [r.id, r]));
 
-    const guardsWithRounds = (guards || []).map((g: any) => ({
-      ...g,
-      rounds: g.assigned_round_id ? roundsMap.get(g.assigned_round_id) || null : null
-    }));
+    const guardsWithRounds = (guards || []).map((g: any) => {
+      const rawIds: string[] = Array.isArray(g.assigned_round_ids) && g.assigned_round_ids.length > 0
+        ? g.assigned_round_ids
+        : (g.assigned_round_id ? [g.assigned_round_id] : []);
+
+      const uniqueIds = Array.from(new Set(rawIds.filter(Boolean)));
+      const assignedRounds = uniqueIds
+        .map((id) => roundsMap.get(id))
+        .filter(Boolean);
+
+      return {
+        guard_id: g.guard_id,
+        full_name: g.full_name,
+        employee_code: g.employee_code,
+        role: g.role,
+        site_location: g.site_location,
+        shift_timing: g.shift_timing,
+        is_active: g.is_active,
+        created_at: g.created_at,
+        reporting_to: g.reporting_to,
+        assigned_round_id: uniqueIds[0] || null,
+        assigned_round_ids: uniqueIds,
+        rounds: assignedRounds[0] || null,
+        assigned_rounds: assignedRounds
+      };
+    });
 
     return c.json({ success: true, guards: guardsWithRounds });
   } catch (error: any) {
@@ -715,7 +734,6 @@ app.get('/api/v1/guards', async (c) => {
   }
 });
 
-// Create new guard
 app.post('/api/v1/guards', async (c) => {
   try {
     const body = await c.req.json();
@@ -732,23 +750,38 @@ app.post('/api/v1/guards', async (c) => {
       return c.json({ success: false, message: 'A guard with this employee code already exists.' }, 400);
     }
 
-    const { data: newGuard, error } = await supabase
+    const roundIds = parsed.assigned_round_ids !== undefined
+      ? parsed.assigned_round_ids
+      : (parsed.assigned_round_id ? [parsed.assigned_round_id] : []);
+    const primaryRoundId = roundIds[0] || null;
+
+    const insertPayload: Record<string, any> = {
+      full_name: parsed.full_name.trim(),
+      employee_code: parsed.employee_code.trim(),
+      password_hash: parsed.password,
+      role: parsed.role,
+      site_location: parsed.site_location,
+      shift_timing: parsed.shift_timing,
+      assigned_round_id: primaryRoundId,
+      assigned_round_ids: roundIds,
+      reporting_to: parsed.reporting_to,
+      is_active: true,
+    };
+
+    let { data: newGuard, error } = await supabase
       .from('guards')
-      .insert([{
-        full_name: parsed.full_name.trim(),
-        employee_code: parsed.employee_code.trim(),
-        password_hash: parsed.password,
-        role: parsed.role,
-        site_location: parsed.site_location,
-        shift_timing: parsed.shift_timing,
-        assigned_round_id: parsed.assigned_round_id,
-        reporting_to: parsed.reporting_to,
-        is_active: true,
-      }])
-      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
+      .insert([insertPayload])
+      .select()
       .single();
 
-    if (error) throw error;
+    // Fallback if assigned_round_ids column hasn't been added yet
+    if (error) {
+      delete insertPayload.assigned_round_ids;
+      const retry = await supabase.from('guards').insert([insertPayload]).select().single();
+      if (retry.error) throw retry.error;
+      newGuard = retry.data;
+    }
+
     return c.json({ success: true, guard: newGuard }, 201);
   } catch (error: any) {
     if (error instanceof z.ZodError) {
@@ -758,7 +791,6 @@ app.post('/api/v1/guards', async (c) => {
   }
 });
 
-// Update guard details, hierarchy, or patrol route assignment
 app.patch('/api/v1/guards/:id', async (c) => {
   try {
     const guardId = c.req.param('id');
@@ -773,33 +805,35 @@ app.patch('/api/v1/guards/:id', async (c) => {
     if (parsed.role !== undefined) updates.role = parsed.role;
     if (parsed.site_location !== undefined) updates.site_location = parsed.site_location;
     if (parsed.shift_timing !== undefined) updates.shift_timing = parsed.shift_timing;
-    if (parsed.assigned_round_id !== undefined) updates.assigned_round_id = parsed.assigned_round_id;
     if (parsed.reporting_to !== undefined) updates.reporting_to = parsed.reporting_to;
+
+    if (parsed.assigned_round_ids !== undefined) {
+      updates.assigned_round_ids = parsed.assigned_round_ids;
+      updates.assigned_round_id = parsed.assigned_round_ids[0] || null;
+    } else if (parsed.assigned_round_id !== undefined) {
+      updates.assigned_round_id = parsed.assigned_round_id;
+      updates.assigned_round_ids = parsed.assigned_round_id ? [parsed.assigned_round_id] : [];
+    }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ success: false, message: 'No fields provided to update.' }, 400);
     }
 
-    const { data: updatedGuard, error } = await supabase
+    let { data: updatedGuard, error } = await supabase
       .from('guards')
       .update(updates)
       .eq('guard_id', guardId)
-      .select('guard_id, full_name, employee_code, role, site_location, shift_timing, is_active, created_at, assigned_round_id, reporting_to')
+      .select()
       .maybeSingle();
 
-    if (error) throw error;
-
-    let roundInfo = null;
-    if (updatedGuard?.assigned_round_id) {
-      const { data: rData } = await supabase
-        .from('rounds')
-        .select('id, name')
-        .eq('id', updatedGuard.assigned_round_id)
-        .maybeSingle();
-      roundInfo = rData;
+    if (error) {
+      delete updates.assigned_round_ids;
+      const retry = await supabase.from('guards').update(updates).eq('guard_id', guardId).select().maybeSingle();
+      if (retry.error) throw retry.error;
+      updatedGuard = retry.data;
     }
 
-    return c.json({ success: true, guard: { ...updatedGuard, rounds: roundInfo } });
+    return c.json({ success: true, guard: updatedGuard });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
@@ -808,7 +842,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
   }
 });
 
-// Mobile App Route: Fetch assigned route for currently logged-in guard
+// Mobile App Route: Fetch all assigned routes for currently logged-in guard
 app.get('/api/v1/guards/my-assigned-route', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -823,38 +857,55 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 
     const { data: guard, error: gError } = await supabase
       .from('guards')
-      .select('guard_id, full_name, role, assigned_round_id')
+      .select('*')
       .eq('guard_id', guard_id)
       .maybeSingle();
 
-    if (gError || !guard || !guard.assigned_round_id) {
-      return c.json({ success: true, has_route: false, message: 'No patrol route currently assigned to you.' });
+    if (gError || !guard) {
+      return c.json({ success: true, has_route: false, routes: [], message: 'Guard profile not found.' });
     }
 
-    const { data: round, error: rError } = await supabase
-      .from('rounds')
-      .select('id, name')
-      .eq('id', guard.assigned_round_id)
-      .maybeSingle();
+    const roundIds: string[] = Array.isArray(guard.assigned_round_ids) && guard.assigned_round_ids.length > 0
+      ? guard.assigned_round_ids
+      : (guard.assigned_round_id ? [guard.assigned_round_id] : []);
 
-    if (rError || !round) {
-      return c.json({ success: true, has_route: false, message: 'Assigned route not found.' });
+    const uniqueIds = Array.from(new Set(roundIds.filter(Boolean)));
+
+    if (uniqueIds.length === 0) {
+      return c.json({ success: true, has_route: false, routes: [], message: 'No patrol route currently assigned to you.' });
     }
 
-    const { data: checkpoints } = await supabase
-      .from('checkpoints')
-      .select('checkpoint_id, name, lat, lng, qr_payload')
-      .eq('round_id', round.id);
+    const [roundsRes, cpRes] = await Promise.all([
+      supabase.from('rounds').select('id, name').in('id', uniqueIds),
+      supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload').in('round_id', uniqueIds)
+    ]);
+
+    const roundsList = roundsRes.data || [];
+    const allCheckpoints = cpRes.data || [];
+
+    const routes = uniqueIds
+      .map((id) => {
+        const r = roundsList.find((item: any) => item.id === id);
+        if (!r) return null;
+        const cps = allCheckpoints.filter((cp: any) => cp.round_id === r.id);
+        return {
+          id: r.id,
+          name: r.name,
+          total_checkpoints: cps.length,
+          checkpoints: cps
+        };
+      })
+      .filter(Boolean);
+
+    if (routes.length === 0) {
+      return c.json({ success: true, has_route: false, routes: [], message: 'Assigned routes not found.' });
+    }
 
     return c.json({
       success: true,
       has_route: true,
-      route: {
-        id: round.id,
-        name: round.name,
-        total_checkpoints: checkpoints?.length || 0,
-        checkpoints: checkpoints || []
-      }
+      route: routes[0], // Backward-compatible primary route
+      routes            // Full array of assigned routes for multi-route switching
     });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Server error' }, 500);
@@ -888,13 +939,17 @@ app.post('/api/v1/incidents', async (c) => {
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
     let finalPhotoUrl = null;
-    if (photo_url && photo_url.startsWith('data:image')) {
-      const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
-      const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      const fileName = `incidents/${incidentUuid}.jpg`;
-      
-      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
+    if (photo_url) {
+      try {
+        const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+        const fileName = `incidents/${incidentUuid}.jpg`;
+        
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`;
+      } catch (e) {
+        finalPhotoUrl = photo_url;
+      }
     }
 
     const supabase = getSupabase(c.env);
@@ -1004,13 +1059,17 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const incidentId = incident?.client_incident_id || rawParam;
 
     let finalPhotoUrl = null;
-    if (photo_base64 && photo_base64.startsWith('data:image')) {
-      const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
-      const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-      const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
-      
-      await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-      finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`; 
+    if (photo_base64) {
+      try {
+        const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
+        const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
+        
+        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
+        finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`;
+      } catch (e) {
+        finalPhotoUrl = photo_base64;
+      }
     }
 
     const { data, error } = await supabase
@@ -1241,7 +1300,6 @@ app.post('/api/v1/admin/configs', async (c) => {
   }
 });
 
-// Alerts
 async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
   const supabase = getSupabase(env);
   const { data: configs, error } = await supabase

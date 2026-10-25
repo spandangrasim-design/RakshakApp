@@ -1,372 +1,540 @@
-import React, { useState, useEffect, useRef } from 'react';
-import * as XLSX from 'xlsx';
-import { 
-  FileSpreadsheet, 
-  MapPin, 
-  ChevronRight, 
-  ChevronLeft, 
-  ChevronDown,
-  CheckCircle2, 
-  AlertTriangle, 
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Calendar,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
   RefreshCw,
-  X,
-  Maximize2
+  ChevronRight,
+  UserCheck,
+  MapPin,
+  Shield,
+  Layers,
+  Timer
 } from 'lucide-react';
-import { PatrolRound, CheckpointScanDetail } from '../types/patrol';
-import { PatrolMapModal } from '../components/reports/PatrolMapModal';
-import { getSecureMediaUrl } from '../utils/secureMedia';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+
+interface Checkpoint {
+  id: string;
+  name: string;
+  lat: string;
+  lng: string;
+}
+
+interface AssignedGuard {
+  guard_id: string;
+  full_name: string;
+  employee_code: string;
+}
+
+interface Round {
+  id: string;
+  name: string;
+  created_at?: string;
+  assigned_guards?: AssignedGuard[];
+  checkpoints: Checkpoint[];
+}
+
+interface ScanRecord {
+  client_scan_id: string;
+  checkpoint_id: string;
+  checkpoint_name: string;
+  guard_id: string;
+  guard_name?: string;
+  guard_code?: string;
+  guard_lat: number;
+  guard_lng: number;
+  expected_lat?: string;
+  expected_lng?: string;
+  scan_time: string;
+  is_verified?: boolean;
+  distance_meters?: number;
+  selfie_url?: string | null;
+  location_photo_url?: string | null;
+  photo_url?: string | null;
+}
+
+interface PatrolRun {
+  runId: string;
+  runNumber: number;
+  roundId: string;
+  roundName: string;
+  totalRouteStops: number;
+  dateKey: string; // YYYY-MM-DD
+  displayDate: string;
+  guardName: string;
+  guardCode: string;
+  startTime: string;
+  endTime: string;
+  durationText: string;
+  status: 'COMPLETED' | 'IN_PROGRESS' | 'PENDING';
+  verifiedStopsCount: number;
+  scans: ScanRecord[];
+}
+
+function formatDuration(startIso: string, endIso: string, stopCount: number): string {
+  if (!startIso || !endIso) return '—';
+  const diffMs = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (diffMs <= 1000) {
+    return stopCount === 1 ? '< 1 min (1 Stop)' : '< 1 min';
+  }
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+// Groups flat historical scans into discrete Patrol Runs per route & date
+function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRun[] {
+  const totalStops = round.checkpoints?.length || 1;
+  const defaultGuard = round.assigned_guards?.[0]?.full_name || 'Unassigned';
+  const defaultCode = round.assigned_guards?.[0]?.employee_code || '';
+
+  if (!rawScans || rawScans.length === 0) {
+    return [
+      {
+        runId: `${round.id}-pending`,
+        runNumber: 0,
+        roundId: round.id,
+        roundName: round.name,
+        totalRouteStops: round.checkpoints?.length || 0,
+        dateKey: 'PENDING',
+        displayDate: 'No Scans Yet',
+        guardName: defaultGuard,
+        guardCode: defaultCode,
+        startTime: '',
+        endTime: '',
+        durationText: '—',
+        status: 'PENDING',
+        verifiedStopsCount: 0,
+        scans: [],
+      },
+    ];
+  }
+
+  // Sort chronologically (oldest first) to segment runs accurately
+  const sorted = [...rawScans].sort(
+    (a, b) => new Date(a.scan_time).getTime() - new Date(b.scan_time).getTime()
+  );
+
+  const runs: PatrolRun[] = [];
+  let currentBucket: ScanRecord[] = [];
+  let seenCheckpoints = new Set<string>();
+  let currentDateKey = '';
+
+  const flushBucket = (bucket: ScanRecord[], indexNum: number) => {
+    if (bucket.length === 0) return;
+    const first = bucket[0];
+    const last = bucket[bucket.length - 1];
+    const dt = new Date(first.scan_time);
+    const dateKey = dt.toISOString().split('T')[0];
+    const displayDate = dt.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const uniqueCps = new Set(bucket.map((s) => s.checkpoint_id)).size;
+    const isCompleted = uniqueCps >= totalStops && totalStops > 0;
+
+    runs.push({
+      runId: `${round.id}-run-${indexNum}-${first.client_scan_id}`,
+      runNumber: indexNum,
+      roundId: round.id,
+      roundName: round.name,
+      totalRouteStops: round.checkpoints?.length || 0,
+      dateKey,
+      displayDate,
+      guardName: first.guard_name || defaultGuard,
+      guardCode: first.guard_code || defaultCode,
+      startTime: first.scan_time,
+      endTime: last.scan_time,
+      durationText: formatDuration(first.scan_time, last.scan_time, uniqueCps),
+      status: isCompleted ? 'COMPLETED' : 'IN_PROGRESS',
+      verifiedStopsCount: uniqueCps,
+      scans: bucket,
+    });
+  };
+
+  for (const scan of sorted) {
+    const scanDate = new Date(scan.scan_time).toISOString().split('T')[0];
+    const prevScan = currentBucket[currentBucket.length - 1];
+    const gapHours = prevScan
+      ? (new Date(scan.scan_time).getTime() - new Date(prevScan.scan_time).getTime()) / 3600000
+      : 0;
+
+    // Start a new Patrol Run if:
+    // 1. Date changed, OR
+    // 2. This checkpoint was already scanned in the current run, OR
+    // 3. Current run already reached all stops in the route, OR
+    // 4. Time gap between scans is > 4 hours
+    if (
+      currentBucket.length > 0 &&
+      (scanDate !== currentDateKey ||
+        seenCheckpoints.has(scan.checkpoint_id) ||
+        seenCheckpoints.size >= totalStops ||
+        gapHours > 4)
+    ) {
+      flushBucket(currentBucket, runs.length + 1);
+      currentBucket = [];
+      seenCheckpoints = new Set<string>();
+    }
+
+    currentDateKey = scanDate;
+    currentBucket.push(scan);
+    seenCheckpoints.add(scan.checkpoint_id);
+  }
+
+  flushBucket(currentBucket, runs.length + 1);
+
+  // Return newest runs first
+  return runs.reverse();
+}
 
 export const ReportsPage: React.FC = () => {
-  const [rounds, setRounds] = useState<PatrolRound[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [page, setPage] = useState<number>(1);
-  const [pageSize] = useState<number>(10);
-  const [totalCount, setTotalCount] = useState<number>(0);
-  
-  // Selected Round Drill-Down State
-  const [selectedRound, setSelectedRound] = useState<PatrolRound | null>(null);
-  const [roundScans, setRoundScans] = useState<CheckpointScanDetail[]>([]);
-  const [scansLoading, setScansLoading] = useState<boolean>(false);
-  const [mapOpen, setMapOpen] = useState<boolean>(false);
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [scansByRound, setScansByRound] = useState<Record<string, ScanRecord[]>>({});
+  const [loading, setLoading] = useState(true);
 
-  // Enlarged Photo Lightbox State (Supports both photos)
-  const [enlargedPhotos, setEnlargedPhotos] = useState<{
-    checkpointName: string;
-    selfieUrl?: string | null;
-    locationPhotoUrl?: string | null;
-    scannedAt?: string;
-    driftMeters?: number | string;
-    isVerified?: boolean;
-  } | null>(null);
+  // Filters
+  const [selectedDate, setSelectedDate] = useState<string>('ALL');
+  const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('ALL');
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
-  // Export Menu State
-  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
-
-  // Close export dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
-        setExportMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Fetch Patrol Rounds (Paginated)
-  const fetchRounds = async (targetPage: number) => {
+  const fetchAllReportsData = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/rounds?page=${targetPage}&pageSize=${pageSize}`);
+      const res = await fetch(`${API_BASE_URL}/rounds`);
       const data = await res.json();
-      
-      const items = data.rounds || data.items || [];
-      setRounds(items);
-      setTotalCount(data.total || items.length);
+      const roundList: Round[] = data.rounds || [];
+      setRounds(roundList);
+
+      const scanEntries = await Promise.all(
+        roundList.map(async (r) => {
+          try {
+            const sRes = await fetch(`${API_BASE_URL}/rounds/${r.id}/scans`);
+            const sData = await sRes.json();
+            return [r.id, sData.scans || []] as [string, ScanRecord[]];
+          } catch {
+            return [r.id, []] as [string, ScanRecord[]];
+          }
+        })
+      );
+
+      const map: Record<string, ScanRecord[]> = {};
+      for (const [rId, sList] of scanEntries) {
+        map[rId] = sList;
+      }
+      setScansByRound(map);
     } catch (err) {
-      console.error('Failed to fetch rounds', err);
+      console.error('Failed to load patrol reports:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchRounds(page);
-  }, [page]);
+    fetchAllReportsData();
+  }, []);
 
-  const getRouteDisplayName = (round: any) => {
-    if (!round) return 'Patrol Route';
-    return round?.name || round?.round_name || round?.title || round?.sites?.site_name || 'Patrol Route';
-  };
-
-  // Fetch Scans for Selected Round with dual-endpoint fallback
-  const handleSelectRound = async (round: PatrolRound) => {
-    setSelectedRound(round);
-    setScansLoading(true);
-    const roundId = (round as any)?.id || (round as any)?.round_id;
-
-    try {
-      const res = await fetch(`${API_BASE}/rounds/${roundId}/scans`);
-      const data = await res.json();
-      
-      if (data.success && Array.isArray(data.scans) && data.scans.length > 0) {
-        setRoundScans(data.scans);
-      } else {
-        const allScansRes = await fetch(`${API_BASE}/scans`);
-        const allScansData = await allScansRes.json();
-        const allScans = allScansData.scans || [];
-
-        const roundCheckpoints = (round as any)?.checkpoints || [];
-        const checkpointIds = new Set(roundCheckpoints.map((cp: any) => cp?.id || cp?.checkpoint_id));
-
-        const matchedScans = allScans
-          .filter((s: any) => s?.round_id === roundId || checkpointIds.has(s?.checkpoint_id))
-          .map((s: any) => {
-            const matchedCp = roundCheckpoints.find(
-              (cp: any) => (cp?.id || cp?.checkpoint_id) === s?.checkpoint_id
-            );
-            return {
-              ...s,
-              checkpoint_name: matchedCp?.name || s?.checkpoint_name || s?.checkpoint_id,
-              master_lat: matchedCp?.lat ? parseFloat(matchedCp.lat) : (s?.expected_lat ?? s?.master_lat),
-              master_lng: matchedCp?.lng ? parseFloat(matchedCp.lng) : (s?.expected_lng ?? s?.master_lng),
-              scan_lat: s?.guard_lat ?? s?.scan_lat,
-              scan_lng: s?.guard_lng ?? s?.scan_lng,
-              is_gps_verified: s?.is_gps_verified ?? (s?.status === 'VERIFIED'),
-              calculated_distance_m: s?.calculated_distance_m ?? s?.distance_meters ?? 0
-            };
-          });
-
-        setRoundScans(matchedScans);
-      }
-    } catch (err) {
-      console.error('Failed to fetch scans for round:', err);
-      setRoundScans([]);
-    } finally {
-      setScansLoading(false);
+  // Build all runs across all routes
+  const allPatrolRuns = useMemo(() => {
+    const list: PatrolRun[] = [];
+    for (const r of rounds) {
+      const rScans = scansByRound[r.id] || [];
+      const runs = buildPatrolRunsForRound(r, rScans);
+      list.push(...runs);
     }
-  };
+    return list.sort((a, b) => {
+      if (!a.startTime && !b.startTime) return 0;
+      if (!a.startTime) return 1;
+      if (!b.startTime) return -1;
+      return new Date(b.startTime).getTime() - new Date(a.startTime).getTime();
+    });
+  }, [rounds, scansByRound]);
 
-  const triggerDownload = (dataRows: any[], fileNamePrefix: string, sheetName: string, format: 'xlsx' | 'csv') => {
-    if (!dataRows || dataRows.length === 0) return;
+  // Available dates for filter dropdown
+  const availableDates = useMemo(() => {
+    const set = new Set<string>();
+    allPatrolRuns.forEach((run) => {
+      if (run.dateKey && run.dateKey !== 'PENDING') set.add(run.dateKey);
+    });
+    return Array.from(set).sort().reverse();
+  }, [allPatrolRuns]);
 
-    const worksheet = XLSX.utils.json_to_sheet(dataRows);
-    const dateStamp = new Date().toISOString().slice(0, 10);
-    const fileName = `${fileNamePrefix}_${dateStamp}.${format}`;
+  // Filtered runs
+  const filteredRuns = useMemo(() => {
+    return allPatrolRuns.filter((run) => {
+      if (selectedRouteFilter !== 'ALL' && run.roundId !== selectedRouteFilter) return false;
+      if (selectedDate !== 'ALL' && run.dateKey !== selectedDate) return false;
+      return true;
+    });
+  }, [allPatrolRuns, selectedRouteFilter, selectedDate]);
 
-    if (format === 'csv') {
-      const csv = XLSX.utils.sheet_to_csv(worksheet);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', fileName);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } else {
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-      XLSX.writeFile(workbook, fileName);
+  // Auto-select first run with scans
+  useEffect(() => {
+    if (filteredRuns.length > 0 && (!selectedRunId || !filteredRuns.some((r) => r.runId === selectedRunId))) {
+      const firstActive = filteredRuns.find((r) => r.scans.length > 0) || filteredRuns[0];
+      setSelectedRunId(firstActive.runId);
     }
-    setExportMenuOpen(false);
-  };
+  }, [filteredRuns, selectedRunId]);
 
-  const exportMasterRoundsSummary = (format: 'xlsx' | 'csv') => {
-    if (!rounds.length) return;
+  const inspectedRun = useMemo(
+    () => filteredRuns.find((r) => r.runId === selectedRunId) || filteredRuns[0] || null,
+    [filteredRuns, selectedRunId]
+  );
 
-    const rows = rounds.map((r: any) => ({
-      'Round ID': r?.round_id || r?.id || 'N/A',
-      'Route / Site': getRouteDisplayName(r),
-      'Guard Name': r?.guards?.full_name || r?.guard_name || 'Assigned Guard',
-      'Employee Code': r?.guards?.employee_code || r?.guard_id || 'N/A',
-      'Start Time': r?.started_at || r?.start_time ? new Date(r.started_at || r.start_time).toLocaleString() : 'N/A',
-      'End Time': r?.ended_at || r?.end_time ? new Date(r.ended_at || r.end_time).toLocaleString() : 'In Progress',
-      'Status': r?.status || 'IN_PROGRESS'
-    }));
+  const inspectedRound = useMemo(
+    () => (inspectedRun ? rounds.find((r) => r.id === inspectedRun.roundId) || null : null),
+    [rounds, inspectedRun]
+  );
 
-    triggerDownload(rows, 'Rakshak_Patrol_Summary', 'Rounds Summary', format);
-  };
-
-  const exportInspectedRoundAudit = (format: 'xlsx' | 'csv') => {
-    if (!roundScans.length || !selectedRound) return;
-
-    const roundId = (selectedRound as any)?.round_id || (selectedRound as any)?.id || 'Round';
-    const routeName = getRouteDisplayName(selectedRound);
-    const guardName = (selectedRound as any)?.guards?.full_name || (selectedRound as any)?.guard_name || 'N/A';
-
-    const rows = roundScans.map((s: any, idx: number) => ({
-      'Stop #': idx + 1,
-      'Patrol Round ID': roundId,
-      'Route Name': routeName,
-      'Guard Name': guardName,
-      'Employee Code': (selectedRound as any)?.guards?.employee_code || 'N/A',
-      'Checkpoint': s?.checkpoint_name || s?.checkpoint_id || 'N/A',
-      'Checkpoint ID': s?.checkpoint_id || 'N/A',
-      'Scanned At': s?.scanned_at || s?.scan_time ? new Date(s.scanned_at || s.scan_time).toLocaleString() : 'N/A',
-      'Verification Status': s?.is_gps_verified ? 'VERIFIED' : 'DRIFT_FLAGGED',
-      'Distance Drift (m)': s?.calculated_distance_m ?? s?.distance_meters ?? 'N/A',
-      'Guard Lat': s?.guard_lat ?? s?.scan_lat ?? 'N/A',
-      'Guard Lng': s?.guard_lng ?? s?.scan_lng ?? 'N/A',
-      'Expected Lat': s?.expected_lat ?? s?.master_lat ?? 'N/A',
-      'Expected Lng': s?.expected_lng ?? s?.master_lng ?? 'N/A',
-      'Guard Selfie URL': getSecureMediaUrl(s?.selfie_url) || '',
-      'Location Photo URL': getSecureMediaUrl(s?.location_photo_url || s?.photo_url) || '',
-      'Remarks': s?.remarks || ''
-    }));
-
-    const shortId = String(roundId).substring(0, 8);
-    triggerDownload(rows, `Rakshak_Round_Audit_${shortId}`, 'Checkpoint Audits', format);
-  };
-
-  const totalPages = Math.ceil(totalCount / pageSize) || 1;
+  const completedCount = filteredRuns.filter((r) => r.status === 'COMPLETED').length;
+  const inProgressCount = filteredRuns.filter((r) => r.status === 'IN_PROGRESS').length;
+  const totalScansCount = filteredRuns.reduce((acc, r) => acc + r.scans.length, 0);
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6 font-sans">
-      <div className="mx-auto max-w-7xl">
-        {/* Top Header */}
-        <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-center">
+    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans text-slate-800">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Top Header & Filters */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Patrol Reports & Compliance</h1>
-            <p className="text-base text-gray-600 mt-1">Audit guard presence, GPS drift, and multi-factor photo proofs.</p>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
+              Patrol Audit & Date-Wise Round Reports
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Each patrol session is grouped by route and date with start time, end time, total duration, and dual-photo proof.
+            </p>
           </div>
-          
-          <div className="flex items-center gap-3">
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Route Filter */}
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
+              <Layers className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                value={selectedRouteFilter}
+                onChange={(e) => setSelectedRouteFilter(e.target.value)}
+                className="text-xs font-semibold text-slate-700 bg-transparent outline-none"
+              >
+                <option value="ALL">All Patrol Routes</option>
+                {rounds.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} ({r.checkpoints?.length || 0} stops)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Date Filter */}
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
+              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="text-xs font-semibold text-slate-700 bg-transparent outline-none"
+              >
+                <option value="ALL">All Dates</option>
+                {availableDates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <button
-              type="button"
-              onClick={() => fetchRounds(page)}
-              className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50 transition"
+              onClick={fetchAllReportsData}
+              className="inline-flex items-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-bold shadow-sm transition"
             >
-              <RefreshCw className="h-4 w-4" /> Refresh
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
             </button>
+          </div>
+        </div>
 
-            {selectedRound && (
-              <button
-                type="button"
-                onClick={() => setMapOpen(true)}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
-              >
-                <MapPin className="h-4 w-4" /> View Map Audit
-              </button>
-            )}
+        {/* Summary KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">
+                Completed Patrol Runs
+              </div>
+              <div className="text-2xl font-black text-slate-900 mt-1">{completedCount}</div>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+          </div>
 
-            {/* Multi-Format Export Dropdown */}
-            <div className="relative" ref={exportMenuRef}>
-              <button
-                type="button"
-                onClick={() => setExportMenuOpen((prev) => !prev)}
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition"
-              >
-                <FileSpreadsheet className="h-4 w-4" /> 
-                <span>Export</span>
-                <ChevronDown className="h-4 w-4" />
-              </button>
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-amber-600">
+                Partial / In-Progress Runs
+              </div>
+              <div className="text-2xl font-black text-slate-900 mt-1">{inProgressCount}</div>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
 
-              {exportMenuOpen && (
-                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-gray-200 bg-white py-2 shadow-xl z-50 text-sm">
-                  <div className="px-4 py-1.5 font-bold uppercase tracking-wider text-gray-400 text-xs">
-                    Master Rounds History
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => exportMasterRoundsSummary('xlsx')}
-                    className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
-                  >
-                    <span>All Rounds Summary</span>
-                    <span className="font-bold text-emerald-700">.XLSX</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => exportMasterRoundsSummary('csv')}
-                    className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
-                  >
-                    <span>All Rounds Summary</span>
-                    <span className="font-bold text-emerald-700">.CSV</span>
-                  </button>
-
-                  {selectedRound && (
-                    <>
-                      <div className="border-t my-1 border-gray-100" />
-                      <div className="px-4 py-1.5 font-bold uppercase tracking-wider text-gray-400 text-xs">
-                        Inspected Round Audits
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => exportInspectedRoundAudit('xlsx')}
-                        className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
-                      >
-                        <span>Checkpoint Proofs</span>
-                        <span className="font-bold text-emerald-700">.XLSX</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => exportInspectedRoundAudit('csv')}
-                        className="w-full text-left px-4 py-2 hover:bg-emerald-50 text-gray-700 flex items-center justify-between"
-                      >
-                        <span>Checkpoint Proofs</span>
-                        <span className="font-bold text-emerald-700">.CSV</span>
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-blue-600">
+                Total QR Stops Verified
+              </div>
+              <div className="text-2xl font-black text-slate-900 mt-1">{totalScansCount}</div>
+            </div>
+            <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <Shield className="w-5 h-5" />
             </div>
           </div>
         </div>
 
-        {/* Master Patrol Rounds Table */}
-        <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b px-6 py-4">
-            <h2 className="text-lg font-bold text-gray-800">Patrol Rounds History</h2>
+        {/* Patrol Runs Table (Date-wise & Session-wise) */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
+              Patrol Sessions ({filteredRuns.length} Runs)
+            </span>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-gray-700">
-              <thead className="bg-gray-100 text-xs font-bold uppercase tracking-wider text-gray-600">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
                 <tr>
-                  <th className="px-6 py-3.5">Route / Site Name</th>
-                  <th className="px-6 py-3.5">Guard</th>
-                  <th className="px-6 py-3.5">Start Time</th>
-                  <th className="px-6 py-3.5">End Time</th>
-                  <th className="px-6 py-3.5">Status</th>
-                  <th className="px-6 py-3.5 text-right">Action</th>
+                  <th className="px-4 py-3">Route / Site Name</th>
+                  <th className="px-4 py-3">Date & Session</th>
+                  <th className="px-4 py-3">Guard</th>
+                  <th className="px-4 py-3">Start Time</th>
+                  <th className="px-4 py-3">End Time</th>
+                  <th className="px-4 py-3">Total Time Taken</th>
+                  <th className="px-4 py-3">Stops Progress</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200 text-sm">
+              <tbody className="divide-y divide-slate-100">
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="py-10 text-center text-base text-gray-400">Loading patrol rounds...</td>
+                    <td colSpan={9} className="text-center py-10 text-slate-400">
+                      Loading patrol runs...
+                    </td>
                   </tr>
-                ) : rounds.length === 0 ? (
+                ) : filteredRuns.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-10 text-center text-base text-gray-400">No patrol rounds logged for this period.</td>
+                    <td colSpan={9} className="text-center py-10 text-slate-400">
+                      No patrol sessions found for the selected filter.
+                    </td>
                   </tr>
                 ) : (
-                  rounds.map((round: any) => {
-                    const roundId = round?.round_id || round?.id;
-                    const isSelected = selectedRound && ((selectedRound as any)?.round_id === roundId || (selectedRound as any)?.id === roundId);
-                    const startTime = round?.started_at || round?.start_time;
-                    const endTime = round?.ended_at || round?.end_time;
-                    const routeName = getRouteDisplayName(round);
-                    const checkpointCount = Array.isArray(round?.checkpoints) ? round.checkpoints.length : 0;
-
+                  filteredRuns.map((run) => {
+                    const isSelected = inspectedRun?.runId === run.runId;
                     return (
-                      <tr 
-                        key={roundId} 
-                        className={`transition hover:bg-gray-50 ${isSelected ? 'bg-blue-50/70' : ''}`}
+                      <tr
+                        key={run.runId}
+                        onClick={() => setSelectedRunId(run.runId)}
+                        className={`cursor-pointer transition ${
+                          isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                        }`}
                       >
-                        <td className="px-6 py-4 font-bold text-gray-900 text-base">
-                          {routeName}
-                          {checkpointCount > 0 && (
-                            <span className="ml-2.5 inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-                              {checkpointCount} stops
+                        <td className="px-4 py-3.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-900 text-sm">{run.roundName}</span>
+                            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold text-[10px]">
+                              {run.totalRouteStops} {run.totalRouteStops === 1 ? 'stop' : 'stops'}
+                            </span>
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          {run.status === 'PENDING' ? (
+                            <span className="text-slate-400 italic">No scans yet</span>
+                          ) : (
+                            <div>
+                              <div className="font-bold text-slate-800">{run.displayDate}</div>
+                              <div className="text-[10px] text-blue-600 font-semibold">
+                                Patrol Run #{run.runNumber}
+                              </div>
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          <div className="flex items-center gap-1.5">
+                            <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                            <div>
+                              <div className="font-semibold text-slate-800">{run.guardName}</div>
+                              {run.guardCode && (
+                                <div className="text-[10px] text-slate-400 font-mono">
+                                  ID: {run.guardCode}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3.5 font-mono text-slate-700">
+                          {run.startTime ? new Date(run.startTime).toLocaleTimeString() : '—'}
+                        </td>
+
+                        <td className="px-4 py-3.5 font-mono text-slate-700">
+                          {run.endTime
+                            ? run.status === 'COMPLETED'
+                              ? new Date(run.endTime).toLocaleTimeString()
+                              : `${new Date(run.endTime).toLocaleTimeString()} (Latest)`
+                            : '—'}
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          <span className="inline-flex items-center gap-1 font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
+                            <Timer className="w-3 h-3 text-blue-600" />
+                            {run.durationText}
+                          </span>
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          <span className="font-bold text-slate-800">
+                            {run.verifiedStopsCount} / {run.totalRouteStops}
+                          </span>
+                          <span className="text-slate-400 ml-1">verified</span>
+                        </td>
+
+                        <td className="px-4 py-3.5">
+                          {run.status === 'COMPLETED' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                              COMPLETED
+                            </span>
+                          )}
+                          {run.status === 'IN_PROGRESS' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px]">
+                              IN_PROGRESS
+                            </span>
+                          )}
+                          {run.status === 'PENDING' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold text-[10px]">
+                              NOT STARTED
                             </span>
                           )}
                         </td>
-                        <td className="px-6 py-4">
-                          <span className="font-semibold text-gray-900">{round?.guards?.full_name || round?.guard_name || 'Assigned Guard'}</span>
-                          <span className="block text-xs font-medium text-gray-500">ID: {round?.guards?.employee_code || round?.guard_id || 'N/A'}</span>
-                        </td>
-                        <td className="px-6 py-4 font-mono text-xs text-gray-600">{startTime ? new Date(startTime).toLocaleString() : '—'}</td>
-                        <td className="px-6 py-4 font-mono text-xs text-gray-600">{endTime ? new Date(endTime).toLocaleString() : 'In Progress'}</td>
-                        <td className="px-6 py-4">
-                          <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${
-                            round?.status === 'COMPLETED' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
-                          }`}>
-                            {round?.status || 'IN_PROGRESS'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
+
+                        <td className="px-4 py-3.5 text-right">
                           <button
-                            type="button"
-                            onClick={() => handleSelectRound(round)}
-                            className="inline-flex items-center gap-1 rounded-md bg-white px-3.5 py-1.5 text-xs font-bold text-blue-700 border border-blue-300 hover:bg-blue-50 transition"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedRunId(run.runId);
+                            }}
+                            className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg border text-xs font-bold transition ${
+                              isSelected
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                : 'border-blue-200 text-blue-600 hover:bg-blue-50'
+                            }`}
                           >
-                            Inspect <ChevronRight className="h-4 w-4" />
+                            Inspect <ChevronRight className="w-3.5 h-3.5" />
                           </button>
                         </td>
                       </tr>
@@ -376,176 +544,135 @@ export const ReportsPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-
-          {/* Pagination Controls */}
-          <div className="flex items-center justify-between border-t px-6 py-3.5">
-            <span className="text-sm font-medium text-gray-600">
-              Page {page} of {totalPages} ({totalCount} total rounds)
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-                className="rounded border p-1.5 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
-              >
-                <ChevronLeft className="h-5 w-5" />
-              </button>
-              <button
-                type="button"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => p + 1)}
-                className="rounded border p-1.5 text-gray-600 disabled:opacity-40 hover:bg-gray-100 transition"
-              >
-                <ChevronRight className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
         </div>
 
-        {/* Selected Round Drill-Down (Side-by-Side Dual Photo Verification) */}
-        {selectedRound && (
-          <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b pb-4">
+        {/* Selected Patrol Run Inspection Panel */}
+        {inspectedRun && (
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-100 pb-4">
               <div>
-                <h2 className="text-xl font-extrabold text-gray-900">
-                  Checkpoints Scanned ({roundScans.length})
-                </h2>
-                <p className="text-sm font-medium text-gray-600 mt-0.5">
-                  Route: <span className="font-bold text-blue-700">{getRouteDisplayName(selectedRound)}</span>
+                <div className="flex items-center gap-2.5">
+                  <h2 className="text-lg font-black text-slate-900">
+                    Checkpoints Scanned ({inspectedRun.verifiedStopsCount} of {inspectedRun.totalRouteStops})
+                  </h2>
+                  {inspectedRun.runNumber > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold text-xs">
+                      {inspectedRun.displayDate} • Run #{inspectedRun.runNumber}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Route: <strong className="text-blue-600">{inspectedRun.roundName}</strong> • Guard:{' '}
+                  <strong>{inspectedRun.guardName}</strong> • Total Time:{' '}
+                  <strong>{inspectedRun.durationText}</strong>
                 </p>
               </div>
-              <span className="text-xs font-mono text-gray-400 bg-gray-50 px-2.5 py-1 rounded border">
-                Round ID: {(selectedRound as any)?.round_id || (selectedRound as any)?.id}
-              </span>
+
+              <div className="text-[11px] font-mono text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                Round ID: {inspectedRun.roundId}
+              </div>
             </div>
 
-            {scansLoading ? (
-              <p className="py-10 text-center text-base text-gray-400">Loading checkpoint verification proofs...</p>
-            ) : roundScans.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400">
-                No checkpoint scans recorded for this route yet.
+            {inspectedRun.scans.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                No checkpoints have been scanned in this session yet.
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                {roundScans.map((scan: any, idx: number) => {
-                  const scanTime = scan?.scanned_at || scan?.scan_time;
-                  const distanceMeters = scan?.calculated_distance_m ?? scan?.distance_meters;
-                  const isVerified = scan?.is_gps_verified ?? (scan?.status === 'VERIFIED');
-                  
-                  // Extract individual photos
-                  const rawSelfie = scan?.selfie_url;
-                  const rawLocation = scan?.location_photo_url || scan?.photo_url;
-
-                  const selfieUrl = getSecureMediaUrl(rawSelfie);
-                  const locationUrl = getSecureMediaUrl(rawLocation);
-                  
-                  // Determine if we have two genuine distinct photos or just one
-                  const hasTwoDistinctPhotos = Boolean(selfieUrl && locationUrl && selfieUrl !== locationUrl);
-                  const checkpointName = scan?.checkpoint_name || scan?.checkpoint_id || `Stop #${idx + 1}`;
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {inspectedRun.scans.map((scan, idx) => {
+                  const selfieImg = scan.selfie_url || null;
+                  const locationImg = scan.location_photo_url || scan.photo_url || null;
+                  const isVerified = scan.is_verified !== false;
 
                   return (
-                    <div key={scan?.scan_id || scan?.id || idx} className="rounded-xl border border-gray-200 p-4 bg-white shadow-sm flex flex-col justify-between">
-                      <div>
-                        {/* Header: Stop # and GPS Status */}
-                        <div className="mb-3 flex items-start justify-between gap-2">
-                          <div>
-                            <span className="text-xs font-extrabold uppercase tracking-wider text-blue-700">Stop #{idx + 1}</span>
-                            <h3 className="font-bold text-gray-900 text-base leading-tight mt-0.5">{checkpointName}</h3>
-                            <p className="text-xs font-semibold text-gray-500 mt-0.5">
-                              {scanTime ? new Date(scanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
-                            </p>
+                    <div
+                      key={scan.client_scan_id || idx}
+                      className="border border-slate-200 rounded-2xl p-4 space-y-3 bg-white shadow-sm"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="text-[11px] font-black uppercase tracking-wider text-blue-600">
+                            STOP #{idx + 1} OF {inspectedRun.totalRouteStops}
                           </div>
-                          <div>
-                            {isVerified ? (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1 text-xs font-bold text-green-700 border border-green-200 whitespace-nowrap">
-                                <CheckCircle2 className="h-3.5 w-3.5" /> Verified
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 border border-amber-200 whitespace-nowrap">
-                                <AlertTriangle className="h-3.5 w-3.5" /> Drift ({distanceMeters ? Number(distanceMeters).toFixed(0) : '—'}m)
-                              </span>
-                            )}
+                          <div className="text-base font-bold text-slate-900 mt-0.5">
+                            {scan.checkpoint_name || inspectedRun.roundName}
+                          </div>
+                          <div className="text-xs text-slate-500 font-mono mt-0.5">
+                            {new Date(scan.scan_time).toLocaleString()}
                           </div>
                         </div>
 
-                        {/* Side-by-Side Dual Photo Container with object-contain (no edge crop) */}
-                        <div 
-                          onClick={() => {
-                            if (selfieUrl || locationUrl) {
-                              setEnlargedPhotos({
-                                checkpointName,
-                                selfieUrl: hasTwoDistinctPhotos ? selfieUrl : null,
-                                locationPhotoUrl: hasTwoDistinctPhotos ? locationUrl : (locationUrl || selfieUrl),
-                                scannedAt: scanTime ? new Date(scanTime).toLocaleString() : undefined,
-                                driftMeters: distanceMeters,
-                                isVerified
-                              });
-                            }
-                          }}
-                          className="group relative cursor-pointer rounded-lg p-1 transition hover:bg-slate-50"
-                          title="Click to compare full proof photos"
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border ${
+                            isVerified
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}
                         >
-                          {hasTwoDistinctPhotos ? (
-                            <div className="grid grid-cols-2 gap-3">
-                              {/* 1. Guard Face Selfie */}
-                              <div>
-                                <span className="mb-1 block text-xs font-bold text-gray-700">1. Guard Selfie</span>
-                                <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
-                                  <img 
-                                    src={selfieUrl!} 
-                                    alt="Guard Face Proof" 
-                                    className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
-                                    loading="lazy" 
-                                  />
-                                </div>
-                              </div>
-
-                              {/* 2. Checkpoint Tag / Location Proof */}
-                              <div>
-                                <span className="mb-1 block text-xs font-bold text-gray-700">2. Location Proof</span>
-                                <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
-                                  <img 
-                                    src={locationUrl!} 
-                                    alt="Checkpoint Location Proof" 
-                                    className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
-                                    loading="lazy" 
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          ) : (locationUrl || selfieUrl) ? (
-                            // Clean Single Photo View (If guard has only taken 1 photo so far)
-                            <div className="relative h-56 w-full flex items-center justify-center rounded-lg bg-slate-900 border border-gray-200 p-1 overflow-hidden">
-                              <img 
-                                src={(locationUrl || selfieUrl)!} 
-                                alt="Checkpoint Proof" 
-                                className="h-full w-full object-contain transition group-hover:scale-[1.02]" 
-                                loading="lazy" 
-                              />
-                              <span className="absolute bottom-2 left-2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-bold text-white backdrop-blur-sm shadow">
-                                Checkpoint Proof
-                              </span>
-                            </div>
+                          {isVerified ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Verified
+                            </>
                           ) : (
-                            <div className="flex h-44 items-center justify-center rounded-lg border border-dashed border-gray-200 text-xs font-semibold text-gray-400">
-                              No Photo Proof Captured
+                            <>
+                              <AlertTriangle className="w-3.5 h-3.5" /> GPS Drift
+                            </>
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Dual Verification Photos */}
+                      <div className="grid grid-cols-2 gap-3 pt-2">
+                        <div>
+                          <div className="text-[11px] font-bold text-slate-700 mb-1.5">
+                            1. Guard Selfie
+                          </div>
+                          {selfieImg ? (
+                            <a href={selfieImg} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={selfieImg}
+                                alt="Guard Face Proof"
+                                className="w-full h-44 object-cover rounded-xl border border-slate-200 bg-slate-900 hover:opacity-95 transition"
+                              />
+                            </a>
+                          ) : (
+                            <div className="w-full h-44 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs">
+                              No Selfie Recorded
                             </div>
                           )}
+                        </div>
 
-                          {(selfieUrl || locationUrl) && (
-                            <div className="absolute top-3 right-3 rounded-md bg-black/60 p-1.5 text-white opacity-0 transition group-hover:opacity-100 z-10">
-                              <Maximize2 className="h-4 w-4" />
+                        <div>
+                          <div className="text-[11px] font-bold text-slate-700 mb-1.5">
+                            2. Location Proof
+                          </div>
+                          {locationImg ? (
+                            <a href={locationImg} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={locationImg}
+                                alt="Checkpoint Location Proof"
+                                className="w-full h-44 object-cover rounded-xl border border-slate-200 bg-slate-900 hover:opacity-95 transition"
+                              />
+                            </a>
+                          ) : (
+                            <div className="w-full h-44 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs">
+                              No Location Photo
                             </div>
                           )}
                         </div>
                       </div>
 
-                      {scan?.remarks && (
-                        <div className="mt-3 rounded-md bg-gray-50 p-2.5 text-xs text-gray-700 border border-gray-100">
-                          <strong className="font-bold text-gray-900">Remark:</strong> {scan.remarks}
-                        </div>
-                      )}
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+                        <span className="flex items-center gap-1 font-mono">
+                          <MapPin className="w-3 h-3 text-slate-400" />
+                          GPS: {Number(scan.guard_lat).toFixed(5)}, {Number(scan.guard_lng).toFixed(5)}
+                        </span>
+                        {scan.distance_meters !== undefined && (
+                          <span className="font-semibold">
+                            Variance: {Math.round(scan.distance_meters)}m
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -553,101 +680,6 @@ export const ReportsPage: React.FC = () => {
             )}
           </div>
         )}
-
-        {/* Enlarged Photo Lightbox Modal */}
-        {enlargedPhotos && (
-          <div 
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
-            onClick={() => setEnlargedPhotos(null)}
-          >
-            <div 
-              className="relative w-full max-w-5xl rounded-2xl bg-white p-6 shadow-2xl transition max-h-[92vh] flex flex-col overflow-y-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Modal Header */}
-              <div className="mb-4 flex items-center justify-between border-b pb-3">
-                <div>
-                  <h3 className="text-xl font-extrabold text-gray-900">
-                    Photo Verification Audit
-                  </h3>
-                  <p className="text-sm font-medium text-gray-600 mt-0.5">
-                    Target: <span className="font-bold text-blue-700">{enlargedPhotos.checkpointName}</span>
-                    {enlargedPhotos.scannedAt && <span className="ml-2 text-gray-500">({enlargedPhotos.scannedAt})</span>}
-                  </p>
-                </div>
-                <button 
-                  type="button"
-                  onClick={() => setEnlargedPhotos(null)} 
-                  className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition"
-                  aria-label="Close"
-                >
-                  <X className="h-6 w-6" />
-                </button>
-              </div>
-
-              {/* Modal Content: Dual Side-by-Side View vs Single View */}
-              {enlargedPhotos.selfieUrl && enlargedPhotos.locationPhotoUrl ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Left: Guard Face Selfie */}
-                  <div>
-                    <span className="mb-2 block text-sm font-bold text-gray-800">1. Guard Face Selfie</span>
-                    <div className="relative flex h-[58vh] items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
-                      <img 
-                        src={enlargedPhotos.selfieUrl} 
-                        alt="Guard Selfie" 
-                        className="h-full w-full object-contain" 
-                      />
-                    </div>
-                  </div>
-
-                  {/* Right: Checkpoint Location Photo */}
-                  <div>
-                    <span className="mb-2 block text-sm font-bold text-gray-800">2. Location Proof Photo</span>
-                    <div className="relative flex h-[58vh] items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
-                      <img 
-                        src={enlargedPhotos.locationPhotoUrl} 
-                        alt="Location Proof" 
-                        className="h-full w-full object-contain" 
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="relative flex h-[60vh] w-full items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2 border border-gray-200">
-                  <img 
-                    src={(enlargedPhotos.locationPhotoUrl || enlargedPhotos.selfieUrl)!} 
-                    alt="Checkpoint Verification Proof" 
-                    className="h-full w-full object-contain" 
-                  />
-                </div>
-              )}
-
-              {/* Status Footer Pill */}
-              <div className="mt-4 flex items-center justify-between border-t pt-3 text-xs">
-                <div className="flex items-center gap-2">
-                  {enlargedPhotos.isVerified ? (
-                    <span className="inline-flex items-center gap-1 font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded border border-green-200">
-                      <CheckCircle2 className="h-4 w-4" /> GPS & Timestamp Verified
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded border border-amber-200">
-                      <AlertTriangle className="h-4 w-4" /> Drift Flagged ({enlargedPhotos.driftMeters ?? '—'}m)
-                    </span>
-                  )}
-                </div>
-                <span className="text-gray-500 font-medium">Full Aspect Ratio Retained (Edge data uncropped)</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Leaflet Map Modal */}
-        <PatrolMapModal
-          isOpen={mapOpen}
-          onClose={() => setMapOpen(false)}
-          scans={roundScans}
-          roundTitle={selectedRound ? `Route: ${getRouteDisplayName(selectedRound)} (${roundScans.length} Checkpoints)` : 'Patrol Route Map'}
-        />
       </div>
     </div>
   );

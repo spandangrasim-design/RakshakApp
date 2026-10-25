@@ -8,6 +8,8 @@ import {
   Clock,
   Building2,
   Edit2,
+  CheckSquare,
+  Square,
   X
 } from 'lucide-react';
 
@@ -28,8 +30,10 @@ interface Guard {
   is_active: boolean;
   created_at: string;
   assigned_round_id?: string | null;
+  assigned_round_ids?: string[];
   reporting_to?: string | null;
   rounds?: { id: string; name: string } | null;
+  assigned_rounds?: { id: string; name: string }[];
 }
 
 export const GuardsView: React.FC = () => {
@@ -52,7 +56,7 @@ export const GuardsView: React.FC = () => {
     role: 'Guard',
     site_location: 'Main Plant & Gate 1',
     shift_timing: 'Morning (06:00 - 14:00)',
-    assigned_round_id: '',
+    assigned_round_ids: [] as string[],
   });
 
   // Edit Form State
@@ -61,10 +65,10 @@ export const GuardsView: React.FC = () => {
     role: 'Guard',
     site_location: 'Main Plant & Gate 1',
     shift_timing: 'Morning (06:00 - 14:00)',
-    assigned_round_id: '',
+    assigned_round_ids: [] as string[],
   });
 
-  const [selectedRoundId, setSelectedRoundId] = useState('');
+  const [selectedRoundIds, setSelectedRoundIds] = useState<string[]>([]);
   const [newPassword, setNewPassword] = useState('');
 
   const fetchData = async () => {
@@ -91,6 +95,17 @@ export const GuardsView: React.FC = () => {
     fetchData();
   }, []);
 
+  const toggleIdInArray = (arr: string[], id: string): string[] => {
+    return arr.includes(id) ? arr.filter((item) => item !== id) : [...arr, id];
+  };
+
+  const getGuardRoundIds = (guard: Guard): string[] => {
+    if (Array.isArray(guard.assigned_round_ids) && guard.assigned_round_ids.length > 0) {
+      return guard.assigned_round_ids;
+    }
+    return guard.assigned_round_id ? [guard.assigned_round_id] : [];
+  };
+
   const handleCreateGuard = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGuard.full_name.trim() || !newGuard.employee_code.trim() || !newGuard.password.trim()) {
@@ -106,7 +121,8 @@ export const GuardsView: React.FC = () => {
         role: newGuard.role,
         site_location: newGuard.site_location,
         shift_timing: newGuard.shift_timing,
-        assigned_round_id: newGuard.assigned_round_id ? newGuard.assigned_round_id : null,
+        assigned_round_ids: newGuard.assigned_round_ids,
+        assigned_round_id: newGuard.assigned_round_ids[0] || null,
       };
 
       const res = await fetch(`${API_BASE_URL}/guards`, {
@@ -125,7 +141,7 @@ export const GuardsView: React.FC = () => {
           role: 'Guard',
           site_location: 'Main Plant & Gate 1',
           shift_timing: 'Morning (06:00 - 14:00)',
-          assigned_round_id: '',
+          assigned_round_ids: [],
         });
         fetchData();
       } else {
@@ -136,7 +152,6 @@ export const GuardsView: React.FC = () => {
     }
   };
 
-  // Open Edit Modal
   const openEditModal = (guard: Guard) => {
     setEditingGuard(guard);
     setEditForm({
@@ -144,11 +159,10 @@ export const GuardsView: React.FC = () => {
       role: guard.role || 'Guard',
       site_location: guard.site_location || 'Main Plant & Gate 1',
       shift_timing: guard.shift_timing || 'Morning (06:00 - 14:00)',
-      assigned_round_id: guard.assigned_round_id || '',
+      assigned_round_ids: getGuardRoundIds(guard),
     });
   };
 
-  // Save Edit Changes
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingGuard) return;
@@ -159,7 +173,8 @@ export const GuardsView: React.FC = () => {
         role: editForm.role,
         site_location: editForm.site_location,
         shift_timing: editForm.shift_timing,
-        assigned_round_id: editForm.assigned_round_id ? editForm.assigned_round_id : null,
+        assigned_round_ids: editForm.assigned_round_ids,
+        assigned_round_id: editForm.assigned_round_ids[0] || null,
       };
 
       const res = await fetch(`${API_BASE_URL}/guards/${editingGuard.guard_id}`, {
@@ -181,25 +196,27 @@ export const GuardsView: React.FC = () => {
     }
   };
 
-  // Quick Route Assignment
   const handleSaveRouteAssignment = async () => {
     if (!assigningGuard) return;
     try {
       const res = await fetch(`${API_BASE_URL}/guards/${assigningGuard.guard_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assigned_round_id: selectedRoundId ? selectedRoundId : null }),
+        body: JSON.stringify({
+          assigned_round_ids: selectedRoundIds,
+          assigned_round_id: selectedRoundIds[0] || null,
+        }),
       });
       const data = await res.json();
       if (data.success) {
-        alert(`Patrol route assigned to ${assigningGuard.full_name}.`);
+        alert(`Patrol routes updated for ${assigningGuard.full_name}.`);
         setAssigningGuard(null);
         fetchData();
       } else {
-        alert(data.message || 'Failed to assign route.');
+        alert(data.message || 'Failed to assign routes.');
       }
     } catch (err) {
-      alert('Network error while assigning route.');
+      alert('Network error while assigning routes.');
     }
   };
 
@@ -272,6 +289,44 @@ export const GuardsView: React.FC = () => {
     }
   };
 
+  const renderMultiRouteSelector = (
+    selectedIds: string[],
+    onChange: (newIds: string[]) => void
+  ) => (
+    <div className="border border-slate-200 rounded-xl max-h-44 overflow-y-auto divide-y divide-slate-100 bg-slate-50/50">
+      {rounds.length === 0 ? (
+        <div className="p-3 text-slate-400 text-center italic">No routes created yet</div>
+      ) : (
+        rounds.map((r) => {
+          const isChecked = selectedIds.includes(r.id);
+          return (
+            <div
+              key={r.id}
+              onClick={() => onChange(toggleIdInArray(selectedIds, r.id))}
+              className={`flex items-center justify-between px-3 py-2.5 cursor-pointer transition ${
+                isChecked ? 'bg-blue-50/80 text-blue-900 font-semibold' : 'hover:bg-white text-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                {isChecked ? (
+                  <CheckSquare className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                ) : (
+                  <Square className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                )}
+                <span>{r.name}</span>
+              </div>
+              {isChecked && (
+                <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">
+                  Assigned
+                </span>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#f8fafc] p-6 font-sans">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -280,7 +335,7 @@ export const GuardsView: React.FC = () => {
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">Security Hierarchy & Personnel</h1>
             <p className="text-xs text-slate-500 mt-1">
-              Configure personnel hierarchy levels, assign mandatory patrol routes, and manage authentication credentials.
+              Configure personnel hierarchy levels, assign one or multiple patrol routes, and manage credentials.
             </p>
           </div>
           <button
@@ -338,7 +393,7 @@ export const GuardsView: React.FC = () => {
                   <th className="px-4 py-3.5">Role / Hierarchy</th>
                   <th className="px-4 py-3.5">Site / Plant</th>
                   <th className="px-4 py-3.5">Shift Window</th>
-                  <th className="px-4 py-3.5">Assigned Patrol Route</th>
+                  <th className="px-4 py-3.5">Assigned Patrol Routes</th>
                   <th className="px-4 py-3.5">Status</th>
                   <th className="px-4 py-3.5 text-right">Actions</th>
                 </tr>
@@ -358,7 +413,13 @@ export const GuardsView: React.FC = () => {
                   </tr>
                 ) : (
                   filteredGuards.map((guard) => {
-                    const assignedRouteName = guard.rounds?.name || 'No Route Assigned';
+                    const assignedList =
+                      guard.assigned_rounds && guard.assigned_rounds.length > 0
+                        ? guard.assigned_rounds
+                        : guard.rounds
+                        ? [guard.rounds]
+                        : [];
+
                     return (
                       <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
                         <td className="px-4 py-3">
@@ -394,20 +455,29 @@ export const GuardsView: React.FC = () => {
                           </div>
                         </td>
 
-                        {/* Assigned Route Cell */}
+                        {/* Multi-Route Cell */}
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <span className={`font-semibold ${guard.assigned_round_id ? 'text-blue-700' : 'text-slate-400 italic'}`}>
-                              {assignedRouteName}
-                            </span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {assignedList.length === 0 ? (
+                              <span className="text-slate-400 italic">No Route Assigned</span>
+                            ) : (
+                              assignedList.map((r) => (
+                                <span
+                                  key={r.id}
+                                  className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-semibold text-[11px]"
+                                >
+                                  {r.name}
+                                </span>
+                              ))
+                            )}
                             <button
                               onClick={() => {
                                 setAssigningGuard(guard);
-                                setSelectedRoundId(guard.assigned_round_id || '');
+                                setSelectedRoundIds(getGuardRoundIds(guard));
                               }}
-                              className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline"
+                              className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline ml-1"
                             >
-                              {guard.assigned_round_id ? 'Change' : 'Assign'}
+                              {assignedList.length > 0 ? 'Edit Routes' : '+ Assign'}
                             </button>
                           </div>
                         </td>
@@ -422,11 +492,9 @@ export const GuardsView: React.FC = () => {
 
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
-                            {/* Edit Details Action Button */}
                             <button
                               onClick={() => openEditModal(guard)}
                               className="px-2 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-[11px] font-semibold flex items-center gap-1"
-                              title="Edit user details"
                             >
                               <Edit2 className="w-3 h-3" /> Edit
                             </button>
@@ -502,34 +570,6 @@ export const GuardsView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Assigned Route / Round</label>
-                  <select
-                    value={editForm.assigned_round_id}
-                    onChange={(e) => setEditForm({ ...editForm, assigned_round_id: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
-                  >
-                    <option value="">-- None (Free Roam) --</option>
-                    {rounds.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Site / Deployment Area</label>
-                  <input
-                    type="text"
-                    value={editForm.site_location}
-                    onChange={(e) => setEditForm({ ...editForm, site_location: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
-                  />
-                </div>
-
-                <div>
                   <label className="font-bold text-slate-700 block mb-1">Shift Timing</label>
                   <select
                     value={editForm.shift_timing}
@@ -541,6 +581,36 @@ export const GuardsView: React.FC = () => {
                     <option>Night (22:00 - 06:00)</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Site / Deployment Area</label>
+                <input
+                  type="text"
+                  value={editForm.site_location}
+                  onChange={(e) => setEditForm({ ...editForm, site_location: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-bold text-slate-700">
+                    Assigned Patrol Routes ({editForm.assigned_round_ids.length} selected)
+                  </label>
+                  {editForm.assigned_round_ids.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setEditForm({ ...editForm, assigned_round_ids: [] })}
+                      className="text-[11px] text-rose-600 hover:underline font-semibold"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
+                {renderMultiRouteSelector(editForm.assigned_round_ids, (ids) =>
+                  setEditForm({ ...editForm, assigned_round_ids: ids })
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t">
@@ -563,14 +633,14 @@ export const GuardsView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 2: Quick Assign Route to Guard */}
+      {/* MODAL 2: Multi-Route Assignment Modal */}
       {assigningGuard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
               <div className="flex items-center gap-2">
                 <Route className="w-5 h-5 text-blue-600" />
-                <h3 className="text-base font-bold text-slate-900">Assign Patrol Route</h3>
+                <h3 className="text-base font-bold text-slate-900">Assign Patrol Routes</h3>
               </div>
               <button onClick={() => setAssigningGuard(null)} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
@@ -578,24 +648,26 @@ export const GuardsView: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-600">
-              Assign a mandatory route for <strong className="text-slate-900">{assigningGuard.full_name}</strong>.
-              When this guard logs into the mobile app, their checkpoints will load automatically.
+              Select one or multiple patrol routes for <strong className="text-slate-900">{assigningGuard.full_name}</strong>.
+              All selected routes will be available in their mobile app.
             </p>
 
             <div className="space-y-2">
-              <label className="text-xs font-bold text-slate-700">Select Patrol Route / Round</label>
-              <select
-                value={selectedRoundId}
-                onChange={(e) => setSelectedRoundId(e.target.value)}
-                className="w-full border border-slate-300 rounded-lg p-2 text-xs text-slate-800 outline-none focus:border-blue-500"
-              >
-                <option value="">-- No Route Assigned (Free Roam) --</option>
-                {rounds.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700">
+                  Available Routes ({selectedRoundIds.length} selected)
+                </label>
+                {selectedRoundIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRoundIds([])}
+                    className="text-[11px] text-rose-600 hover:underline font-semibold"
+                  >
+                    Unselect All
+                  </button>
+                )}
+              </div>
+              {renderMultiRouteSelector(selectedRoundIds, setSelectedRoundIds)}
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -611,7 +683,7 @@ export const GuardsView: React.FC = () => {
                 onClick={handleSaveRouteAssignment}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-xs font-bold text-white shadow"
               >
-                Save Assignment
+                Save Routes ({selectedRoundIds.length})
               </button>
             </div>
           </div>
@@ -683,34 +755,6 @@ export const GuardsView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Assigned Route / Round</label>
-                  <select
-                    value={newGuard.assigned_round_id}
-                    onChange={(e) => setNewGuard({ ...newGuard, assigned_round_id: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
-                  >
-                    <option value="">-- None --</option>
-                    {rounds.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Site / Deployment Area</label>
-                  <input
-                    type="text"
-                    value={newGuard.site_location}
-                    onChange={(e) => setNewGuard({ ...newGuard, site_location: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
-                  />
-                </div>
-
-                <div>
                   <label className="font-bold text-slate-700 block mb-1">Shift Timing</label>
                   <select
                     value={newGuard.shift_timing}
@@ -722,6 +766,25 @@ export const GuardsView: React.FC = () => {
                     <option>Night (22:00 - 06:00)</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Site / Deployment Area</label>
+                <input
+                  type="text"
+                  value={newGuard.site_location}
+                  onChange={(e) => setNewGuard({ ...newGuard, site_location: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Assign Patrol Routes ({newGuard.assigned_round_ids.length} selected)
+                </label>
+                {renderMultiRouteSelector(newGuard.assigned_round_ids, (ids) =>
+                  setNewGuard({ ...newGuard, assigned_round_ids: ids })
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t">
