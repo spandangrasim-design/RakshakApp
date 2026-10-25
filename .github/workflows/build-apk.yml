@@ -37,9 +37,6 @@ jobs:
 
       - name: Inject Android Permissions & Features
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          
-          # Use python to cleanly insert permissions right under <manifest ...>
           python3 -c '
           import re
 
@@ -62,14 +59,12 @@ jobs:
           with open("android/app/src/main/AndroidManifest.xml", "r") as f:
               content = f.read()
 
-          # Insert permissions right after <manifest ...>
           new_content = re.sub(r"(<manifest[^>]*>)", r"\1\n" + permissions, content, count=1)
 
           with open("android/app/src/main/AndroidManifest.xml", "w") as f:
               f.write(new_content)
           '
 
-          # Ensure minimum SDK is 21 for camera & location hardware
           if [ -f "android/app/build.gradle" ]; then
             sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
           fi
@@ -87,4 +82,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rakshak-patrol-release-apk
-          path: rakshak_mobile/build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
