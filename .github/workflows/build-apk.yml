@@ -82,4 +82,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rakshak-patrol-release-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          path: rakshak_mobile/build/app/outputs/flutter-apk/*.apk
