@@ -359,6 +359,156 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
   }
 });
 
+// ==========================================
+// LIVE PATROL TRACKING (START QR -> WALK -> END QR)
+// ==========================================
+
+// 1. Start or Resume a Patrol Session (Triggered when Guard scans Start QR)
+app.post('/api/v1/patrols/session/start', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const guard_id = payload.sub as string;
+
+    const { round_id, lat, lng } = await c.req.json();
+    const supabase = getSupabase(c.env);
+
+    // Close any stale active sessions for this guard on this route
+    await supabase
+      .from('patrol_sessions')
+      .update({ status: 'COMPLETED', end_time: new Date().toISOString() })
+      .eq('guard_id', guard_id)
+      .eq('round_id', round_id)
+      .eq('status', 'ACTIVE');
+
+    // Create fresh active session
+    const { data: session, error } = await supabase
+      .from('patrol_sessions')
+      .insert([{
+        round_id,
+        guard_id,
+        status: 'ACTIVE',
+        start_time: new Date().toISOString(),
+        last_lat: lat,
+        last_lng: lng,
+        last_ping_at: new Date().toISOString()
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Log first breadcrumb at Start QR
+    if (lat && lng) {
+      await supabase.from('patrol_breadcrumbs').insert([{
+        session_id: session.id,
+        round_id,
+        guard_id,
+        lat,
+        lng
+      }]);
+    }
+
+    return c.json({ success: true, session });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Failed to start session' }, 500);
+  }
+});
+
+// 2. Receive Live GPS Breadcrumb Ping (Called every 15s while walking between QRs)
+app.post('/api/v1/patrols/session/ping', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const guard_id = payload.sub as string;
+
+    const { session_id, round_id, lat, lng, is_final_stop } = await c.req.json();
+    const supabase = getSupabase(c.env);
+
+    // Insert breadcrumb point
+    await supabase.from('patrol_breadcrumbs').insert([{
+      session_id,
+      round_id,
+      guard_id,
+      lat,
+      lng
+    }]);
+
+    // Update session live position (and mark COMPLETED if final QR was scanned)
+    const updates: Record<string, any> = {
+      last_lat: lat,
+      last_lng: lng,
+      last_ping_at: new Date().toISOString()
+    };
+
+    if (is_final_stop) {
+      updates.status = 'COMPLETED';
+      updates.end_time = new Date().toISOString();
+    }
+
+    const { data: session } = await supabase
+      .from('patrol_sessions')
+      .update(updates)
+      .eq('id', session_id)
+      .select()
+      .maybeSingle();
+
+    return c.json({ success: true, session });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Ping failed' }, 500);
+  }
+});
+
+// 3. On-Demand Map Loader: Fetch Live Position + Walking Breadcrumb Trail for Admin Map
+app.get('/api/v1/rounds/:id/live-trail', async (c) => {
+  try {
+    const roundId = c.req.param('id');
+    const supabase = getSupabase(c.env);
+
+    // Get latest session for this route (active or most recently completed)
+    const { data: session } = await supabase
+      .from('patrol_sessions')
+      .select('*')
+      .eq('round_id', roundId)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!session) {
+      return c.json({ success: true, has_session: false, breadcrumbs: [] });
+    }
+
+    const { data: breadcrumbs } = await supabase
+      .from('patrol_breadcrumbs')
+      .select('lat, lng, recorded_at')
+      .eq('session_id', session.id)
+      .order('recorded_at', { ascending: true });
+
+    const { data: guard } = await supabase
+      .from('guards')
+      .select('full_name, employee_code')
+      .eq('guard_id', session.guard_id)
+      .maybeSingle();
+
+    return c.json({
+      success: true,
+      has_session: true,
+      session: {
+        ...session,
+        guard_name: guard?.full_name || 'Assigned Guard',
+        guard_code: guard?.employee_code || ''
+      },
+      breadcrumbs: breadcrumbs || []
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
+  }
+});
+
 app.post('/api/v1/patrols/sync', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');

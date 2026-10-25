@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Calendar,
   Clock,
@@ -10,7 +10,10 @@ import {
   MapPin,
   Shield,
   Layers,
-  Timer
+  Timer,
+  Navigation,
+  X,
+  Radio
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
@@ -61,7 +64,7 @@ interface PatrolRun {
   roundId: string;
   roundName: string;
   totalRouteStops: number;
-  dateKey: string; // YYYY-MM-DD
+  dateKey: string;
   displayDate: string;
   guardName: string;
   guardCode: string;
@@ -71,6 +74,24 @@ interface PatrolRun {
   status: 'COMPLETED' | 'IN_PROGRESS' | 'PENDING';
   verifiedStopsCount: number;
   scans: ScanRecord[];
+}
+
+interface LiveTrailData {
+  has_session: boolean;
+  session?: {
+    id: string;
+    round_id: string;
+    guard_id: string;
+    guard_name: string;
+    guard_code: string;
+    status: string;
+    start_time: string;
+    end_time?: string;
+    last_lat?: number;
+    last_lng?: number;
+    last_ping_at?: string;
+  };
+  breadcrumbs: { lat: number; lng: number; recorded_at: string }[];
 }
 
 function formatDuration(startIso: string, endIso: string, stopCount: number): string {
@@ -89,7 +110,6 @@ function formatDuration(startIso: string, endIso: string, stopCount: number): st
   return `${seconds}s`;
 }
 
-// Groups flat historical scans into discrete Patrol Runs per route & date
 function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRun[] {
   const totalStops = round.checkpoints?.length || 1;
   const defaultGuard = round.assigned_guards?.[0]?.full_name || 'Unassigned';
@@ -117,7 +137,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
     ];
   }
 
-  // Sort chronologically (oldest first) to segment runs accurately
   const sorted = [...rawScans].sort(
     (a, b) => new Date(a.scan_time).getTime() - new Date(b.scan_time).getTime()
   );
@@ -168,11 +187,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
       ? (new Date(scan.scan_time).getTime() - new Date(prevScan.scan_time).getTime()) / 3600000
       : 0;
 
-    // Start a new Patrol Run if:
-    // 1. Date changed, OR
-    // 2. This checkpoint was already scanned in the current run, OR
-    // 3. Current run already reached all stops in the route, OR
-    // 4. Time gap between scans is > 4 hours
     if (
       currentBucket.length > 0 &&
       (scanDate !== currentDateKey ||
@@ -191,9 +205,38 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   }
 
   flushBucket(currentBucket, runs.length + 1);
-
-  // Return newest runs first
   return runs.reverse();
+}
+
+// Ensure Leaflet CSS & JS are available on window.L without requiring npm type packages
+function loadLeafletAssets(): Promise<any> {
+  return new Promise((resolve) => {
+    if ((window as any).L) {
+      resolve((window as any).L);
+      return;
+    }
+
+    if (!document.getElementById('leaflet-css-cdn')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css-cdn';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+    }
+
+    const existingScript = document.getElementById('leaflet-js-cdn');
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve((window as any).L));
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = 'leaflet-js-cdn';
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.async = true;
+    script.onload = () => resolve((window as any).L);
+    document.body.appendChild(script);
+  });
 }
 
 export const ReportsPage: React.FC = () => {
@@ -205,6 +248,15 @@ export const ReportsPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('ALL');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  // On-Demand Live Map Modal State
+  const [mapModalRun, setMapModalRun] = useState<PatrolRun | null>(null);
+  const [liveTrail, setLiveTrail] = useState<LiveTrailData | null>(null);
+  const [loadingTrail, setLoadingTrail] = useState(false);
+  const [autoRefreshMap, setAutoRefreshMap] = useState(true);
+
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
 
   const fetchAllReportsData = async () => {
     try {
@@ -242,7 +294,180 @@ export const ReportsPage: React.FC = () => {
     fetchAllReportsData();
   }, []);
 
-  // Build all runs across all routes
+  // Fetch Live Trail on demand when map modal is opened
+  const fetchLiveTrailForRound = async (roundId: string) => {
+    try {
+      setLoadingTrail(true);
+      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail`);
+      const data = await res.json();
+      if (data.success) {
+        setLiveTrail(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch live trail:', e);
+    } finally {
+      setLoadingTrail(false);
+    }
+  };
+
+  // Trigger initial fetch + optional 10s auto-refresh only while modal is open
+  useEffect(() => {
+    if (!mapModalRun) {
+      setLiveTrail(null);
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      return;
+    }
+
+    fetchLiveTrailForRound(mapModalRun.roundId);
+
+    if (!autoRefreshMap) return;
+    const interval = setInterval(() => {
+      fetchLiveTrailForRound(mapModalRun.roundId);
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [mapModalRun, autoRefreshMap]);
+
+  // Render Leaflet Map inside Modal
+  useEffect(() => {
+    if (!mapModalRun || !mapContainerRef.current) return;
+
+    let isMounted = true;
+    const targetRound = rounds.find((r) => r.id === mapModalRun.roundId);
+
+    loadLeafletAssets().then((L) => {
+      if (!isMounted || !L || !mapContainerRef.current) return;
+
+      if (!mapInstanceRef.current) {
+        mapInstanceRef.current = L.map(mapContainerRef.current).setView([20.5937, 78.9629], 15);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap',
+          maxZoom: 19,
+        }).addTo(mapInstanceRef.current);
+      }
+
+      const map = mapInstanceRef.current;
+
+      // Clear previous vector layers/markers
+      map.eachLayer((layer: any) => {
+        if (!layer._url) {
+          map.removeLayer(layer);
+        }
+      });
+
+      const boundsPoints: [number, number][] = [];
+
+      // 1. Plot Master Checkpoints (1, 2, 3...)
+      const checkpoints = targetRound?.checkpoints || [];
+      checkpoints.forEach((cp, index) => {
+        const lat = parseFloat(cp.lat);
+        const lng = parseFloat(cp.lng);
+        if (isNaN(lat) || isNaN(lng)) return;
+
+        boundsPoints.push([lat, lng]);
+        const isFirst = index === 0;
+        const isLast = index === checkpoints.length - 1 && checkpoints.length > 1;
+        const bg = isFirst ? '#2563eb' : isLast ? '#7c3aed' : '#0f172a';
+
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="background:${bg};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:12px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${index + 1}</div>`,
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        });
+
+        L.marker([lat, lng], { icon })
+          .addTo(map)
+          .bindPopup(
+            `<strong>Stop #${index + 1}: ${cp.name}</strong><br/><span style="font-size:11px;color:#64748b;">${
+              isFirst ? 'Start Point QR' : isLast ? 'Final Finish QR' : 'Checkpoint'
+            }</span>`
+          );
+      });
+
+      // 2. Plot Verified Scan Pins for this Run
+      mapModalRun.scans.forEach((s, idx) => {
+        const lat = Number(s.guard_lat);
+        const lng = Number(s.guard_lng);
+        if (isNaN(lat) || isNaN(lng)) return;
+
+        boundsPoints.push([lat, lng]);
+        L.circleMarker([lat, lng], {
+          radius: 7,
+          fillColor: '#10b981',
+          color: '#ffffff',
+          weight: 2,
+          fillOpacity: 0.9,
+        })
+          .addTo(map)
+          .bindPopup(
+            `<strong>Verified Scan #${idx + 1}</strong><br/>${s.checkpoint_name}<br/>${new Date(
+              s.scan_time
+            ).toLocaleTimeString()}`
+          );
+      });
+
+      // 3. Draw Blue Walking Trail Polyline from Live Breadcrumbs
+      const crumbs = liveTrail?.breadcrumbs || [];
+      const trailCoords: [number, number][] = crumbs
+        .map((b) => [Number(b.lat), Number(b.lng)] as [number, number])
+        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng));
+
+      if (trailCoords.length > 1) {
+        L.polyline(trailCoords, {
+          color: '#2563eb',
+          weight: 4,
+          opacity: 0.85,
+          dashArray: '8, 6',
+        }).addTo(map);
+      }
+
+      trailCoords.forEach((pt) => boundsPoints.push(pt));
+
+      // 4. Plot Pulsing Live Guard Marker at Last Known Position
+      const lastLat = liveTrail?.session?.last_lat;
+      const lastLng = liveTrail?.session?.last_lng;
+      if (lastLat && lastLng && !isNaN(Number(lastLat)) && !isNaN(Number(lastLng))) {
+        const gLat = Number(lastLat);
+        const gLng = Number(lastLng);
+        boundsPoints.push([gLat, gLng]);
+
+        const liveIcon = L.divIcon({
+          className: '',
+          html: `<div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(16,185,129,0.35);animation:ping 1.5s infinite;"></div>
+            <div style="position:relative;background:#059669;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">G</div>
+          </div>`,
+          iconSize: [34, 34],
+          iconAnchor: [17, 17],
+        });
+
+        L.marker([gLat, gLng], { icon: liveIcon })
+          .addTo(map)
+          .bindPopup(
+            `<strong>Guard: ${liveTrail?.session?.guard_name || mapModalRun.guardName}</strong><br/>Status: ${
+              liveTrail?.session?.status || 'ACTIVE'
+            }<br/>Last Ping: ${
+              liveTrail?.session?.last_ping_at
+                ? new Date(liveTrail.session.last_ping_at).toLocaleTimeString()
+                : 'Just now'
+            }`
+          );
+      }
+
+      if (boundsPoints.length > 0) {
+        map.fitBounds(boundsPoints, { padding: [45, 45], maxZoom: 17 });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [mapModalRun, liveTrail, rounds]);
+
   const allPatrolRuns = useMemo(() => {
     const list: PatrolRun[] = [];
     for (const r of rounds) {
@@ -258,7 +483,6 @@ export const ReportsPage: React.FC = () => {
     });
   }, [rounds, scansByRound]);
 
-  // Available dates for filter dropdown
   const availableDates = useMemo(() => {
     const set = new Set<string>();
     allPatrolRuns.forEach((run) => {
@@ -267,7 +491,6 @@ export const ReportsPage: React.FC = () => {
     return Array.from(set).sort().reverse();
   }, [allPatrolRuns]);
 
-  // Filtered runs
   const filteredRuns = useMemo(() => {
     return allPatrolRuns.filter((run) => {
       if (selectedRouteFilter !== 'ALL' && run.roundId !== selectedRouteFilter) return false;
@@ -276,7 +499,6 @@ export const ReportsPage: React.FC = () => {
     });
   }, [allPatrolRuns, selectedRouteFilter, selectedDate]);
 
-  // Auto-select first run with scans
   useEffect(() => {
     if (filteredRuns.length > 0 && (!selectedRunId || !filteredRuns.some((r) => r.runId === selectedRunId))) {
       const firstActive = filteredRuns.find((r) => r.scans.length > 0) || filteredRuns[0];
@@ -287,11 +509,6 @@ export const ReportsPage: React.FC = () => {
   const inspectedRun = useMemo(
     () => filteredRuns.find((r) => r.runId === selectedRunId) || filteredRuns[0] || null,
     [filteredRuns, selectedRunId]
-  );
-
-  const inspectedRound = useMemo(
-    () => (inspectedRun ? rounds.find((r) => r.id === inspectedRun.roundId) || null : null),
-    [rounds, inspectedRun]
   );
 
   const completedCount = filteredRuns.filter((r) => r.status === 'COMPLETED').length;
@@ -305,15 +522,14 @@ export const ReportsPage: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Patrol Audit & Date-Wise Round Reports
+              Patrol Audit & Live Route Tracking
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Each patrol session is grouped by route and date with start time, end time, total duration, and dual-photo proof.
+              Date-wise patrol sessions with start/end times, duration, dual-photo proof, and on-demand live GPS trail map.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Route Filter */}
             <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
               <Layers className="w-3.5 h-3.5 text-slate-400" />
               <select
@@ -330,7 +546,6 @@ export const ReportsPage: React.FC = () => {
               </select>
             </div>
 
-            {/* Date Filter */}
             <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
               <select
@@ -395,7 +610,7 @@ export const ReportsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Patrol Runs Table (Date-wise & Session-wise) */}
+        {/* Patrol Runs Table */}
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
           <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
@@ -415,7 +630,7 @@ export const ReportsPage: React.FC = () => {
                   <th className="px-4 py-3">Total Time Taken</th>
                   <th className="px-4 py-3">Stops Progress</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Action</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -522,20 +737,32 @@ export const ReportsPage: React.FC = () => {
                           )}
                         </td>
 
-                        <td className="px-4 py-3.5 text-right">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedRunId(run.runId);
-                            }}
-                            className={`inline-flex items-center gap-1 px-3 py-1 rounded-lg border text-xs font-bold transition ${
-                              isSelected
-                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                : 'border-blue-200 text-blue-600 hover:bg-blue-50'
-                            }`}
-                          >
-                            Inspect <ChevronRight className="w-3.5 h-3.5" />
-                          </button>
+                        <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMapModalRun(run);
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-bold transition"
+                              title="Load Live Map & Guard Walking Trail"
+                            >
+                              <Navigation className="w-3 h-3" /> Live Map
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedRunId(run.runId);
+                              }}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold transition ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                                  : 'border-blue-200 text-blue-600 hover:bg-blue-50'
+                              }`}
+                            >
+                              Inspect <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -568,8 +795,13 @@ export const ReportsPage: React.FC = () => {
                 </p>
               </div>
 
-              <div className="text-[11px] font-mono text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
-                Round ID: {inspectedRun.roundId}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setMapModalRun(inspectedRun)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition"
+                >
+                  <Navigation className="w-3.5 h-3.5" /> View Live Map & Walking Trail
+                </button>
               </div>
             </div>
 
@@ -621,7 +853,6 @@ export const ReportsPage: React.FC = () => {
                         </span>
                       </div>
 
-                      {/* Dual Verification Photos */}
                       <div className="grid grid-cols-2 gap-3 pt-2">
                         <div>
                           <div className="text-[11px] font-bold text-slate-700 mb-1.5">
@@ -681,6 +912,102 @@ export const ReportsPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* ON-DEMAND LIVE MAP & WALKING TRAIL MODAL */}
+      {mapModalRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-5xl w-full overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                  <h3 className="text-base font-bold">
+                    Live Route Map & Guard Walking Trail: {mapModalRun.roundName}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Guard: <strong>{liveTrail?.session?.guard_name || mapModalRun.guardName}</strong> •{' '}
+                  Breadcrumbs Logged: <strong>{liveTrail?.breadcrumbs?.length || 0} GPS points</strong>
+                  {liveTrail?.session?.last_ping_at && (
+                    <>
+                      {' '}
+                      • Last Ping:{' '}
+                      <strong>{new Date(liveTrail.session.last_ping_at).toLocaleTimeString()}</strong>
+                    </>
+                  )}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setAutoRefreshMap(!autoRefreshMap)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition ${
+                    autoRefreshMap
+                      ? 'bg-emerald-600 border-emerald-500 text-white'
+                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                  }`}
+                >
+                  {autoRefreshMap ? 'Auto-Refresh: ON (10s)' : 'Auto-Refresh: OFF'}
+                </button>
+
+                <button
+                  onClick={() => fetchLiveTrailForRound(mapModalRun.roundId)}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingTrail ? 'animate-spin' : ''}`} />
+                  Refresh Now
+                </button>
+
+                <button
+                  onClick={() => setMapModalRun(null)}
+                  className="p-1.5 text-slate-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Map Legend Bar */}
+            <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-4">
+                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+                  <span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span>
+                  Start Point QR (#1)
+                </span>
+                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+                  <span className="w-3 h-3 rounded-full bg-slate-900 inline-block"></span>
+                  Intermediate Checkpoints
+                </span>
+                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+                  <span className="w-3 h-3 rounded-full bg-purple-600 inline-block"></span>
+                  Final Finish QR
+                </span>
+                <span className="flex items-center gap-1.5 font-semibold text-blue-700">
+                  <span className="w-4 h-0.5 bg-blue-600 inline-block"></span>
+                  Guard Walking Path (15s GPS Pings)
+                </span>
+                <span className="flex items-center gap-1.5 font-semibold text-emerald-700">
+                  <span className="w-3 h-3 rounded-full bg-emerald-600 inline-block"></span>
+                  Live Guard Position
+                </span>
+              </div>
+
+              <div className="font-mono text-[11px] text-slate-500">
+                Session Status:{' '}
+                <strong className="text-slate-800">
+                  {liveTrail?.session?.status || mapModalRun.status}
+                </strong>
+              </div>
+            </div>
+
+            {/* Leaflet Map Container */}
+            <div className="relative flex-1 min-h-[460px] bg-slate-100">
+              <div ref={mapContainerRef} className="w-full h-[460px] z-10" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

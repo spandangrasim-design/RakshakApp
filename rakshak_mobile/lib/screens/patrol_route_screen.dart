@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -22,10 +24,24 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
   String _statusMessage = 'No Route Assigned';
   final Set<String> _verifiedCheckpointIds = {};
 
+  // Live Breadcrumb Tracking State
+  Timer? _breadcrumbTimer;
+  String? _activeSessionId;
+  String? _activeTrackingRoundId;
+  bool _isLiveTracking = false;
+  int _pingCount = 0;
+  String _lastPingTime = '';
+
   @override
   void initState() {
     super.initState();
     _loadSessionAndRoutes();
+  }
+
+  @override
+  void dispose() {
+    _breadcrumbTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadSessionAndRoutes() async {
@@ -79,7 +95,105 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     }
   }
 
-  Future<void> _handleScanCheckpoint(dynamic checkpoint, List<dynamic> currentCheckpoints, String routeName) async {
+  // Starts live 15-second GPS breadcrumb tracking when Stop #1 is verified
+  Future<void> _startLivePatrolSession(String roundId) async {
+    try {
+      Position? pos;
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+      } catch (_) {}
+
+      final res = await http.post(
+        Uri.parse(ApiConfig.sessionStartUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+        body: jsonEncode({
+          'round_id': roundId,
+          'lat': pos?.latitude,
+          'lng': pos?.longitude,
+        }),
+      );
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['success'] == true && data['session'] != null) {
+          _breadcrumbTimer?.cancel();
+          setState(() {
+            _activeSessionId = data['session']['id']?.toString();
+            _activeTrackingRoundId = roundId;
+            _isLiveTracking = true;
+            _pingCount = 1;
+            _lastPingTime = TimeOfDay.now().format(context);
+          });
+
+          // Ping GPS every 15 seconds while guard walks to the next checkpoint
+          _breadcrumbTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+            _sendBreadcrumbPing(roundId: roundId, isFinalStop: false);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to start live session: $e');
+    }
+  }
+
+  // Sends live GPS coordinate to Cloudflare Worker
+  Future<void> _sendBreadcrumbPing({
+    required String roundId,
+    required bool isFinalStop,
+  }) async {
+    if (_activeSessionId == null) return;
+
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      await http.post(
+        Uri.parse(ApiConfig.sessionPingUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $_token',
+        },
+        body: jsonEncode({
+          'session_id': _activeSessionId,
+          'round_id': roundId,
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'is_final_stop': isFinalStop,
+        }),
+      );
+
+      if (!mounted) return;
+      if (isFinalStop) {
+        _breadcrumbTimer?.cancel();
+        setState(() {
+          _isLiveTracking = false;
+          _activeSessionId = null;
+          _activeTrackingRoundId = null;
+        });
+      } else {
+        setState(() {
+          _pingCount += 1;
+          _lastPingTime = TimeOfDay.now().format(context);
+        });
+      }
+    } catch (e) {
+      debugPrint('Breadcrumb ping error: $e');
+    }
+  }
+
+  Future<void> _handleScanCheckpoint({
+    required dynamic checkpoint,
+    required int stopIndex,
+    required List<dynamic> currentCheckpoints,
+    required String roundId,
+    required String routeName,
+  }) async {
     final String checkpointId = checkpoint['checkpoint_id']?.toString() ?? '';
     final String qrPayload = checkpoint['qr_payload']?.toString() ?? '';
     final parts = qrPayload.split('|');
@@ -110,11 +224,33 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         _verifiedCheckpointIds.add(checkpointId);
       });
 
+      final bool isFirstStop = stopIndex == 0;
+      final bool isFinalStop = stopIndex == currentCheckpoints.length - 1;
+
+      if (currentCheckpoints.length == 1) {
+        // Single-stop route: start and immediately finish session
+        await _startLivePatrolSession(roundId);
+        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: true);
+      } else if (isFirstStop) {
+        // Stop #1 (Start QR): Begin 15-second live GPS breadcrumb tracking
+        await _startLivePatrolSession(roundId);
+      } else if (isFinalStop) {
+        // Final QR: Send final coordinate and stop live tracking timer
+        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: true);
+      } else {
+        // Intermediate QR: Log immediate ping along the route
+        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: false);
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.green.shade700,
-          content: Text('Stop verified: ${checkpoint['name']}'),
+          content: Text(
+            isFirstStop && currentCheckpoints.length > 1
+                ? 'Start QR Verified! Live GPS tracking started.'
+                : 'Stop verified: ${checkpoint['name']}',
+          ),
         ),
       );
 
@@ -142,14 +278,15 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           ],
         ),
         content: Text(
-          'All $stopCount stops for "$routeName" have been verified with GPS and dual-camera proof.',
+          'All $stopCount stops for "$routeName" are verified. Live GPS tracking has been completed and saved.',
         ),
         actions: [
-          TextButton(
-            onPressed: () {
-              // Reset current route session if guard wants to start a fresh run later
-              Navigator.pop(ctx);
-            },
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E3A8A),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Done'),
           ),
         ],
@@ -160,6 +297,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
   @override
   Widget build(BuildContext context) {
     final currentRoute = _assignedRoutes.isNotEmpty ? _assignedRoutes[_selectedRouteIndex] : null;
+    final String currentRoundId = currentRoute != null ? (currentRoute['id']?.toString() ?? '') : '';
     final String currentRouteName = currentRoute != null ? (currentRoute['name'] ?? 'Patrol Route') : _statusMessage;
     final List<dynamic> checkpoints = currentRoute != null ? (currentRoute['checkpoints'] ?? []) : [];
 
@@ -188,7 +326,31 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF1E3A8A)))
           : Column(
               children: [
-                // Multi-Route Selector Tabs (shown when guard has multiple assigned routes)
+                // LIVE GPS TRACKING ACTIVE BANNER
+                if (_isLiveTracking)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    color: Colors.green.shade800,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.my_location, color: Colors.greenAccent, size: 18),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'LIVE TRACKING ACTIVE — Sending GPS path ($_pingCount pings • $_lastPingTime)',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                // Multi-Route Selector Tabs
                 if (_assignedRoutes.length > 1)
                   Container(
                     width: double.infinity,
@@ -221,7 +383,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                     ),
                   ),
 
-                // Route Progress Banner
+                // Route Progress Header
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(20),
@@ -248,7 +410,10 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                           if (verifiedCount > 0)
                             TextButton.icon(
                               onPressed: () {
+                                _breadcrumbTimer?.cancel();
                                 setState(() {
+                                  _isLiveTracking = false;
+                                  _activeSessionId = null;
                                   for (final cp in checkpoints) {
                                     _verifiedCheckpointIds.remove(cp['checkpoint_id']?.toString());
                                   }
@@ -256,7 +421,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                               },
                               icon: const Icon(Icons.replay, size: 14, color: Colors.white70),
                               label: const Text(
-                                'Start New Run',
+                                'Reset Run',
                                 style: TextStyle(color: Colors.white70, fontSize: 11),
                               ),
                             ),
@@ -266,7 +431,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                       Text(
                         totalStops == 0
                             ? 'No checkpoints assigned'
-                            : 'Current Run Progress: $verifiedCount of $totalStops Stops Verified',
+                            : 'Progress: $verifiedCount of $totalStops Stops Verified',
                         style: const TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                       const SizedBox(height: 12),
@@ -283,7 +448,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                   ),
                 ),
 
-                // Checklist of Route Stops
+                // Ordered Sequence Checklist (Start QR -> Intermediate -> Final QR)
                 Expanded(
                   child: checkpoints.isEmpty
                       ? Center(
@@ -305,53 +470,112 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                             final cpId = cp['checkpoint_id']?.toString() ?? '';
                             final bool isDone = _verifiedCheckpointIds.contains(cpId);
 
+                            // Sequential Lock: Stop #1 is unlocked first; next stops unlock in order
+                            final bool isUnlocked = index == 0 ||
+                                _verifiedCheckpointIds.contains(
+                                  checkpoints[index - 1]['checkpoint_id']?.toString() ?? '',
+                                );
+
+                            String roleBadge = 'STOP #${index + 1}';
+                            if (index == 0) {
+                              roleBadge = 'START POINT QR';
+                            } else if (index == checkpoints.length - 1 && checkpoints.length > 1) {
+                              roleBadge = 'FINAL FINISH QR';
+                            }
+
                             return Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: Colors.white,
+                                color: isUnlocked || isDone ? Colors.white : Colors.grey.shade100,
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
-                                  color: isDone ? Colors.green.shade300 : Colors.grey.shade200,
-                                  width: isDone ? 1.5 : 1,
+                                  color: isDone
+                                      ? Colors.green.shade400
+                                      : isUnlocked
+                                          ? Colors.blue.shade200
+                                          : Colors.grey.shade300,
+                                  width: isDone || isUnlocked ? 1.5 : 1,
                                 ),
                               ),
                               child: Row(
                                 children: [
                                   CircleAvatar(
-                                    radius: 16,
+                                    radius: 18,
                                     backgroundColor: isDone
                                         ? Colors.green.shade50
-                                        : const Color(0xFF1E3A8A).withOpacity(0.08),
+                                        : isUnlocked
+                                            ? const Color(0xFF1E3A8A).withOpacity(0.1)
+                                            : Colors.grey.shade200,
                                     child: isDone
-                                        ? const Icon(Icons.check, color: Colors.green, size: 18)
-                                        : Text(
-                                            '${index + 1}',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFF1E3A8A),
-                                              fontSize: 12,
-                                            ),
-                                          ),
+                                        ? const Icon(Icons.check, color: Colors.green, size: 20)
+                                        : isUnlocked
+                                            ? Text(
+                                                '${index + 1}',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFF1E3A8A),
+                                                  fontSize: 13,
+                                                ),
+                                              )
+                                            : const Icon(Icons.lock_outline, color: Colors.grey, size: 16),
                                   ),
                                   const SizedBox(width: 14),
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: index == 0
+                                                ? Colors.blue.shade50
+                                                : index == checkpoints.length - 1
+                                                    ? Colors.purple.shade50
+                                                    : Colors.grey.shade100,
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            roleBadge,
+                                            style: TextStyle(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                              color: index == 0
+                                                  ? Colors.blue.shade800
+                                                  : index == checkpoints.length - 1
+                                                      ? Colors.purple.shade800
+                                                      : Colors.grey.shade700,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
                                         Text(
                                           cp['name'] ?? 'Stop #${index + 1}',
                                           style: TextStyle(
                                             fontWeight: FontWeight.bold,
                                             fontSize: 14,
-                                            color: isDone ? Colors.green.shade800 : const Color(0xFF0F172A),
+                                            color: isDone
+                                                ? Colors.green.shade800
+                                                : isUnlocked
+                                                    ? const Color(0xFF0F172A)
+                                                    : Colors.grey.shade500,
                                           ),
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
-                                          isDone ? 'Verified (GPS & Dual Proof)' : 'Pending Scan',
+                                          isDone
+                                              ? 'Verified (GPS & Dual Proof)'
+                                              : isUnlocked
+                                                  ? (index == 0
+                                                      ? 'Scan to start route & live GPS tracking'
+                                                      : 'Walk to checkpoint & scan QR')
+                                                  : 'Locked — Verify Stop #$index first',
                                           style: TextStyle(
                                             fontSize: 11,
-                                            color: isDone ? Colors.green.shade600 : Colors.grey.shade500,
+                                            color: isDone
+                                                ? Colors.green.shade600
+                                                : isUnlocked
+                                                    ? Colors.blueGrey.shade600
+                                                    : Colors.grey.shade400,
                                           ),
                                         ),
                                       ],
@@ -360,16 +584,32 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                   if (!isDone)
                                     ElevatedButton.icon(
                                       style: ElevatedButton.styleFrom(
-                                        backgroundColor: const Color(0xFF1E3A8A),
+                                        backgroundColor: isUnlocked
+                                            ? const Color(0xFF1E3A8A)
+                                            : Colors.grey.shade300,
                                         foregroundColor: Colors.white,
                                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(8),
                                         ),
                                       ),
-                                      onPressed: () => _handleScanCheckpoint(cp, checkpoints, currentRouteName),
-                                      icon: const Icon(Icons.camera_alt, size: 14),
-                                      label: const Text('Verify', style: TextStyle(fontSize: 12)),
+                                      onPressed: isUnlocked
+                                          ? () => _handleScanCheckpoint(
+                                                checkpoint: cp,
+                                                stopIndex: index,
+                                                currentCheckpoints: checkpoints,
+                                                roundId: currentRoundId,
+                                                routeName: currentRouteName,
+                                              )
+                                          : null,
+                                      icon: Icon(
+                                        isUnlocked ? Icons.qr_code_scanner : Icons.lock,
+                                        size: 14,
+                                      ),
+                                      label: Text(
+                                        index == 0 ? 'Start' : 'Verify',
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
                                     ),
                                 ],
                               ),

@@ -15,6 +15,8 @@ class ApiConfig {
   static const String shiftsBase = '$apiBase/shifts';
   static const String patrolSyncUrl = '$apiBase/patrols/sync';
 
-  /// Assigned Route Endpoint
+  /// Assigned Route & Live Breadcrumb Tracking Endpoints
   static const String myAssignedRouteUrl = '$apiBase/guards/my-assigned-route';
+  static const String sessionStartUrl = '$apiBase/patrols/session/start';
+  static const String sessionPingUrl = '$apiBase/patrols/session/ping';
 }
