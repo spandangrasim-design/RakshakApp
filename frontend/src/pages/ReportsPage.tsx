@@ -110,6 +110,18 @@ function formatDuration(startIso: string, endIso: string, stopCount: number): st
   return `${seconds}s`;
 }
 
+// Distance in meters between two lat/lng coordinates
+function getDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRun[] {
   const totalStops = round.checkpoints?.length || 1;
   const defaultGuard = round.assigned_guards?.[0]?.full_name || 'Unassigned';
@@ -208,7 +220,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   return runs.reverse();
 }
 
-// Ensure Leaflet CSS & JS are available on window.L without requiring npm type packages
 function loadLeafletAssets(): Promise<any> {
   return new Promise((resolve) => {
     if ((window as any).L) {
@@ -244,12 +255,10 @@ export const ReportsPage: React.FC = () => {
   const [scansByRound, setScansByRound] = useState<Record<string, ScanRecord[]>>({});
   const [loading, setLoading] = useState(true);
 
-  // Filters
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('ALL');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
-  // On-Demand Live Map Modal State
   const [mapModalRun, setMapModalRun] = useState<PatrolRun | null>(null);
   const [liveTrail, setLiveTrail] = useState<LiveTrailData | null>(null);
   const [loadingTrail, setLoadingTrail] = useState(false);
@@ -294,7 +303,6 @@ export const ReportsPage: React.FC = () => {
     fetchAllReportsData();
   }, []);
 
-  // Fetch Live Trail on demand when map modal is opened
   const fetchLiveTrailForRound = async (roundId: string) => {
     try {
       setLoadingTrail(true);
@@ -310,7 +318,6 @@ export const ReportsPage: React.FC = () => {
     }
   };
 
-  // Trigger initial fetch + optional 10s auto-refresh only while modal is open
   useEffect(() => {
     if (!mapModalRun) {
       setLiveTrail(null);
@@ -331,7 +338,7 @@ export const ReportsPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [mapModalRun, autoRefreshMap]);
 
-  // Render Leaflet Map inside Modal
+  // Render Leaflet Map with Captured Status Badges & Spike-Filtered Walking Trail
   useEffect(() => {
     if (!mapModalRun || !mapContainerRef.current) return;
 
@@ -342,7 +349,7 @@ export const ReportsPage: React.FC = () => {
       if (!isMounted || !L || !mapContainerRef.current) return;
 
       if (!mapInstanceRef.current) {
-        mapInstanceRef.current = L.map(mapContainerRef.current).setView([20.5937, 78.9629], 15);
+        mapInstanceRef.current = L.map(mapContainerRef.current).setView([20.5937, 78.9629], 16);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap',
           maxZoom: 19,
@@ -351,7 +358,6 @@ export const ReportsPage: React.FC = () => {
 
       const map = mapInstanceRef.current;
 
-      // Clear previous vector layers/markers
       map.eachLayer((layer: any) => {
         if (!layer._url) {
           map.removeLayer(layer);
@@ -359,8 +365,15 @@ export const ReportsPage: React.FC = () => {
       });
 
       const boundsPoints: [number, number][] = [];
+      const plannedCoords: [number, number][] = [];
 
-      // 1. Plot Master Checkpoints (1, 2, 3...)
+      // Map of captured scans by checkpoint_id in the selected run
+      const capturedByCpId = new Map<string, ScanRecord>();
+      mapModalRun.scans.forEach((s) => {
+        capturedByCpId.set(s.checkpoint_id, s);
+      });
+
+      // 1. Plot Checkpoints with Clear Captured (Green ✓) vs Pending (Slate) Badges
       const checkpoints = targetRound?.checkpoints || [];
       checkpoints.forEach((cp, index) => {
         const lat = parseFloat(cp.lat);
@@ -368,98 +381,137 @@ export const ReportsPage: React.FC = () => {
         if (isNaN(lat) || isNaN(lng)) return;
 
         boundsPoints.push([lat, lng]);
-        const isFirst = index === 0;
-        const isLast = index === checkpoints.length - 1 && checkpoints.length > 1;
-        const bg = isFirst ? '#2563eb' : isLast ? '#7c3aed' : '#0f172a';
+        plannedCoords.push([lat, lng]);
+
+        const capturedScan = capturedByCpId.get(cp.id);
+        const isCaptured = !!capturedScan;
+
+        const bg = isCaptured ? '#10b981' : '#334155';
+        const ring = isCaptured ? '0 0 0 4px rgba(16,185,129,0.28)' : '0 2px 6px rgba(0,0,0,0.3)';
+        const label = isCaptured ? `✓${index + 1}` : `${index + 1}`;
 
         const icon = L.divIcon({
           className: '',
-          html: `<div style="background:${bg};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:12px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${index + 1}</div>`,
-          iconSize: [28, 28],
-          iconAnchor: [14, 14],
+          html: `<div style="background:${bg};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;border:2.5px solid #fff;box-shadow:${ring};">${label}</div>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
         });
 
-        L.marker([lat, lng], { icon })
-          .addTo(map)
-          .bindPopup(
-            `<strong>Stop #${index + 1}: ${cp.name}</strong><br/><span style="font-size:11px;color:#64748b;">${
-              isFirst ? 'Start Point QR' : isLast ? 'Final Finish QR' : 'Checkpoint'
-            }</span>`
-          );
+        const popupHtml = isCaptured
+          ? `<div style="font-size:12px;line-height:1.4;">
+              <strong style="color:#059669;">✅ Stop #${index + 1}: ${cp.name} (CAPTURED)</strong><br/>
+              <span>Scanned at: <b>${new Date(capturedScan.scan_time).toLocaleTimeString()}</b></span><br/>
+              <span style="font-size:11px;color:#64748b;">Guard GPS: ${Number(capturedScan.guard_lat).toFixed(5)}, ${Number(capturedScan.guard_lng).toFixed(5)}</span>
+            </div>`
+          : `<div style="font-size:12px;line-height:1.4;">
+              <strong style="color:#334155;">⏳ Stop #${index + 1}: ${cp.name} (PENDING)</strong><br/>
+              <span style="font-size:11px;color:#64748b;">Not scanned yet in this session</span>
+            </div>`;
+
+        L.marker([lat, lng], { icon }).addTo(map).bindPopup(popupHtml);
       });
 
-      // 2. Plot Verified Scan Pins for this Run
-      mapModalRun.scans.forEach((s, idx) => {
-        const lat = Number(s.guard_lat);
-        const lng = Number(s.guard_lng);
-        if (isNaN(lat) || isNaN(lng)) return;
-
-        boundsPoints.push([lat, lng]);
-        L.circleMarker([lat, lng], {
-          radius: 7,
-          fillColor: '#10b981',
-          color: '#ffffff',
-          weight: 2,
-          fillOpacity: 0.9,
-        })
-          .addTo(map)
-          .bindPopup(
-            `<strong>Verified Scan #${idx + 1}</strong><br/>${s.checkpoint_name}<br/>${new Date(
-              s.scan_time
-            ).toLocaleTimeString()}`
-          );
-      });
-
-      // 3. Draw Blue Walking Trail Polyline from Live Breadcrumbs
-      const crumbs = liveTrail?.breadcrumbs || [];
-      const trailCoords: [number, number][] = crumbs
-        .map((b) => [Number(b.lat), Number(b.lng)] as [number, number])
-        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng));
-
-      if (trailCoords.length > 1) {
-        L.polyline(trailCoords, {
-          color: '#2563eb',
-          weight: 4,
-          opacity: 0.85,
-          dashArray: '8, 6',
+      // 2. Draw Subtle Grey Planned Route Line Connecting Checkpoints (1 -> 2 -> 3...)
+      if (plannedCoords.length > 1) {
+        L.polyline(plannedCoords, {
+          color: '#94a3b8',
+          weight: 2.5,
+          opacity: 0.7,
+          dashArray: '4, 6',
         }).addTo(map);
       }
 
-      trailCoords.forEach((pt) => boundsPoints.push(pt));
+      // 3. Build Clean, Anchored Guard Walking Trail (Starts at Captured QR #1, Removes Drift Spikes)
+      const cleanTrail: [number, number][] = [];
 
-      // 4. Plot Pulsing Live Guard Marker at Last Known Position
-      const lastLat = liveTrail?.session?.last_lat;
-      const lastLng = liveTrail?.session?.last_lng;
-      if (lastLat && lastLng && !isNaN(Number(lastLat)) && !isNaN(Number(lastLng))) {
-        const gLat = Number(lastLat);
-        const gLng = Number(lastLng);
+      // Anchor start at Checkpoint #1 if captured
+      if (checkpoints.length > 0 && capturedByCpId.has(checkpoints[0].id)) {
+        const cp0Lat = parseFloat(checkpoints[0].lat);
+        const cp0Lng = parseFloat(checkpoints[0].lng);
+        if (!isNaN(cp0Lat) && !isNaN(cp0Lng)) {
+          cleanTrail.push([cp0Lat, cp0Lng]);
+        }
+      }
+
+      // Filter breadcrumbs to remove stationary jitter (<6m) and single-point GPS bounce spikes
+      const rawCrumbs = (liveTrail?.breadcrumbs || [])
+        .map((b) => [Number(b.lat), Number(b.lng)] as [number, number])
+        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng));
+
+      for (let i = 0; i < rawCrumbs.length; i++) {
+        const pt = rawCrumbs[i];
+        const prev = cleanTrail.length > 0 ? cleanTrail[cleanTrail.length - 1] : null;
+        const next = i + 1 < rawCrumbs.length ? rawCrumbs[i + 1] : null;
+
+        if (prev) {
+          const distFromPrev = getDistanceMeters(prev[0], prev[1], pt[0], pt[1]);
+          // Skip tiny stationary jitter
+          if (distFromPrev < 6) continue;
+
+          // Detect V-spike: if point jumps >40m away from prev, but next point is right back near prev (<20m)
+          if (next) {
+            const distToNext = getDistanceMeters(pt[0], pt[1], next[0], next[1]);
+            const prevToNext = getDistanceMeters(prev[0], prev[1], next[0], next[1]);
+            if (distFromPrev > 35 && distToNext > 35 && prevToNext < 25) {
+              continue; // Skip noisy GPS reflection spike
+            }
+          }
+        }
+        cleanTrail.push(pt);
+      }
+
+      // Anchor captured subsequent checkpoints in order
+      checkpoints.slice(1).forEach((cp) => {
+        if (capturedByCpId.has(cp.id)) {
+          const cLat = parseFloat(cp.lat);
+          const cLng = parseFloat(cp.lng);
+          if (!isNaN(cLat) && !isNaN(cLng)) {
+            cleanTrail.push([cLat, cLng]);
+          }
+        }
+      });
+
+      if (cleanTrail.length > 1) {
+        L.polyline(cleanTrail, {
+          color: '#2563eb',
+          weight: 4,
+          opacity: 0.9,
+        }).addTo(map);
+      }
+
+      cleanTrail.forEach((pt) => boundsPoints.push(pt));
+
+      // 4. Plot Pulsing Live Guard Position Marker
+      const lastScan = mapModalRun.scans[mapModalRun.scans.length - 1];
+      const liveLat = liveTrail?.session?.last_lat ?? lastScan?.guard_lat;
+      const liveLng = liveTrail?.session?.last_lng ?? lastScan?.guard_lng;
+
+      if (liveLat && liveLng && !isNaN(Number(liveLat)) && !isNaN(Number(liveLng))) {
+        const gLat = Number(liveLat);
+        const gLng = Number(liveLng);
         boundsPoints.push([gLat, gLng]);
 
         const liveIcon = L.divIcon({
           className: '',
-          html: `<div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
-            <div style="position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(16,185,129,0.35);animation:ping 1.5s infinite;"></div>
-            <div style="position:relative;background:#059669;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">G</div>
+          html: `<div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;width:36px;height:36px;border-radius:50%;background:rgba(37,99,235,0.28);"></div>
+            <div style="position:relative;background:#1d4ed8;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">G</div>
           </div>`,
-          iconSize: [34, 34],
-          iconAnchor: [17, 17],
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
         });
 
         L.marker([gLat, gLng], { icon: liveIcon })
           .addTo(map)
           .bindPopup(
             `<strong>Guard: ${liveTrail?.session?.guard_name || mapModalRun.guardName}</strong><br/>Status: ${
-              liveTrail?.session?.status || 'ACTIVE'
-            }<br/>Last Ping: ${
-              liveTrail?.session?.last_ping_at
-                ? new Date(liveTrail.session.last_ping_at).toLocaleTimeString()
-                : 'Just now'
-            }`
+              liveTrail?.session?.status || mapModalRun.status
+            }<br/>GPS: ${gLat.toFixed(5)}, ${gLng.toFixed(5)}`
           );
       }
 
       if (boundsPoints.length > 0) {
-        map.fitBounds(boundsPoints, { padding: [45, 45], maxZoom: 17 });
+        map.fitBounds(boundsPoints, { padding: [50, 50], maxZoom: 18 });
       }
     });
 
@@ -716,7 +768,7 @@ export const ReportsPage: React.FC = () => {
                           <span className="font-bold text-slate-800">
                             {run.verifiedStopsCount} / {run.totalRouteStops}
                           </span>
-                          <span className="text-slate-400 ml-1">verified</span>
+                          <span className="text-slate-400 ml-1">captured</span>
                         </td>
 
                         <td className="px-4 py-3.5">
@@ -745,7 +797,6 @@ export const ReportsPage: React.FC = () => {
                                 setMapModalRun(run);
                               }}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-bold transition"
-                              title="Load Live Map & Guard Walking Trail"
                             >
                               <Navigation className="w-3 h-3" /> Live Map
                             </button>
@@ -780,7 +831,7 @@ export const ReportsPage: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2.5">
                   <h2 className="text-lg font-black text-slate-900">
-                    Checkpoints Scanned ({inspectedRun.verifiedStopsCount} of {inspectedRun.totalRouteStops})
+                    Checkpoints Captured ({inspectedRun.verifiedStopsCount} of {inspectedRun.totalRouteStops})
                   </h2>
                   {inspectedRun.runNumber > 0 && (
                     <span className="px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold text-xs">
@@ -823,8 +874,8 @@ export const ReportsPage: React.FC = () => {
                     >
                       <div className="flex items-start justify-between">
                         <div>
-                          <div className="text-[11px] font-black uppercase tracking-wider text-blue-600">
-                            STOP #{idx + 1} OF {inspectedRun.totalRouteStops}
+                          <div className="text-[11px] font-black uppercase tracking-wider text-emerald-600">
+                            QR STOP #{idx + 1} OF {inspectedRun.totalRouteStops} — CAPTURED ✓
                           </div>
                           <div className="text-base font-bold text-slate-900 mt-0.5">
                             {scan.checkpoint_name || inspectedRun.roundName}
@@ -843,7 +894,7 @@ export const ReportsPage: React.FC = () => {
                         >
                           {isVerified ? (
                             <>
-                              <CheckCircle2 className="w-3.5 h-3.5" /> Verified
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Captured
                             </>
                           ) : (
                             <>
@@ -917,7 +968,6 @@ export const ReportsPage: React.FC = () => {
       {mapModalRun && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-5xl w-full overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
-            {/* Modal Header */}
             <div className="px-6 py-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -928,14 +978,11 @@ export const ReportsPage: React.FC = () => {
                 </div>
                 <p className="text-xs text-slate-300 mt-0.5">
                   Guard: <strong>{liveTrail?.session?.guard_name || mapModalRun.guardName}</strong> •{' '}
-                  Breadcrumbs Logged: <strong>{liveTrail?.breadcrumbs?.length || 0} GPS points</strong>
-                  {liveTrail?.session?.last_ping_at && (
-                    <>
-                      {' '}
-                      • Last Ping:{' '}
-                      <strong>{new Date(liveTrail.session.last_ping_at).toLocaleTimeString()}</strong>
-                    </>
-                  )}
+                  Captured Stops:{' '}
+                  <strong className="text-emerald-400">
+                    {mapModalRun.verifiedStopsCount} of {mapModalRun.totalRouteStops}
+                  </strong>{' '}
+                  • Breadcrumbs: <strong>{liveTrail?.breadcrumbs?.length || 0} pts</strong>
                 </p>
               </div>
 
@@ -968,27 +1015,31 @@ export const ReportsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Map Legend Bar */}
+            {/* Updated Legend Bar clearly showing Captured vs Pending QR Pins */}
             <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
               <div className="flex flex-wrap items-center gap-4">
-                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
-                  <span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span>
-                  Start Point QR (#1)
+                <span className="flex items-center gap-1.5 font-bold text-emerald-700">
+                  <span className="w-4 h-4 rounded-full bg-emerald-500 text-white text-[10px] flex items-center justify-center">
+                    ✓
+                  </span>
+                  Captured QR Checkpoint
                 </span>
-                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
-                  <span className="w-3 h-3 rounded-full bg-slate-900 inline-block"></span>
-                  Intermediate Checkpoints
-                </span>
-                <span className="flex items-center gap-1.5 font-semibold text-slate-700">
-                  <span className="w-3 h-3 rounded-full bg-purple-600 inline-block"></span>
-                  Final Finish QR
+                <span className="flex items-center gap-1.5 font-semibold text-slate-600">
+                  <span className="w-3.5 h-3.5 rounded-full bg-slate-700 inline-block"></span>
+                  Pending QR Checkpoint
                 </span>
                 <span className="flex items-center gap-1.5 font-semibold text-blue-700">
-                  <span className="w-4 h-0.5 bg-blue-600 inline-block"></span>
-                  Guard Walking Path (15s GPS Pings)
+                  <span className="w-4 h-1 bg-blue-600 inline-block rounded"></span>
+                  Actual Guard Walking Path
                 </span>
-                <span className="flex items-center gap-1.5 font-semibold text-emerald-700">
-                  <span className="w-3 h-3 rounded-full bg-emerald-600 inline-block"></span>
+                <span className="flex items-center gap-1.5 font-semibold text-slate-500">
+                  <span className="w-4 h-0.5 border-b-2 border-dashed border-slate-400 inline-block"></span>
+                  Planned Route
+                </span>
+                <span className="flex items-center gap-1.5 font-bold text-blue-800">
+                  <span className="w-4 h-4 rounded-full bg-blue-700 text-white text-[9px] flex items-center justify-center">
+                    G
+                  </span>
                   Live Guard Position
                 </span>
               </div>
@@ -1001,7 +1052,6 @@ export const ReportsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Leaflet Map Container */}
             <div className="relative flex-1 min-h-[460px] bg-slate-100">
               <div ref={mapContainerRef} className="w-full h-[460px] z-10" />
             </div>

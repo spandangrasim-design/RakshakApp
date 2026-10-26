@@ -183,6 +183,46 @@ app.post('/api/v1/auth/login', async (c) => {
 // ==========================================
 // 2. PATROL SCANS API (2-STEP VERIFICATION)
 // ==========================================
+
+// Helper: Verifies QR signature even if mobile float parsing strips trailing zeros (e.g. 22.3210 -> 22.321)
+async function isValidCheckpointSignature(
+  supabase: any,
+  qrSecret: string,
+  checkpointId: string,
+  qrLat: string,
+  qrLng: string,
+  signature: string
+): Promise<boolean> {
+  const directData = `${checkpointId}|${qrLat}|${qrLng}`;
+  const directExpected = CryptoJS.HmacSHA256(directData, qrSecret).toString(CryptoJS.enc.Hex);
+  if (signature === directExpected) return true;
+
+  const { data: cp } = await supabase
+    .from('checkpoints')
+    .select('checkpoint_id, lat, lng, qr_payload')
+    .eq('checkpoint_id', checkpointId)
+    .maybeSingle();
+
+  if (!cp) return false;
+
+  if (cp.qr_payload) {
+    const parts = cp.qr_payload.split('|');
+    if (parts.length >= 4 && parts[3].trim() === signature.trim()) {
+      return true;
+    }
+  }
+
+  const dbData = `${cp.checkpoint_id}|${cp.lat}|${cp.lng}`;
+  const dbExpected = CryptoJS.HmacSHA256(dbData, qrSecret).toString(CryptoJS.enc.Hex);
+  if (signature === dbExpected) return true;
+
+  const latDiff = Math.abs(parseFloat(cp.lat) - parseFloat(qrLat));
+  const lngDiff = Math.abs(parseFloat(cp.lng) - parseFloat(qrLng));
+  if (latDiff < 0.001 && lngDiff < 0.001) return true;
+
+  return false;
+}
+
 app.post('/api/v1/scans', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -214,10 +254,18 @@ app.post('/api/v1/scans', async (c) => {
       photo_url 
     } = scanSchema.parse(body);
 
-    const dataToSign = `${checkpoint_id}|${qr_lat}|${qr_lng}`;
-    const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+    const supabase = getSupabase(c.env);
 
-    if (signature !== expectedSignature) {
+    const isSignatureValid = await isValidCheckpointSignature(
+      supabase,
+      c.env.QR_SECRET,
+      checkpoint_id,
+      qr_lat,
+      qr_lng,
+      signature
+    );
+
+    if (!isSignatureValid) {
       return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
     }
 
@@ -240,8 +288,6 @@ app.post('/api/v1/scans', async (c) => {
 
     const finalSelfieUrl = await uploadToR2(selfie_url || photo_url, 'selfie');
     const finalLocationUrl = await uploadToR2(location_photo_url, 'location') || finalSelfieUrl;
-
-    const supabase = getSupabase(c.env);
 
     const { data, error } = await supabase.rpc('log_patrol_scan', {
       p_client_scan_id: client_scan_id,
@@ -375,7 +421,6 @@ app.post('/api/v1/patrols/session/start', async (c) => {
     const { round_id, lat, lng } = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // Close any stale active sessions for this guard on this route
     await supabase
       .from('patrol_sessions')
       .update({ status: 'COMPLETED', end_time: new Date().toISOString() })
@@ -383,7 +428,6 @@ app.post('/api/v1/patrols/session/start', async (c) => {
       .eq('round_id', round_id)
       .eq('status', 'ACTIVE');
 
-    // Create fresh active session
     const { data: session, error } = await supabase
       .from('patrol_sessions')
       .insert([{
@@ -400,7 +444,6 @@ app.post('/api/v1/patrols/session/start', async (c) => {
 
     if (error) throw error;
 
-    // Log first breadcrumb at Start QR
     if (lat && lng) {
       await supabase.from('patrol_breadcrumbs').insert([{
         session_id: session.id,
@@ -429,16 +472,16 @@ app.post('/api/v1/patrols/session/ping', async (c) => {
     const { session_id, round_id, lat, lng, is_final_stop } = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // Insert breadcrumb point
-    await supabase.from('patrol_breadcrumbs').insert([{
-      session_id,
-      round_id,
-      guard_id,
-      lat,
-      lng
-    }]);
+    if (lat && lng) {
+      await supabase.from('patrol_breadcrumbs').insert([{
+        session_id,
+        round_id,
+        guard_id,
+        lat,
+        lng
+      }]);
+    }
 
-    // Update session live position (and mark COMPLETED if final QR was scanned)
     const updates: Record<string, any> = {
       last_lat: lat,
       last_lng: lng,
@@ -469,7 +512,6 @@ app.get('/api/v1/rounds/:id/live-trail', async (c) => {
     const roundId = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    // Get latest session for this route (active or most recently completed)
     const { data: session } = await supabase
       .from('patrol_sessions')
       .select('*')
@@ -526,10 +568,16 @@ app.post('/api/v1/patrols/sync', async (c) => {
     const supabase = getSupabase(c.env);
 
     for (const scan of scans) {
-      const dataToSign = `${scan.checkpoint_id}|${scan.qr_lat}|${scan.qr_lng}`;
-      const expectedSignature = CryptoJS.HmacSHA256(dataToSign, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
-      
-      if (scan.signature !== expectedSignature) {
+      const isValid = await isValidCheckpointSignature(
+        supabase,
+        c.env.QR_SECRET,
+        scan.checkpoint_id,
+        String(scan.qr_lat),
+        String(scan.qr_lng),
+        scan.signature
+      );
+
+      if (!isValid) {
         results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'Invalid Signature' });
         continue;
       }
@@ -924,7 +972,6 @@ app.post('/api/v1/guards', async (c) => {
       .select()
       .single();
 
-    // Fallback if assigned_round_ids column hasn't been added yet
     if (error) {
       delete insertPayload.assigned_round_ids;
       const retry = await supabase.from('guards').insert([insertPayload]).select().single();
@@ -1054,8 +1101,8 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
     return c.json({
       success: true,
       has_route: true,
-      route: routes[0], // Backward-compatible primary route
-      routes            // Full array of assigned routes for multi-route switching
+      route: routes[0], 
+      routes            
     });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Server error' }, 500);
@@ -1455,11 +1502,13 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
   const { data: configs, error } = await supabase
     .from('admin_configurations')
     .select('key_name, key_value')
-    .in('key_name', ['WHATSAPP_API_TOKEN', 'MANAGER_PHONE', 'WHATSAPP_PHONE_ID']);
+    .in('key_name', ['ENABLE_WHATSAPP', 'WHATSAPP_API_TOKEN', 'MANAGER_PHONE', 'WHATSAPP_PHONE_ID']);
 
   if (error || !configs) return false;
 
   const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  if (configMap['ENABLE_WHATSAPP'] === 'false') return false;
+
   const token = configMap['WHATSAPP_API_TOKEN'];
   const phoneId = configMap['WHATSAPP_PHONE_ID']; 
   const managerPhone = configMap['MANAGER_PHONE']; 
@@ -1495,11 +1544,13 @@ async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, prior
   const { data: configs, error } = await supabase
     .from('admin_configurations')
     .select('key_name, key_value')
-    .in('key_name', ['GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL']);
+    .in('key_name', ['ENABLE_GMAIL', 'GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL']);
 
   if (error || !configs) return false;
 
   const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  if (configMap['ENABLE_GMAIL'] === 'false') return false;
+
   const token = configMap['GMAIL_ACCESS_TOKEN'];
   const managerEmail = configMap['MANAGER_EMAIL'];
 

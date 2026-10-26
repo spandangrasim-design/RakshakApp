@@ -3,10 +3,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api_config.dart';
-import 'qr_scanner_screen.dart';
 import 'locked_camera_screen.dart';
 
 class PatrolRouteScreen extends StatefulWidget {
@@ -27,10 +27,11 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
   // Live Breadcrumb Tracking State
   Timer? _breadcrumbTimer;
   String? _activeSessionId;
-  String? _activeTrackingRoundId;
   bool _isLiveTracking = false;
   int _pingCount = 0;
   String _lastPingTime = '';
+  double? _lastPingLat;
+  double? _lastPingLng;
 
   @override
   void initState() {
@@ -95,14 +96,20 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     }
   }
 
-  // Starts live 15-second GPS breadcrumb tracking when Stop #1 is verified
-  Future<void> _startLivePatrolSession(String roundId) async {
+  // Starts live session anchored at Stop #1's coordinates
+  Future<void> _startLivePatrolSession(String roundId, double startLat, double startLng) async {
     try {
-      Position? pos;
+      double initLat = startLat;
+      double initLng = startLng;
+
       try {
-        pos = await Geolocator.getCurrentPosition(
+        final pos = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
         );
+        if (pos.accuracy <= 30.0) {
+          initLat = pos.latitude;
+          initLng = pos.longitude;
+        }
       } catch (_) {}
 
       final res = await http.post(
@@ -113,8 +120,8 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         },
         body: jsonEncode({
           'round_id': roundId,
-          'lat': pos?.latitude,
-          'lng': pos?.longitude,
+          'lat': initLat,
+          'lng': initLng,
         }),
       );
 
@@ -124,15 +131,16 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           _breadcrumbTimer?.cancel();
           setState(() {
             _activeSessionId = data['session']['id']?.toString();
-            _activeTrackingRoundId = roundId;
             _isLiveTracking = true;
             _pingCount = 1;
+            _lastPingLat = initLat;
+            _lastPingLng = initLng;
             _lastPingTime = TimeOfDay.now().format(context);
           });
 
-          // Ping GPS every 15 seconds while guard walks to the next checkpoint
+          // Send GPS breadcrumb every 15s while walking (filtered for accuracy & movement)
           _breadcrumbTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-            _sendBreadcrumbPing(roundId: roundId, isFinalStop: false);
+            _sendBreadcrumbPing(roundId: roundId, isFinalStop: false, forceSend: false);
           });
         }
       }
@@ -141,17 +149,48 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     }
   }
 
-  // Sends live GPS coordinate to Cloudflare Worker
   Future<void> _sendBreadcrumbPing({
     required String roundId,
     required bool isFinalStop,
+    bool forceSend = false,
+    double? overrideLat,
+    double? overrideLng,
   }) async {
     if (_activeSessionId == null) return;
 
     try {
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+      double lat;
+      double lng;
+
+      if (overrideLat != null && overrideLng != null && overrideLat != 0.0) {
+        lat = overrideLat;
+        lng = overrideLng;
+      } else {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+
+        // Ignore wild indoor/cell-tower GPS jumps (> 35m accuracy radius) unless forced
+        if (!forceSend && !isFinalStop && pos.accuracy > 35.0) {
+          return;
+        }
+
+        // Ignore stationary GPS jitter if guard hasn't walked at least 8 meters
+        if (!forceSend && !isFinalStop && _lastPingLat != null && _lastPingLng != null) {
+          final movedMeters = Geolocator.distanceBetween(
+            _lastPingLat!,
+            _lastPingLng!,
+            pos.latitude,
+            pos.longitude,
+          );
+          if (movedMeters < 8.0) {
+            return;
+          }
+        }
+
+        lat = pos.latitude;
+        lng = pos.longitude;
+      }
 
       await http.post(
         Uri.parse(ApiConfig.sessionPingUrl),
@@ -162,8 +201,8 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         body: jsonEncode({
           'session_id': _activeSessionId,
           'round_id': roundId,
-          'lat': pos.latitude,
-          'lng': pos.longitude,
+          'lat': lat,
+          'lng': lng,
           'is_final_stop': isFinalStop,
         }),
       );
@@ -174,11 +213,12 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
         setState(() {
           _isLiveTracking = false;
           _activeSessionId = null;
-          _activeTrackingRoundId = null;
         });
       } else {
         setState(() {
           _pingCount += 1;
+          _lastPingLat = lat;
+          _lastPingLng = lng;
           _lastPingTime = TimeOfDay.now().format(context);
         });
       }
@@ -194,52 +234,92 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     required String roundId,
     required String routeName,
   }) async {
-    final String checkpointId = checkpoint['checkpoint_id']?.toString() ?? '';
-    final String qrPayload = checkpoint['qr_payload']?.toString() ?? '';
-    final parts = qrPayload.split('|');
+    final String expectedCheckpointId = checkpoint['checkpoint_id']?.toString() ?? '';
+    final String checkpointName = checkpoint['name']?.toString() ?? 'Stop #${stopIndex + 1}';
 
-    bool? scanVerified;
+    // STEP 1: Open Physical QR Code Scanner FIRST and require scanning this checkpoint's QR
+    final String? scannedQrPayload = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => _RouteCheckpointQrScanner(
+          checkpointName: checkpointName,
+          stopNumber: stopIndex + 1,
+          expectedCheckpointId: expectedCheckpointId,
+        ),
+      ),
+    );
 
-    if (parts.length >= 4) {
-      scanVerified = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (context) => LockedCameraScreen(
-            checkpointId: checkpointId,
-            expectedLat: double.tryParse(parts[1]) ?? 0.0,
-            expectedLng: double.tryParse(parts[2]) ?? 0.0,
-            signature: parts[3],
-          ),
+    // If guard backed out without scanning the QR code, stop here
+    if (scannedQrPayload == null || scannedQrPayload.isEmpty) {
+      return;
+    }
+
+    final parts = scannedQrPayload.split('|');
+    if (parts.length < 4) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.red,
+          content: Text('Invalid QR code format.'),
         ),
       );
-    } else {
-      scanVerified = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(builder: (context) => const QrScannerScreen()),
-      );
+      return;
     }
+
+    final double expectedLat = double.tryParse(parts[1]) ?? 0.0;
+    final double expectedLng = double.tryParse(parts[2]) ?? 0.0;
+    final String signature = parts[3].trim();
+
+    if (!mounted) return;
+
+    // STEP 2: Now launch LockedCameraScreen (Step 1/2 Selfie -> Step 2/2 Rear Location Photo)
+    final bool? scanVerified = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LockedCameraScreen(
+          checkpointId: expectedCheckpointId,
+          expectedLat: expectedLat,
+          expectedLng: expectedLng,
+          signature: signature,
+        ),
+      ),
+    );
 
     if (scanVerified == true) {
       setState(() {
-        _verifiedCheckpointIds.add(checkpointId);
+        _verifiedCheckpointIds.add(expectedCheckpointId);
       });
 
       final bool isFirstStop = stopIndex == 0;
       final bool isFinalStop = stopIndex == currentCheckpoints.length - 1;
 
       if (currentCheckpoints.length == 1) {
-        // Single-stop route: start and immediately finish session
-        await _startLivePatrolSession(roundId);
-        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: true);
+        await _startLivePatrolSession(roundId, expectedLat, expectedLng);
+        await _sendBreadcrumbPing(
+          roundId: roundId,
+          isFinalStop: true,
+          forceSend: true,
+          overrideLat: expectedLat,
+          overrideLng: expectedLng,
+        );
       } else if (isFirstStop) {
-        // Stop #1 (Start QR): Begin 15-second live GPS breadcrumb tracking
-        await _startLivePatrolSession(roundId);
+        await _startLivePatrolSession(roundId, expectedLat, expectedLng);
       } else if (isFinalStop) {
-        // Final QR: Send final coordinate and stop live tracking timer
-        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: true);
+        await _sendBreadcrumbPing(
+          roundId: roundId,
+          isFinalStop: true,
+          forceSend: true,
+          overrideLat: expectedLat,
+          overrideLng: expectedLng,
+        );
       } else {
-        // Intermediate QR: Log immediate ping along the route
-        await _sendBreadcrumbPing(roundId: roundId, isFinalStop: false);
+        await _sendBreadcrumbPing(
+          roundId: roundId,
+          isFinalStop: false,
+          forceSend: true,
+          overrideLat: expectedLat,
+          overrideLng: expectedLng,
+        );
       }
 
       if (!mounted) return;
@@ -248,8 +328,8 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           backgroundColor: Colors.green.shade700,
           content: Text(
             isFirstStop && currentCheckpoints.length > 1
-                ? 'Start QR Verified! Live GPS tracking started.'
-                : 'Stop verified: ${checkpoint['name']}',
+                ? 'Start QR Verified! Live GPS tracking active.'
+                : 'Verified: $checkpointName',
           ),
         ),
       );
@@ -278,7 +358,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           ],
         ),
         content: Text(
-          'All $stopCount stops for "$routeName" are verified. Live GPS tracking has been completed and saved.',
+          'All $stopCount QR stops for "$routeName" have been scanned and verified.',
         ),
         actions: [
           ElevatedButton(
@@ -326,7 +406,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF1E3A8A)))
           : Column(
               children: [
-                // LIVE GPS TRACKING ACTIVE BANNER
                 if (_isLiveTracking)
                   Container(
                     width: double.infinity,
@@ -338,7 +417,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'LIVE TRACKING ACTIVE — Sending GPS path ($_pingCount pings • $_lastPingTime)',
+                            'LIVE TRACKING ACTIVE — Sending GPS path ($_pingCount pts • $_lastPingTime)',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 12,
@@ -350,7 +429,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                     ),
                   ),
 
-                // Multi-Route Selector Tabs
                 if (_assignedRoutes.length > 1)
                   Container(
                     width: double.infinity,
@@ -383,7 +461,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                     ),
                   ),
 
-                // Route Progress Header
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(20),
@@ -431,7 +508,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                       Text(
                         totalStops == 0
                             ? 'No checkpoints assigned'
-                            : 'Progress: $verifiedCount of $totalStops Stops Verified',
+                            : 'Progress: $verifiedCount of $totalStops QR Stops Captured',
                         style: const TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                       const SizedBox(height: 12),
@@ -448,7 +525,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                   ),
                 ),
 
-                // Ordered Sequence Checklist (Start QR -> Intermediate -> Final QR)
                 Expanded(
                   child: checkpoints.isEmpty
                       ? Center(
@@ -470,7 +546,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                             final cpId = cp['checkpoint_id']?.toString() ?? '';
                             final bool isDone = _verifiedCheckpointIds.contains(cpId);
 
-                            // Sequential Lock: Stop #1 is unlocked first; next stops unlock in order
                             final bool isUnlocked = index == 0 ||
                                 _verifiedCheckpointIds.contains(
                                   checkpoints[index - 1]['checkpoint_id']?.toString() ?? '',
@@ -527,23 +602,27 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                           decoration: BoxDecoration(
-                                            color: index == 0
-                                                ? Colors.blue.shade50
-                                                : index == checkpoints.length - 1
-                                                    ? Colors.purple.shade50
-                                                    : Colors.grey.shade100,
+                                            color: isDone
+                                                ? Colors.green.shade50
+                                                : index == 0
+                                                    ? Colors.blue.shade50
+                                                    : index == checkpoints.length - 1
+                                                        ? Colors.purple.shade50
+                                                        : Colors.grey.shade100,
                                             borderRadius: BorderRadius.circular(4),
                                           ),
                                           child: Text(
-                                            roleBadge,
+                                            isDone ? 'QR CAPTURED ✓' : roleBadge,
                                             style: TextStyle(
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
-                                              color: index == 0
-                                                  ? Colors.blue.shade800
-                                                  : index == checkpoints.length - 1
-                                                      ? Colors.purple.shade800
-                                                      : Colors.grey.shade700,
+                                              color: isDone
+                                                  ? Colors.green.shade800
+                                                  : index == 0
+                                                      ? Colors.blue.shade800
+                                                      : index == checkpoints.length - 1
+                                                          ? Colors.purple.shade800
+                                                          : Colors.grey.shade700,
                                             ),
                                           ),
                                         ),
@@ -563,12 +642,10 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                         const SizedBox(height: 2),
                                         Text(
                                           isDone
-                                              ? 'Verified (GPS & Dual Proof)'
+                                              ? 'QR Scanned + Dual Photos Verified'
                                               : isUnlocked
-                                                  ? (index == 0
-                                                      ? 'Scan to start route & live GPS tracking'
-                                                      : 'Walk to checkpoint & scan QR')
-                                                  : 'Locked — Verify Stop #$index first',
+                                                  ? 'Step 1: Scan QR -> Step 2: Selfie & Proof'
+                                                  : 'Locked — Complete Stop #$index first',
                                           style: TextStyle(
                                             fontSize: 11,
                                             color: isDone
@@ -607,7 +684,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                         size: 14,
                                       ),
                                       label: Text(
-                                        index == 0 ? 'Start' : 'Verify',
+                                        index == 0 ? 'Scan QR' : 'Scan QR',
                                         style: const TextStyle(fontSize: 12),
                                       ),
                                     ),
@@ -642,6 +719,133 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                   ),
               ],
             ),
+    );
+  }
+}
+
+/// Dedicated Physical QR Scanner Screen that verifies the guard scanned the exact checkpoint QR
+class _RouteCheckpointQrScanner extends StatefulWidget {
+  final String checkpointName;
+  final int stopNumber;
+  final String expectedCheckpointId;
+
+  const _RouteCheckpointQrScanner({
+    required this.checkpointName,
+    required this.stopNumber,
+    required this.expectedCheckpointId,
+  });
+
+  @override
+  State<_RouteCheckpointQrScanner> createState() => _RouteCheckpointQrScannerState();
+}
+
+class _RouteCheckpointQrScannerState extends State<_RouteCheckpointQrScanner> {
+  final MobileScannerController _controller = MobileScannerController();
+  bool _hasPopped = false;
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_hasPopped) return;
+
+    for (final barcode in capture.barcodes) {
+      final raw = barcode.rawValue?.trim();
+      if (raw == null || raw.isEmpty) continue;
+
+      final parts = raw.split('|');
+      if (parts.length < 4) {
+        setState(() {
+          _errorText = 'Invalid QR Code! Please scan a valid Rakshak Patrol QR.';
+        });
+        continue;
+      }
+
+      final scannedId = parts[0].trim();
+      if (widget.expectedCheckpointId.isNotEmpty &&
+          scannedId.toLowerCase() != widget.expectedCheckpointId.toLowerCase()) {
+        setState(() {
+          _errorText =
+              'Wrong Checkpoint QR! Please scan the QR code for Stop #${widget.stopNumber} (${widget.checkpointName}).';
+        });
+        continue;
+      }
+
+      _hasPopped = true;
+      Navigator.pop(context, raw);
+      break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(
+          'Scan Stop #${widget.stopNumber}: ${widget.checkpointName}',
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+        ),
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: _onDetect,
+          ),
+          Center(
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.greenAccent, width: 3),
+                borderRadius: BorderRadius.circular(20),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 36,
+            left: 20,
+            right: 20,
+            child: Column(
+              children: [
+                if (_errorText != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade800,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      _errorText!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'Point camera at the QR Code for "${widget.checkpointName}".\nAfter scanning, you will take your Selfie & Location Photo.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
