@@ -214,11 +214,10 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
         timeout: const Duration(seconds: 20),
       );
 
+      // Successfully logged online -> return true so the next stop unlocks immediately
       if (outcome.ok && outcome.json?['success'] == true) {
-        final isVerified =
-            outcome.json?['verification']?['is_gps_verified'] == true;
         if (!mounted) return;
-        Navigator.pop(context, isVerified);
+        Navigator.pop(context, true);
         return;
       }
 
@@ -240,7 +239,8 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
           seconds: 5,
         );
         if (!mounted) return;
-        Navigator.pop(context, null);
+        // Queued offline -> return true so guard patrol can continue offline
+        Navigator.pop(context, true);
         return;
       }
 
