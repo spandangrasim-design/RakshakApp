@@ -25,6 +25,9 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  // Set to true to re-enable standalone QR scanning anytime in the future
+  static const bool _showStandaloneScanCheckpoint = false;
+
   String _guardName = 'Guard';
   String _guardId = '';
   String _token = '';
@@ -404,23 +407,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     crossAxisSpacing: 14,
                     mainAxisSpacing: 14,
                     children: [
+                      // Standalone QR Scanner Card (Hidden while testing patrol routes)
+                      if (_showStandaloneScanCheckpoint)
+                        _buildActionCard(
+                          icon: Icons.qr_code_scanner,
+                          title: 'Scan Checkpoint',
+                          subtitle: 'QR verification',
+                          color: const Color(0xFF2563EB),
+                          onTap: () async {
+                            final result = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) => const QrScannerScreen()),
+                            );
+
+                            if (result != null && result is bool) {
+                              setState(() => _lastScanVerified = result);
+                            } else if (result == null) {
+                              setState(() => _lastScanVerified = null);
+                            }
+                          },
+                        ),
                       _buildActionCard(
-                        icon: Icons.qr_code_scanner,
-                        title: 'Scan Checkpoint',
-                        subtitle: 'QR verification',
-                        color: const Color(0xFF2563EB),
-                        onTap: () async {
-                          final result = await Navigator.push(
+                        icon: Icons.map_outlined,
+                        title: 'Patrol Route',
+                        subtitle: 'Assigned stops',
+                        color: const Color(0xFF0D9488),
+                        onTap: () {
+                          Navigator.push(
                             context,
                             MaterialPageRoute(
-                                builder: (context) => const QrScannerScreen()),
+                                builder: (context) =>
+                                    const PatrolRouteScreen()),
                           );
-
-                          if (result != null && result is bool) {
-                            setState(() => _lastScanVerified = result);
-                          } else if (result == null) {
-                            setState(() => _lastScanVerified = null);
-                          }
                         },
                       ),
                       _buildActionCard(
@@ -443,20 +462,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         subtitle: 'Active & resolved',
                         color: const Color(0xFFE11D48),
                         onTap: _navigateToIncidentList,
-                      ),
-                      _buildActionCard(
-                        icon: Icons.map_outlined,
-                        title: 'Patrol Route',
-                        subtitle: 'Assigned stops',
-                        color: const Color(0xFF0D9488),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    const PatrolRouteScreen()),
-                          );
-                        },
                       ),
                       _buildActionCard(
                         icon: Icons.history,

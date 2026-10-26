@@ -7,7 +7,6 @@ import {
   RefreshCw,
   ChevronRight,
   UserCheck,
-  MapPin,
   Shield,
   Layers,
   Timer,
@@ -56,6 +55,7 @@ interface ScanRecord {
   selfie_url?: string | null;
   location_photo_url?: string | null;
   photo_url?: string | null;
+  [key: string]: any;
 }
 
 interface PatrolRun {
@@ -92,6 +92,62 @@ interface LiveTrailData {
     last_ping_at?: string;
   };
   breadcrumbs: { lat: number; lng: number; recorded_at: string }[];
+}
+
+// Extracts real guard capture lat/lng from numeric fields, PostGIS EWKB Hex, or GeoJSON
+function resolveGuardCaptureCoords(scan: ScanRecord): { lat: number; lng: number; isEstimated: boolean } {
+  const directLat = Number(scan.guard_lat ?? scan.lat ?? 0);
+  const directLng = Number(scan.guard_lng ?? scan.lng ?? 0);
+  if (directLat !== 0 && directLng !== 0 && !isNaN(directLat) && !isNaN(directLng)) {
+    return { lat: directLat, lng: directLng, isEstimated: false };
+  }
+
+  for (const val of Object.values(scan)) {
+    if (typeof val === 'string') {
+      const clean = val.trim();
+      const hasSrid = clean.toUpperCase().startsWith('0101000020');
+      const noSrid = clean.toUpperCase().startsWith('0101000000');
+      if ((hasSrid || noSrid) && clean.length >= (hasSrid ? 50 : 42)) {
+        try {
+          const offset = hasSrid ? 18 : 10;
+          const bytes = new Uint8Array(16);
+          for (let i = 0; i < 16; i++) {
+            bytes[i] = parseInt(clean.slice(offset + i * 2, offset + i * 2 + 2), 16);
+          }
+          const view = new DataView(bytes.buffer);
+          const lng = view.getFloat64(0, true);
+          const lat = view.getFloat64(8, true);
+          if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && lat !== 0) {
+            return { lat, lng, isEstimated: false };
+          }
+        } catch (_) {}
+      }
+
+      const ptMatch = clean.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
+      if (ptMatch) {
+        return { lat: parseFloat(ptMatch[2]), lng: parseFloat(ptMatch[1]), isEstimated: false };
+      }
+    } else if (val && typeof val === 'object' && Array.isArray((val as any).coordinates)) {
+      const [lng, lat] = (val as any).coordinates;
+      if (lat && lng) return { lat: Number(lat), lng: Number(lng), isEstimated: false };
+    }
+  }
+
+  // Fallback for legacy scans where DB only saved distance_meters + expected_lat/lng
+  const expLat = Number(scan.expected_lat || 0);
+  const expLng = Number(scan.expected_lng || 0);
+  const dist = Number(scan.distance_meters || 0);
+  if (expLat !== 0 && expLng !== 0 && dist > 0) {
+    const latOffset = (dist / 111320) * 0.7071;
+    const lngOffset = (dist / (111320 * Math.cos((expLat * Math.PI) / 180))) * 0.7071;
+    return {
+      lat: expLat + latOffset,
+      lng: expLng - lngOffset,
+      isEstimated: true,
+    };
+  }
+
+  return { lat: 0, lng: 0, isEstimated: false };
 }
 
 function formatDuration(startIso: string, endIso: string, stopCount: number): string {
@@ -262,6 +318,7 @@ export const ReportsPage: React.FC = () => {
   const [liveTrail, setLiveTrail] = useState<LiveTrailData | null>(null);
   const [loadingTrail, setLoadingTrail] = useState(false);
   const [autoRefreshMap, setAutoRefreshMap] = useState(true);
+  const [mapZoomFocus, setMapZoomFocus] = useState<'ALL' | 'QR' | 'GUARD'>('ALL');
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -320,6 +377,7 @@ export const ReportsPage: React.FC = () => {
   useEffect(() => {
     if (!mapModalRun) {
       setLiveTrail(null);
+      setMapZoomFocus('ALL');
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -337,7 +395,7 @@ export const ReportsPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [mapModalRun, autoRefreshMap]);
 
-  // Render Leaflet Map showing BOTH QR Code Expected Locations AND Guard Actual Capture Locations
+  // Render Leaflet Map showing BOTH QR Code Expected Locations AND Guard Capture Locations
   useEffect(() => {
     if (!mapModalRun || !mapContainerRef.current) return;
 
@@ -348,7 +406,7 @@ export const ReportsPage: React.FC = () => {
       if (!isMounted || !L || !mapContainerRef.current) return;
 
       if (!mapInstanceRef.current) {
-        mapInstanceRef.current = L.map(mapContainerRef.current).setView([20.5937, 78.9629], 16);
+        mapInstanceRef.current = L.map(mapContainerRef.current).setView([22.275, 73.156], 15);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap',
           maxZoom: 19,
@@ -363,7 +421,9 @@ export const ReportsPage: React.FC = () => {
         }
       });
 
-      const boundsPoints: [number, number][] = [];
+      const allBounds: [number, number][] = [];
+      const qrBounds: [number, number][] = [];
+      const guardBounds: [number, number][] = [];
       const plannedCoords: [number, number][] = [];
 
       const capturedByCpId = new Map<string, ScanRecord>();
@@ -373,13 +433,14 @@ export const ReportsPage: React.FC = () => {
 
       const checkpoints = targetRound?.checkpoints || [];
 
-      // 1. Plot Expected QR Code Locations (Square Badge: "QR 1", "QR 2"...)
+      // 1. Plot Expected QR Code Locations ("QR #1", "QR #2"...)
       checkpoints.forEach((cp, index) => {
         const lat = parseFloat(cp.lat);
         const lng = parseFloat(cp.lng);
         if (isNaN(lat) || isNaN(lng)) return;
 
-        boundsPoints.push([lat, lng]);
+        allBounds.push([lat, lng]);
+        qrBounds.push([lat, lng]);
         plannedCoords.push([lat, lng]);
 
         const capturedScan = capturedByCpId.get(cp.id);
@@ -390,9 +451,9 @@ export const ReportsPage: React.FC = () => {
 
         const qrIcon = L.divIcon({
           className: '',
-          html: `<div style="background:${bg};color:#fff;padding:2px 6px;min-width:38px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;border:2px solid ${border};box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;">QR #${index + 1}</div>`,
-          iconSize: [44, 26],
-          iconAnchor: [22, 13],
+          html: `<div style="background:${bg};color:#fff;padding:2px 6px;min-width:42px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;border:2px solid ${border};box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;">QR #${index + 1}</div>`,
+          iconSize: [46, 26],
+          iconAnchor: [23, 13],
         });
 
         L.marker([lat, lng], { icon: qrIcon })
@@ -409,7 +470,7 @@ export const ReportsPage: React.FC = () => {
           );
       });
 
-      // 2. Draw Subtle Grey Dashed Line for Planned QR Route
+      // 2. Planned Route Line
       if (plannedCoords.length > 1) {
         L.polyline(plannedCoords, {
           color: '#94a3b8',
@@ -419,13 +480,15 @@ export const ReportsPage: React.FC = () => {
         }).addTo(map);
       }
 
-      // 3. Plot Guard Actual Capture Locations (Where the guard actually stood when taking Selfie/Photo)
+      // 3. Plot Guard Capture Locations (Decoded from numeric or PostGIS EWKB)
       mapModalRun.scans.forEach((scan, scanIdx) => {
-        const gLat = Number(scan.guard_lat);
-        const gLng = Number(scan.guard_lng);
+        const resolved = resolveGuardCaptureCoords(scan);
+        const gLat = resolved.lat;
+        const gLng = resolved.lng;
         if (isNaN(gLat) || isNaN(gLng) || (gLat === 0 && gLng === 0)) return;
 
-        boundsPoints.push([gLat, gLng]);
+        allBounds.push([gLat, gLng]);
+        guardBounds.push([gLat, gLng]);
 
         const matchCpIndex = checkpoints.findIndex((c) => c.id === scan.checkpoint_id);
         const stopLabelNum = matchCpIndex >= 0 ? matchCpIndex + 1 : scanIdx + 1;
@@ -435,47 +498,48 @@ export const ReportsPage: React.FC = () => {
         const expLng = matchCp ? parseFloat(matchCp.lng) : Number(scan.expected_lng || 0);
 
         const driftMeters =
-          !isNaN(expLat) && !isNaN(expLng) && expLat !== 0
+          scan.distance_meters !== undefined && Number(scan.distance_meters) > 0
+            ? Math.round(Number(scan.distance_meters))
+            : !isNaN(expLat) && !isNaN(expLng) && expLat !== 0
             ? Math.round(getDistanceMeters(gLat, gLng, expLat, expLng))
-            : Math.round(scan.distance_meters || 0);
+            : 0;
 
         const isFarAway = driftMeters > 50;
         const capBg = isFarAway ? '#dc2626' : '#0284c7';
 
         const captureIcon = L.divIcon({
           className: '',
-          html: `<div style="background:${capBg};color:#fff;padding:2px 7px;min-width:48px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);white-space:nowrap;">${
+          html: `<div style="background:${capBg};color:#fff;padding:2px 8px;min-width:54px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45);white-space:nowrap;">${
             isFarAway ? '⚠️' : '📸'
           } Cap #${stopLabelNum}</div>`,
-          iconSize: [56, 26],
-          iconAnchor: [28, 13],
+          iconSize: [62, 26],
+          iconAnchor: [31, 13],
         });
 
         const selfieImg = scan.selfie_url || '';
         L.marker([gLat, gLng], { icon: captureIcon })
           .addTo(map)
           .bindPopup(
-            `<div style="font-size:12px;line-height:1.45;min-width:190px;">
+            `<div style="font-size:12px;line-height:1.45;min-width:200px;">
               <strong style="color:${capBg};">${
-              isFarAway ? '⚠️ Far Away Capture' : '📸 Guard Capture Location'
+              isFarAway ? '⚠️ Far Away Guard Capture' : '📸 Guard Capture Location'
             } (Stop #${stopLabelNum})</strong><br/>
               <span>Checkpoint: <b>${scan.checkpoint_name}</b></span><br/>
-              <span>Time: <b>${new Date(scan.scan_time).toLocaleTimeString()}</b></span><br/>
-              <span style="font-family:monospace;font-size:11px;">Guard GPS: ${gLat.toFixed(5)}, ${gLng.toFixed(5)}</span><br/>
+              <span>Scanned At: <b>${new Date(scan.scan_time).toLocaleTimeString()}</b></span><br/>
+              <span style="font-family:monospace;font-size:11px;">Guard GPS: <b>${gLat.toFixed(5)}, ${gLng.toFixed(5)}</b></span><br/>
+              <span style="font-family:monospace;font-size:11px;color:#64748b;">QR GPS: ${expLat.toFixed(5)}, ${expLng.toFixed(5)}</span><br/>
               <span style="font-weight:bold;color:${isFarAway ? '#dc2626' : '#059669'};">
-                Distance from QR #${stopLabelNum}: ${driftMeters}m ${
-              isFarAway ? '(OUT OF RANGE)' : '(Within Range)'
-            }
+                Distance Offset: ${driftMeters}m ${isFarAway ? '(FLAGGED > 50m)' : '(Verified)'}
               </span>
               ${
                 selfieImg
-                  ? `<div style="margin-top:6px;"><img src="${selfieImg}" style="width:100%;height:90px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1;" /></div>`
+                  ? `<div style="margin-top:6px;"><img src="${selfieImg}" style="width:100%;height:95px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1;" /></div>`
                   : ''
               }
             </div>`
           );
 
-        // Draw Red/Amber Drift Line connecting Expected QR Location <-> Actual Guard Capture Location
+        // Draw Red Dashed Drift Line connecting QR Expected Location <-> Guard Capture Location
         if (!isNaN(expLat) && !isNaN(expLng) && expLat !== 0 && driftMeters > 5) {
           L.polyline(
             [
@@ -483,20 +547,20 @@ export const ReportsPage: React.FC = () => {
               [gLat, gLng],
             ],
             {
-              color: isFarAway ? '#ef4444' : '#10b981',
-              weight: isFarAway ? 3 : 2,
-              dashArray: '5, 5',
-              opacity: 0.9,
+              color: isFarAway ? '#ef4444' : '#0ea5e9',
+              weight: isFarAway ? 2.5 : 2,
+              dashArray: '6, 6',
+              opacity: 0.85,
             }
           )
             .addTo(map)
             .bindPopup(
-              `<strong>GPS Offset (Stop #${stopLabelNum})</strong><br/>Guard captured this QR from <b>${driftMeters} meters</b> away.`
+              `<strong>Stop #${stopLabelNum} Drift Offset</strong><br/>Guard captured this QR from <b>${driftMeters} meters</b> away.`
             );
         }
       });
 
-      // 4. Draw Actual Guard Walking Path (Filtered for stationary jitter)
+      // 4. Draw Actual Guard Walking Trail
       const rawCrumbs = (liveTrail?.breadcrumbs || [])
         .map((b) => [Number(b.lat), Number(b.lng)] as [number, number])
         .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng) && lat !== 0);
@@ -518,17 +582,22 @@ export const ReportsPage: React.FC = () => {
           opacity: 0.85,
         }).addTo(map);
       }
-      cleanTrail.forEach((pt) => boundsPoints.push(pt));
+      cleanTrail.forEach((pt) => {
+        allBounds.push(pt);
+        guardBounds.push(pt);
+      });
 
-      // 5. Plot Live Guard Position ("G")
+      // 5. Plot Live Guard Marker ("G")
       const lastScan = mapModalRun.scans[mapModalRun.scans.length - 1];
-      const liveLat = liveTrail?.session?.last_lat ?? lastScan?.guard_lat;
-      const liveLng = liveTrail?.session?.last_lng ?? lastScan?.guard_lng;
+      const lastScanResolved = lastScan ? resolveGuardCaptureCoords(lastScan) : { lat: 0, lng: 0 };
+      const liveLat = liveTrail?.session?.last_lat || lastScanResolved.lat;
+      const liveLng = liveTrail?.session?.last_lng || lastScanResolved.lng;
 
-      if (liveLat && liveLng && !isNaN(Number(liveLat)) && !isNaN(Number(liveLng))) {
+      if (liveLat && liveLng && !isNaN(Number(liveLat)) && !isNaN(Number(liveLng)) && Number(liveLat) !== 0) {
         const gLat = Number(liveLat);
         const gLng = Number(liveLng);
-        boundsPoints.push([gLat, gLng]);
+        allBounds.push([gLat, gLng]);
+        guardBounds.push([gLat, gLng]);
 
         const liveIcon = L.divIcon({
           className: '',
@@ -543,21 +612,28 @@ export const ReportsPage: React.FC = () => {
         L.marker([gLat, gLng], { icon: liveIcon })
           .addTo(map)
           .bindPopup(
-            `<strong>Live Guard Position: ${
+            `<strong>Guard Last Position: ${
               liveTrail?.session?.guard_name || mapModalRun.guardName
             }</strong><br/>GPS: ${gLat.toFixed(5)}, ${gLng.toFixed(5)}`
           );
       }
 
-      if (boundsPoints.length > 0) {
-        map.fitBounds(boundsPoints, { padding: [55, 55], maxZoom: 18 });
+      const activeBounds =
+        mapZoomFocus === 'QR' && qrBounds.length > 0
+          ? qrBounds
+          : mapZoomFocus === 'GUARD' && guardBounds.length > 0
+          ? guardBounds
+          : allBounds;
+
+      if (activeBounds.length > 0) {
+        map.fitBounds(activeBounds, { padding: [55, 55], maxZoom: 18 });
       }
     });
 
     return () => {
       isMounted = false;
     };
-  }, [mapModalRun, liveTrail, rounds]);
+  }, [mapModalRun, liveTrail, rounds, mapZoomFocus]);
 
   const allPatrolRuns = useMemo(() => {
     const list: PatrolRun[] = [];
@@ -907,13 +983,16 @@ export const ReportsPage: React.FC = () => {
 
                   const expLat = Number(scan.expected_lat || 0);
                   const expLng = Number(scan.expected_lng || 0);
-                  const gLat = Number(scan.guard_lat || 0);
-                  const gLng = Number(scan.guard_lng || 0);
+                  const resolved = resolveGuardCaptureCoords(scan);
+                  const gLat = resolved.lat;
+                  const gLng = resolved.lng;
 
                   const computedDist =
-                    expLat !== 0 && gLat !== 0
+                    scan.distance_meters !== undefined && Number(scan.distance_meters) > 0
+                      ? Math.round(Number(scan.distance_meters))
+                      : expLat !== 0 && gLat !== 0
                       ? Math.round(getDistanceMeters(gLat, gLng, expLat, expLng))
-                      : Math.round(scan.distance_meters || 0);
+                      : 0;
 
                   const isFarAway = computedDist > 50;
 
@@ -996,7 +1075,7 @@ export const ReportsPage: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Side-by-side Expected QR GPS vs Actual Guard Capture GPS */}
+                      {/* Side-by-side Expected QR GPS vs Decoded Guard Capture GPS */}
                       <div className="pt-2.5 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
                         <div className="bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">
                           <span className="font-bold text-slate-600 block">📍 QR Code Expected Location:</span>
@@ -1013,7 +1092,9 @@ export const ReportsPage: React.FC = () => {
                         >
                           <span className="font-bold block">📸 Guard Capture Location:</span>
                           <span className="font-mono">
-                            {gLat.toFixed(5)}, {gLng.toFixed(5)} ({computedDist}m offset)
+                            {gLat !== 0
+                              ? `${gLat.toFixed(5)}, ${gLng.toFixed(5)} (${computedDist}m offset)`
+                              : `Offset: ${computedDist}m`}
                           </span>
                         </div>
                       </div>
@@ -1048,7 +1129,35 @@ export const ReportsPage: React.FC = () => {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Quick Zoom Switcher for Far-Away Captures */}
+                <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 text-[11px]">
+                  <button
+                    onClick={() => setMapZoomFocus('ALL')}
+                    className={`px-2.5 py-1 rounded-md font-bold transition ${
+                      mapZoomFocus === 'ALL' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Fit Both
+                  </button>
+                  <button
+                    onClick={() => setMapZoomFocus('QR')}
+                    className={`px-2.5 py-1 rounded-md font-bold transition ${
+                      mapZoomFocus === 'QR' ? 'bg-emerald-600 text-white' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Zoom QR Route
+                  </button>
+                  <button
+                    onClick={() => setMapZoomFocus('GUARD')}
+                    className={`px-2.5 py-1 rounded-md font-bold transition ${
+                      mapZoomFocus === 'GUARD' ? 'bg-rose-600 text-white' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Zoom Guard GPS
+                  </button>
+                </div>
+
                 <button
                   onClick={() => setAutoRefreshMap(!autoRefreshMap)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition ${
@@ -1057,7 +1166,7 @@ export const ReportsPage: React.FC = () => {
                       : 'bg-slate-800 border-slate-700 text-slate-300'
                   }`}
                 >
-                  {autoRefreshMap ? 'Auto-Refresh: ON (10s)' : 'Auto-Refresh: OFF'}
+                  {autoRefreshMap ? 'Auto-Refresh: ON' : 'Auto-Refresh: OFF'}
                 </button>
 
                 <button
@@ -1065,7 +1174,7 @@ export const ReportsPage: React.FC = () => {
                   className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${loadingTrail ? 'animate-spin' : ''}`} />
-                  Refresh Now
+                  Refresh
                 </button>
 
                 <button
@@ -1077,7 +1186,6 @@ export const ReportsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Map Legend Clearly Distinguishing QR Location vs Guard Capture Location */}
             <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
               <div className="flex flex-wrap items-center gap-4">
                 <span className="flex items-center gap-1.5 font-bold text-emerald-800">

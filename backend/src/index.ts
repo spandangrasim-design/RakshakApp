@@ -97,6 +97,47 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
+// Decodes PostGIS EWKB Hex Point (0101000020E6100000...) or GeoJSON into numeric { lat, lng }
+function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
+  const directLat = Number(scan.guard_lat ?? scan.lat ?? 0);
+  const directLng = Number(scan.guard_lng ?? scan.lng ?? 0);
+  if (directLat !== 0 && directLng !== 0 && !isNaN(directLat) && !isNaN(directLng)) {
+    return { lat: directLat, lng: directLng };
+  }
+
+  for (const val of Object.values(scan)) {
+    if (typeof val === 'string') {
+      const clean = val.trim();
+      const hasSrid = clean.toUpperCase().startsWith('0101000020');
+      const noSrid = clean.toUpperCase().startsWith('0101000000');
+      if ((hasSrid || noSrid) && clean.length >= (hasSrid ? 50 : 42)) {
+        try {
+          const offset = hasSrid ? 18 : 10;
+          const bytes = new Uint8Array(16);
+          for (let i = 0; i < 16; i++) {
+            bytes[i] = parseInt(clean.slice(offset + i * 2, offset + i * 2 + 2), 16);
+          }
+          const view = new DataView(bytes.buffer);
+          const lng = view.getFloat64(0, true);
+          const lat = view.getFloat64(8, true);
+          if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && lat !== 0) {
+            return { lat, lng };
+          }
+        } catch (_) {}
+      }
+      const ptMatch = clean.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
+      if (ptMatch) {
+        return { lat: parseFloat(ptMatch[2]), lng: parseFloat(ptMatch[1]) };
+      }
+    } else if (val && typeof val === 'object' && Array.isArray((val as any).coordinates)) {
+      const [lng, lat] = (val as any).coordinates;
+      if (lat && lng) return { lat: Number(lat), lng: Number(lng) };
+    }
+  }
+
+  return { lat: 0, lng: 0 };
+}
+
 // ==========================================
 // R2 MEDIA STREAMING ROUTE (FIXED FOR <img> TAGS)
 // ==========================================
@@ -184,7 +225,6 @@ app.post('/api/v1/auth/login', async (c) => {
 // 2. PATROL SCANS API (2-STEP VERIFICATION)
 // ==========================================
 
-// Helper: Verifies QR signature even if mobile float parsing strips trailing zeros (e.g. 22.3210 -> 22.321)
 async function isValidCheckpointSignature(
   supabase: any,
   qrSecret: string,
@@ -305,11 +345,14 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Database error', error }, 500);
     }
 
+    // Explicitly update guard_lat and guard_lng so the real coordinates are stored in numeric columns
     await supabase
       .from('scans')
       .update({
         selfie_url: finalSelfieUrl,
-        location_photo_url: finalLocationUrl
+        location_photo_url: finalLocationUrl,
+        guard_lat: guard_lat,
+        guard_lng: guard_lng
       })
       .eq('client_scan_id', client_scan_id);
 
@@ -358,7 +401,7 @@ app.get('/api/v1/scans', async (c) => {
   }
 });
 
-// Enriched Round Scans with Guard Names & Checkpoint Details
+// Enriched Round Scans with Guard Names, Checkpoints, and Decoded Guard Coordinates
 app.get('/api/v1/rounds/:id/scans', async (c) => {
   try {
     const roundId = c.req.param('id');
@@ -387,8 +430,12 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
         scans = scanRecords.map((s) => {
           const matchCp = checkpoints.find((cp) => cp.checkpoint_id === s.checkpoint_id);
           const matchGuard = s.guard_id ? guardsMap.get(s.guard_id) : null;
+          const coords = extractGuardCoordsFromScan(s);
+
           return {
             ...s,
+            guard_lat: coords.lat,
+            guard_lng: coords.lng,
             checkpoint_name: matchCp?.name || s.checkpoint_id,
             expected_lat: matchCp?.lat,
             expected_lng: matchCp?.lng,
@@ -408,8 +455,6 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 // ==========================================
 // LIVE PATROL TRACKING (START QR -> WALK -> END QR)
 // ==========================================
-
-// 1. Start or Resume a Patrol Session (Triggered when Guard scans Start QR)
 app.post('/api/v1/patrols/session/start', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -460,7 +505,6 @@ app.post('/api/v1/patrols/session/start', async (c) => {
   }
 });
 
-// 2. Receive Live GPS Breadcrumb Ping (Called every 15s while walking between QRs)
 app.post('/api/v1/patrols/session/ping', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -506,7 +550,6 @@ app.post('/api/v1/patrols/session/ping', async (c) => {
   }
 });
 
-// 3. On-Demand Map Loader: Fetch Live Position + Walking Breadcrumb Trail for Admin Map
 app.get('/api/v1/rounds/:id/live-trail', async (c) => {
   try {
     const roundId = c.req.param('id');
@@ -618,7 +661,9 @@ app.post('/api/v1/patrols/sync', async (c) => {
           .from('scans')
           .update({
             selfie_url: selfieUrl,
-            location_photo_url: locationUrl
+            location_photo_url: locationUrl,
+            guard_lat: scan.guard_lat,
+            guard_lng: scan.guard_lng
           })
           .eq('client_scan_id', scan.client_scan_id);
       }

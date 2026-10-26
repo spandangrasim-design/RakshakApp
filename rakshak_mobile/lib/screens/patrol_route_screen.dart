@@ -132,7 +132,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     }
   }
 
-  // Checks if a specific checkpoint was just uploaded inside LockedCameraScreen
   Future<bool> _didCheckpointJustUpload(String checkpointId) async {
     try {
       final res = await http.get(
@@ -310,7 +309,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     }
   }
 
-  // Shows an explicit warning dialog if the guard is > 50m away from the QR code's actual location
   Future<bool> _verifyProximityOrWarn({
     required String checkpointName,
     required double expectedLat,
@@ -336,7 +334,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
       );
 
       if (distanceMeters <= _maxAllowedDistanceMeters) {
-        return true; // Guard is within 50m range
+        return true;
       }
 
       if (!mounted) return false;
@@ -393,7 +391,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
               ),
               const SizedBox(height: 12),
               const Text(
-                'If you continue from here, both the QR location and your actual capture location will be plotted and flagged as "GPS Drift" on the Admin Report Map.',
+                'If you continue, your actual capture location will be logged and flagged on the Admin Report Map.',
                 style: TextStyle(fontSize: 12, color: Colors.black87),
               ),
             ],
@@ -467,7 +465,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
 
     if (!mounted) return;
 
-    // STEP 2: Check GPS Distance & Warn Guard if Far Away (> 50m) Before Selfie!
+    // STEP 2: Check GPS Distance & Warn Guard if Far Away (> 50m) Before Selfie
     final bool canProceed = await _verifyProximityOrWarn(
       checkpointName: checkpointName,
       expectedLat: expectedLat,
@@ -477,6 +475,8 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     if (!canProceed || !mounted) {
       return;
     }
+
+    final int previousVerifiedCount = _verifiedCheckpointIds.length;
 
     // STEP 3: Launch LockedCameraScreen (Step 1/2 Selfie -> Step 2/2 Rear Photo)
     final bool? cameraResult = await Navigator.push<bool>(
@@ -491,11 +491,13 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
       ),
     );
 
-    // Handle both explicit `true` return AND `null` return (when LockedCameraScreen calls Navigator.pop(context))
-    bool scanVerified = cameraResult == true;
-    if (!scanVerified && cameraResult == null) {
-      scanVerified = await _didCheckpointJustUpload(expectedCheckpointId);
-    }
+    // Auto-sync scans from server immediately upon camera completion
+    await _syncTodayVerifiedScansFromServer();
+
+    final bool scanVerified = cameraResult == true ||
+        _verifiedCheckpointIds.contains(expectedCheckpointId) ||
+        _verifiedCheckpointIds.length > previousVerifiedCount ||
+        await _didCheckpointJustUpload(expectedCheckpointId);
 
     if (scanVerified) {
       setState(() {
@@ -530,17 +532,9 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
       }
 
       if (!mounted) return;
-      final int nextStopNum = stopIndex + 2;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.green.shade700,
-          content: Text(
-            !isFinalStop
-                ? 'Stop #${stopIndex + 1} Verified! Stop #$nextStopNum is now unlocked.'
-                : 'Final Stop Verified! Patrol complete.',
-          ),
-        ),
-      );
+
+      // Force UI rebuild so Stop #(stopIndex + 2) unlocks automatically
+      setState(() {});
 
       final verifiedInRoute = currentCheckpoints
           .where((cp) => _verifiedCheckpointIds.contains(_getCpId(cp)))
@@ -549,6 +543,31 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
       if (currentCheckpoints.isNotEmpty &&
           verifiedInRoute >= currentCheckpoints.length) {
         _showRoundCompleteDialog(routeName, currentCheckpoints.length);
+      } else if (stopIndex + 1 < currentCheckpoints.length) {
+        final nextCp = currentCheckpoints[stopIndex + 1];
+        final nextName = nextCp['name']?.toString() ?? 'Stop #${stopIndex + 2}';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 4),
+            backgroundColor: Colors.green.shade800,
+            content: Text(
+              'Stop #${stopIndex + 1} Done! Next unlocked: Stop #${stopIndex + 2} ($nextName)',
+            ),
+            action: SnackBarAction(
+              label: 'SCAN NEXT',
+              textColor: Colors.yellowAccent,
+              onPressed: () {
+                _handleScanCheckpoint(
+                  checkpoint: nextCp,
+                  stopIndex: stopIndex + 1,
+                  currentCheckpoints: currentCheckpoints,
+                  roundId: roundId,
+                  routeName: routeName,
+                );
+              },
+            ),
+          ),
+        );
       }
     }
   }
@@ -818,7 +837,6 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                             final bool isDone =
                                 _verifiedCheckpointIds.contains(cpId);
 
-                            // Stop #1 is unlocked; subsequent stops unlock as soon as the previous stop is captured
                             final bool isUnlocked = index == 0 ||
                                 _verifiedCheckpointIds
                                     .contains(_getCpId(checkpoints[index - 1]));
