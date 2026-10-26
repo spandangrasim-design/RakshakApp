@@ -17,6 +17,16 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/*', cors())
 
+// --- UTF-8 SAFE BASE64 ENCODER FOR GMAIL API ---
+function utf8ToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 // --- SCHEMAS ---
 const sanitizeUuid = z
   .string()
@@ -97,7 +107,7 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
-// Decodes PostGIS EWKB Hex Point (0101000020E6100000...) or GeoJSON into numeric { lat, lng }
+// Decodes PostGIS EWKB Hex Point or GeoJSON into numeric { lat, lng }
 function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
   const directLat = Number(scan.guard_lat ?? scan.lat ?? 0);
   const directLng = Number(scan.guard_lng ?? scan.lng ?? 0);
@@ -139,7 +149,7 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 }
 
 // ==========================================
-// R2 MEDIA STREAMING ROUTE (FIXED FOR <img> TAGS)
+// R2 MEDIA STREAMING ROUTE
 // ==========================================
 app.get('/api/v1/media/*', async (c) => {
   try {
@@ -224,7 +234,6 @@ app.post('/api/v1/auth/login', async (c) => {
 // ==========================================
 // 2. PATROL SCANS API (2-STEP VERIFICATION)
 // ==========================================
-
 async function isValidCheckpointSignature(
   supabase: any,
   qrSecret: string,
@@ -345,7 +354,6 @@ app.post('/api/v1/scans', async (c) => {
       return c.json({ success: false, message: 'Database error', error }, 500);
     }
 
-    // Explicitly update guard_lat and guard_lng so the real coordinates are stored in numeric columns
     await supabase
       .from('scans')
       .update({
@@ -401,7 +409,6 @@ app.get('/api/v1/scans', async (c) => {
   }
 });
 
-// Enriched Round Scans with Guard Names, Checkpoints, and Decoded Guard Coordinates
 app.get('/api/v1/rounds/:id/scans', async (c) => {
   try {
     const roundId = c.req.param('id');
@@ -1084,7 +1091,6 @@ app.patch('/api/v1/guards/:id', async (c) => {
   }
 });
 
-// Mobile App Route: Fetch all assigned routes for currently logged-in guard
 app.get('/api/v1/guards/my-assigned-route', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -1155,7 +1161,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 });
 
 // ==========================================
-// 6. TICKETING & INCIDENT COMMAND (R2 SECURED)
+// 6. TICKETING & INCIDENT COMMAND + AUTO GROUP EMAIL
 // ==========================================
 app.post('/api/v1/incidents', async (c) => {
   try {
@@ -1175,7 +1181,7 @@ app.post('/api/v1/incidents', async (c) => {
 
     const url = new URL(c.req.url);
     const body = await c.req.json();
-    const { client_incident_id, title, description, priority, photo_url, reported_at } = body;
+    const { client_incident_id, title, description, priority, photo_url, reported_at, assignment_group, assigned_to } = body;
 
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
@@ -1194,6 +1200,8 @@ app.post('/api/v1/incidents', async (c) => {
       }
     }
 
+    const targetGroup = assignment_group || 'Security Operations L1';
+
     const supabase = getSupabase(c.env);
     const { data, error } = await supabase
       .from('incidents')
@@ -1205,12 +1213,25 @@ app.post('/api/v1/incidents', async (c) => {
         priority: priority || 'P3',
         photo_url: finalPhotoUrl,
         status: 'OPEN',
+        assignment_group: targetGroup,
         reported_at: reported_at || new Date().toISOString()
       }, { onConflict: 'client_incident_id' }) 
       .select()
       .single();
 
     if (error) return c.json({ success: false, message: 'Database error', error }, 500);
+
+    // Automatically email all members bound to the initial Assignment Group
+    await sendGroupAssignmentEmail(c.env, {
+      incidentId: incidentUuid,
+      priority: priority || 'P3',
+      description: description || title || 'Security Incident',
+      photoUrl: finalPhotoUrl,
+      assignmentGroup: targetGroup,
+      assignedTo: assigned_to || 'All Unit Members',
+      status: 'OPEN',
+    });
+
     return c.json({ success: true, incident: data }, 201);
 
   } catch (error) {
@@ -1221,13 +1242,23 @@ app.post('/api/v1/incidents', async (c) => {
 app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = getSupabase(c.env);
-    const { data, error } = await supabase
-      .from('incidents')
-      .select('*')
-      .order('reported_at', { ascending: false });
+    const [incRes, guardsRes] = await Promise.all([
+      supabase.from('incidents').select('*').order('reported_at', { ascending: false }),
+      supabase.from('guards').select('guard_id, full_name, employee_code, role, site_location')
+    ]);
     
-    if (error) throw error;
-    return c.json({ success: true, incidents: data });
+    if (incRes.error) throw incRes.error;
+    const guardsMap = new Map((guardsRes.data || []).map((g: any) => [g.guard_id, g]));
+
+    const enriched = (incRes.data || []).map((inc: any) => {
+      const g = inc.guard_id ? guardsMap.get(inc.guard_id) : null;
+      return {
+        ...inc,
+        guards: g ? { full_name: g.full_name, employee_code: g.employee_code } : null
+      };
+    });
+
+    return c.json({ success: true, incidents: enriched });
   } catch (error) {
     return c.json({ success: false, message: 'Failed to fetch incidents' }, 500);
   }
@@ -1355,6 +1386,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.urgency !== undefined) updates.urgency = body.urgency;
     if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
     if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to;
+    if (body.guard_id !== undefined) updates.guard_id = body.guard_id;
 
     let { data: updatedIncident, error: updateErr } = await supabase
       .from('incidents')
@@ -1392,11 +1424,37 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.status && body.status !== current.status) {
       changes.push(`State changed from ${current.status} to ${body.status}`);
     }
+    if (body.assignment_group && body.assignment_group !== current.assignment_group) {
+      changes.push(`Assignment group set to "${body.assignment_group}"`);
+    }
+    if (body.assigned_to && body.assigned_to !== current.assigned_to) {
+      changes.push(`Assigned to "${body.assigned_to}"`);
+    }
+
+    // Automatically send email to all members of the Assignment Group whenever assigned/updated
+    const targetGroup = body.assignment_group || current.assignment_group || 'Security Operations L1';
+    const targetAssignee = body.assigned_to || current.assigned_to || 'Unit Member';
+
+    const emailDispatchResult = await sendGroupAssignmentEmail(c.env, {
+      incidentId,
+      priority: body.priority || current.priority || 'P3',
+      description: body.description || current.description || 'Security Incident',
+      photoUrl: current.photo_url || null,
+      assignmentGroup: targetGroup,
+      assignedTo: targetAssignee,
+      status: body.status || current.status || 'OPEN',
+      workNote: body.work_note,
+    });
+
+    const emailLogLine = emailDispatchResult.ok
+      ? `📧 Auto-Email Dispatched to [${targetGroup}] members (${emailDispatchResult.recipients.join(', ')})`
+      : `⚠️ Auto-Email Notice for [${targetGroup}]: ${emailDispatchResult.error}`;
 
     let createdActivity = null;
     const combinedMessage = [
       body.work_note ? body.work_note.trim() : '',
-      changes.length > 0 ? `Field Changes: ${changes.join(', ')}` : ''
+      changes.length > 0 ? `Field Changes: ${changes.join(', ')}` : '',
+      emailLogLine
     ].filter(Boolean).join('\n\n');
 
     if (combinedMessage) {
@@ -1418,7 +1476,10 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     return c.json({ 
       success: true, 
       incident: updatedIncident, 
-      activity: createdActivity 
+      activity: createdActivity,
+      email_dispatched: emailDispatchResult.ok,
+      email_recipients: emailDispatchResult.recipients,
+      email_error: emailDispatchResult.error
     });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to update incident' }, 500);
@@ -1468,7 +1529,7 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       resolvedIncident = fallback.data;
     }
 
-    const activityMessage = `✅ INCIDENT RESOLVED\nResolution Code: ${resolutionCode}\nResolution Notes: ${resolutionNotes.trim()}`;
+    const activityMessage = `INCIDENT RESOLVED\nResolution Code: ${resolutionCode}\nResolution Notes: ${resolutionNotes.trim()}`;
 
     const { data: newUpdate } = await supabase
       .from('incident_updates')
@@ -1513,7 +1574,7 @@ app.delete('/api/v1/incidents/:id', async (c) => {
 });
 
 // ==========================================
-// 7. ADMIN WEB DASHBOARD: CONFIGS
+// 7. ADMIN WEB DASHBOARD: CONFIGS & AUTO GROUP EMAILS
 // ==========================================
 app.get('/api/v1/admin/configs', async (c) => {
   try {
@@ -1542,6 +1603,145 @@ app.post('/api/v1/admin/configs', async (c) => {
   }
 });
 
+// Automatically sends HTML email to all members bound to the given Assignment Group
+async function sendGroupAssignmentEmail(
+  env: Bindings,
+  params: {
+    incidentId: string;
+    priority: string;
+    description: string;
+    photoUrl: string | null;
+    assignmentGroup: string;
+    assignedTo: string;
+    status: string;
+    workNote?: string;
+  }
+): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
+  const supabase = getSupabase(env);
+  const { data: configs, error } = await supabase
+    .from('admin_configurations')
+    .select('key_name, key_value')
+    .in('key_name', ['ENABLE_GMAIL', 'GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL', 'ASSIGNMENT_GROUP_BINDINGS']);
+
+  if (error || !configs) {
+    return { ok: false, recipients: [], error: 'Could not read admin_configurations' };
+  }
+
+  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  if (configMap['ENABLE_GMAIL'] === 'false') {
+    return { ok: false, recipients: [], error: 'Gmail notifications disabled in API Integrations' };
+  }
+
+  const token = (configMap['GMAIL_ACCESS_TOKEN'] || '').trim();
+  const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
+
+  // Resolve all member email addresses bound to this Assignment Group
+  const recipientSet = new Set<string>();
+  if (managerEmail && managerEmail.includes('@')) {
+    recipientSet.add(managerEmail);
+  }
+
+  if (configMap['ASSIGNMENT_GROUP_BINDINGS']) {
+    try {
+      const parsedBindings = JSON.parse(configMap['ASSIGNMENT_GROUP_BINDINGS']);
+      const groupMembers: Array<{ email?: string; full_name?: string }> =
+        parsedBindings[params.assignmentGroup] || [];
+      groupMembers.forEach((m) => {
+        if (m.email && m.email.includes('@')) {
+          recipientSet.add(m.email.trim());
+        }
+      });
+    } catch (_) {}
+  }
+
+  const recipients = Array.from(recipientSet);
+  if (!token || recipients.length === 0) {
+    return { ok: false, recipients: [], error: 'Missing Gmail OAuth2 Token or recipient emails' };
+  }
+
+  const caseNumber = `INC${params.incidentId.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`;
+  const subjectText = `[Rakshak Dispatch - ${params.assignmentGroup}] ${params.priority} Case ${caseNumber} Assigned`;
+  const encodedSubject = `=?utf-8?B?${utf8ToBase64(subjectText)}?=`;
+
+  const htmlBody = `
+    <div style="font-family: Arial, sans-serif; max-width: 620px; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
+      <div style="background: #0f172a; color: #ffffff; padding: 16px 20px;">
+        <h2 style="margin: 0; font-size: 17px;">Rakshak Security Group Dispatch Alert</h2>
+        <p style="margin: 4px 0 0; font-size: 12px; color: #94a3b8;">
+          Assignment Group: <strong style="color:#38bdf8;">${params.assignmentGroup}</strong> • Case: ${caseNumber}
+        </p>
+      </div>
+      <div style="padding: 20px; color: #1e293b; font-size: 13px; line-height: 1.6; background: #ffffff;">
+        <p style="margin-top:0;">This security incident has been assigned to <strong>${params.assignmentGroup}</strong>. All bound unit members are receiving this automatic dispatch notification.</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold; width: 35%;">Case ID</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${caseNumber}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Priority / Status</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${params.priority}</strong> (${params.status})</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assignment Group</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignmentGroup}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Lead Assignee</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignedTo}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Description</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.description}</td>
+          </tr>
+          ${params.workNote ? `
+          <tr>
+            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a; font-weight: bold;">Dispatch Instructions</td>
+            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a;">${params.workNote}</td>
+          </tr>` : ''}
+        </table>
+        ${params.photoUrl ? `<div style="margin-top: 14px;"><img src="${params.photoUrl}" alt="Incident Evidence" style="max-width: 100%; max-height: 260px; border-radius: 8px; border: 1px solid #cbd5e1;"/></div>` : ''}
+      </div>
+    </div>
+  `;
+
+  const emailLines = [
+    `To: ${recipients.join(', ')}`,
+    `Subject: ${encodedSubject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    htmlBody
+  ];
+
+  const rawEmail = emailLines.join('\r\n');
+  const base64EncodedEmail = utf8ToBase64(rawEmail)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  try {
+    const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw: base64EncodedEmail })
+    });
+
+    if (!response.ok) {
+      const errBody: any = await response.json().catch(() => ({}));
+      const msg = errBody?.error?.message || `HTTP ${response.status} (Check if Gmail OAuth2 Token expired)`;
+      return { ok: false, recipients, error: msg };
+    }
+
+    return { ok: true, recipients };
+  } catch (err: any) {
+    return { ok: false, recipients, error: err.message || 'Network error calling Gmail API' };
+  }
+}
+
 async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
   const supabase = getSupabase(env);
   const { data: configs, error } = await supabase
@@ -1565,7 +1765,7 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
     to: managerPhone,
     type: "text",
     text: {
-      body: `🚨 *CRITICAL ALERT: ${priority} INCIDENT*\n\nAn incident has been open for 10 minutes and requires immediate attention.\n\n*ID:* ${incidentId}\n*Details:* ${description}\n\nPlease check the admin dashboard immediately.`
+      body: `*CRITICAL ALERT: ${priority} INCIDENT*\n\nAn incident has been open for 10 minutes and requires immediate attention.\n\n*ID:* ${incidentId}\n*Details:* ${description}\n\nPlease check the admin dashboard immediately.`
     }
   };
 
@@ -1585,50 +1785,16 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
 }
 
 async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
-  const supabase = getSupabase(env);
-  const { data: configs, error } = await supabase
-    .from('admin_configurations')
-    .select('key_name, key_value')
-    .in('key_name', ['ENABLE_GMAIL', 'GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL']);
-
-  if (error || !configs) return false;
-
-  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
-  if (configMap['ENABLE_GMAIL'] === 'false') return false;
-
-  const token = configMap['GMAIL_ACCESS_TOKEN'];
-  const managerEmail = configMap['MANAGER_EMAIL'];
-
-  if (!token || !managerEmail) return false;
-
-  const emailLines = [
-    `To: ${managerEmail}`,
-    'Subject: =?utf-8?B?' + btoa(`🚨 CRITICAL SLA BREACH: ${priority} Incident`) + '?=',
-    'Content-Type: text/html; charset=utf-8',
-    '',
-    `<h2>SLA Escalation: ${priority} Incident</h2>`,
-    `<p><strong>Incident ID:</strong> ${incidentId}</p>`,
-    `<p><strong>Description:</strong> ${description}</p>`,
-    photoUrl ? `<p><img src="${photoUrl}" alt="Incident Photo" style="max-width:300px;"/></p>` : '',
-    `<p>This incident has been OPEN for more than 10 minutes. Please take immediate action.</p>`
-  ];
-
-  const email = emailLines.join('\r\n');
-  const base64EncodedEmail = btoa(email).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-  try {
-    const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ raw: base64EncodedEmail })
-    });
-    return response.ok;
-  } catch (err) {
-    return false;
-  }
+  const res = await sendGroupAssignmentEmail(env, {
+    incidentId,
+    priority,
+    description,
+    photoUrl,
+    assignmentGroup: 'Security Operations L1',
+    assignedTo: 'SLA Escalation',
+    status: 'ESCALATED',
+  });
+  return res.ok;
 }
 
 // --- WORKER EXPORT ---
