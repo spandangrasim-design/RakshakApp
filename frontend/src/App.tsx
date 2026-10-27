@@ -6,12 +6,37 @@ import QRGenerator from './pages/QRGenerator';
 import AdminConfigsPage from './pages/AdminConfigsPage'; 
 import IncidentsDashboard from './pages/IncidentsDashboard';
 import IncidentDetails from './pages/IncidentDetails';
-import { GuardsView } from './components/GuardsView'; // <-- NEW: Imported GuardsView
-import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users } from 'lucide-react'; // <-- NEW: Added Users icon
+import { GuardsView } from './components/GuardsView';
+import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users } from 'lucide-react';
 
-// 1. Create a Layout Wrapper for authenticated pages with navigation tabs
-const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => void, children: React.ReactNode }) => {
+interface VisibleModules {
+  module_patrol?: boolean;
+  module_incidents?: boolean;
+  module_qr_generator?: boolean;
+  module_integrations?: boolean;
+  module_activity_logs?: boolean;
+  module_sync_queue?: boolean;
+}
+
+// 1. Layout Wrapper with Strict Dynamic Module Filtering
+const AdminLayout = ({ 
+  user, 
+  modules, 
+  onLogout, 
+  children 
+}: { 
+  user: any; 
+  modules: VisibleModules; 
+  onLogout: () => void; 
+  children: React.ReactNode; 
+}) => {
     const location = useLocation();
+
+    // Features only render if explicitly true
+    const showPatrol = modules.module_patrol !== false;
+    const showIncidents = modules.module_incidents !== false;
+    const showQR = modules.module_qr_generator !== false;
+    const showIntegrations = modules.module_integrations !== false;
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -31,34 +56,37 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                             </div>
                         </div>
 
-                        {/* Navigation Tabs */}
+                        {/* Dynamic Navigation Tabs (Disabled modules are not rendered) */}
                         <nav className="hidden md:flex items-center gap-2">
-                            <Link
-                                to="/reports"
-                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname === '/reports'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                }`}
-                            >
-                                <FileText className="h-4 w-4" />
-                                Reports
-                            </Link>
+                            {showPatrol && (
+                                <Link
+                                    to="/reports"
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                        location.pathname === '/reports'
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                    }`}
+                                >
+                                    <FileText className="h-4 w-4" />
+                                    Reports
+                                </Link>
+                            )}
                             
-                            {/* INCIDENTS DASHBOARD LINK */}
-                            <Link
-                                to="/incidents"
-                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname.startsWith('/incidents')
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                }`}
-                            >
-                                <AlertTriangle className="h-4 w-4" />
-                                Incidents
-                            </Link>
+                            {showIncidents && (
+                                <Link
+                                    to="/incidents"
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                        location.pathname.startsWith('/incidents')
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                    }`}
+                                >
+                                    <AlertTriangle className="h-4 w-4" />
+                                    Incidents
+                                </Link>
+                            )}
 
-                            {/* GUARDS MANAGEMENT LINK */}
+                            {/* Guard Workforce Management */}
                             <Link
                                 to="/guards"
                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
@@ -71,36 +99,40 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                                 Guards
                             </Link>
 
-                            <Link
-                                to="/qr-generator"
-                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname === '/qr-generator'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                }`}
-                            >
-                                <QrCode className="h-4 w-4" />
-                                QR Generator
-                            </Link>
+                            {showQR && (
+                                <Link
+                                    to="/qr-generator"
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                        location.pathname === '/qr-generator'
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                    }`}
+                                >
+                                    <QrCode className="h-4 w-4" />
+                                    QR Generator
+                                </Link>
+                            )}
                             
-                            <Link
-                                to="/admin/configs"
-                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname === '/admin/configs'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                }`}
-                            >
-                                <Sliders className="h-4 w-4" />
-                                API Integrations
-                            </Link>
+                            {showIntegrations && (
+                                <Link
+                                    to="/admin/configs"
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                        location.pathname === '/admin/configs'
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                    }`}
+                                >
+                                    <Sliders className="h-4 w-4" />
+                                    API Integrations
+                                </Link>
+                            )}
                         </nav>
                     </div>
 
                     <div className="flex items-center gap-4">
                         <div className="hidden text-right sm:block">
                             <div className="text-xs font-semibold text-slate-900">{user?.full_name || 'Admin'}</div>
-                            <div className="text-[11px] text-slate-400">{user?.employee_code || 'Site Manager'}</div>
+                            <div className="text-[11px] text-slate-400">{user?.role || user?.employee_code || 'Site Manager'}</div>
                         </div>
 
                         <button
@@ -114,15 +146,13 @@ const AdminLayout = ({ user, onLogout, children }: { user: any, onLogout: () => 
                 </div>
             </header>
 
-            {/* Main Content Area */}
-            <main>
-                {children}
-            </main>
+            {/* Main Content */}
+            <main>{children}</main>
         </div>
     );
 };
 
-// 2. Main App Component with Routing
+// 2. Main Router Component with Enforced Route Gates
 export const App: React.FC = () => {
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
     const [user, setUser] = useState<any>(() => {
@@ -130,85 +160,116 @@ export const App: React.FC = () => {
         return saved ? JSON.parse(saved) : null;
     });
 
-    const handleLoginSuccess = (newToken: string, userData: any) => {
+    const [visibleModules, setVisibleModules] = useState<VisibleModules>(() => {
+        const saved = localStorage.getItem('visible_modules');
+        return saved ? JSON.parse(saved) : {
+            module_patrol: true,
+            module_incidents: true,
+            module_qr_generator: true,
+            module_integrations: true,
+            module_activity_logs: true,
+            module_sync_queue: true
+        };
+    });
+
+    const handleLoginSuccess = (newToken: string, userData: any, modules?: VisibleModules) => {
         setToken(newToken);
         setUser(userData);
         localStorage.setItem('token', newToken);
         if (userData) {
             localStorage.setItem('user', JSON.stringify(userData));
         }
+        if (modules) {
+            setVisibleModules(modules);
+            localStorage.setItem('visible_modules', JSON.stringify(modules));
+        }
     };
 
     const handleLogout = () => {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
+        localStorage.removeItem('visible_modules');
         setToken(null);
         setUser(null);
     };
 
+    const defaultRedirect = visibleModules.module_patrol !== false ? '/reports' : '/guards';
+
     return (
         <Router>
             <Routes>
-                {/* Public Route: Login */}
+                {/* Login */}
                 <Route
                     path="/login"
                     element={
                         !token ? (
                             <Login onLoginSuccess={handleLoginSuccess} />
                         ) : (
-                            <Navigate to="/reports" replace />
+                            <Navigate to={defaultRedirect} replace />
                         )
                     }
                 />
 
-                {/* Protected Route: Reports Dashboard */}
+                {/* Reports / Patrol Dashboard */}
                 <Route
                     path="/reports"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
-                                <ReportsPage />
-                            </AdminLayout>
+                            visibleModules.module_patrol !== false ? (
+                                <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                    <ReportsPage />
+                                </AdminLayout>
+                            ) : (
+                                <Navigate to="/guards" replace />
+                            )
                         ) : (
                             <Navigate to="/login" replace />
                         )
                     }
                 />
 
-                {/* INCIDENTS DASHBOARD ROUTE */}
+                {/* Incidents Dashboard */}
                 <Route
                     path="/incidents"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
-                                <IncidentsDashboard />
-                            </AdminLayout>
+                            visibleModules.module_incidents !== false ? (
+                                <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                    <IncidentsDashboard />
+                                </AdminLayout>
+                            ) : (
+                                <Navigate to={defaultRedirect} replace />
+                            )
                         ) : (
                             <Navigate to="/login" replace />
                         )
                     }
                 />
 
-                {/* TICKET DETAILS ROUTE */}
+                {/* Incident Details / Dispatch Console */}
                 <Route
                     path="/incidents/:id"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
-                                <IncidentDetails user={user} />
-                            </AdminLayout>
+                            visibleModules.module_incidents !== false ? (
+                                <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                    <IncidentDetails user={user} />
+                                </AdminLayout>
+                            ) : (
+                                <Navigate to={defaultRedirect} replace />
+                            )
                         ) : (
                             <Navigate to="/login" replace />
                         )
                     }
                 />
 
-                {/* Protected Route: Guard Management */}
+                {/* Guard Workforce Management */}
                 <Route
                     path="/guards"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
+                            <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                 <GuardsView />
                             </AdminLayout>
                         ) : (
@@ -217,38 +278,46 @@ export const App: React.FC = () => {
                     }
                 />
 
-                {/* Protected Route: Cryptographic QR Generator */}
+                {/* QR Generator */}
                 <Route
                     path="/qr-generator"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
-                                <QRGenerator />
-                            </AdminLayout>
+                            visibleModules.module_qr_generator !== false ? (
+                                <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                    <QRGenerator />
+                                </AdminLayout>
+                            ) : (
+                                <Navigate to={defaultRedirect} replace />
+                            )
                         ) : (
                             <Navigate to="/login" replace />
                         )
                     }
                 />
 
-                {/* Protected Route for Admin Configurations */}
+                {/* API Integrations */}
                 <Route
                     path="/admin/configs"
                     element={
                         token ? (
-                            <AdminLayout user={user} onLogout={handleLogout}>
-                                <AdminConfigsPage />
-                            </AdminLayout>
+                            visibleModules.module_integrations !== false ? (
+                                <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                    <AdminConfigsPage />
+                                </AdminLayout>
+                            ) : (
+                                <Navigate to={defaultRedirect} replace />
+                            )
                         ) : (
                             <Navigate to="/login" replace />
                         )
                     }
                 />
 
-                {/* Fallback Route */}
+                {/* Fallback */}
                 <Route
                     path="*"
-                    element={<Navigate to={token ? "/reports" : "/login"} replace />}
+                    element={<Navigate to={token ? defaultRedirect : "/login"} replace />}
                 />
             </Routes>
         </Router>

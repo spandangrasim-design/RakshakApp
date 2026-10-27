@@ -13,7 +13,17 @@ type Bindings = {
   R2_BUCKET: R2Bucket
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
+type Variables = {
+  adminUser?: {
+    guard_id: string
+    role: string
+    employee_code: string
+    tenant_id: string
+    is_platform_super_admin: boolean
+  }
+}
+
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 app.use('/*', cors())
 
@@ -24,6 +34,175 @@ function utf8ToBase64(str: string): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+// --- MASTER NESTED TENANT FEATURES INTERFACE ---
+export interface TenantFeatures {
+  module_patrol: {
+    enabled: boolean
+    allow_route_assignment: boolean
+    allow_live_gps_trail: boolean
+    allow_geofence_audit: boolean
+  }
+  module_incidents: {
+    enabled: boolean
+    allow_web_ticket_queue: boolean
+    allow_mobile_incident_creation: boolean
+    allowed_creation_options: {
+      option_1_severity: boolean
+      option_2_category: boolean
+      option_3_group_routing: boolean
+      option_4_title: boolean
+      option_5_description: boolean
+      option_6_camera_photo: boolean
+    }
+  }
+  module_integrations: {
+    enabled: boolean
+    channels: {
+      gmail_oauth: boolean
+      whatsapp_api: boolean
+      telegram_bot: boolean
+    }
+  }
+  module_qr_generator: {
+    enabled: boolean
+    allow_pdf_export: boolean
+  }
+  module_activity_logs: {
+    enabled: boolean
+  }
+  module_sync_queue: {
+    enabled: boolean
+  }
+}
+
+export const DEFAULT_TENANT_FEATURES: TenantFeatures = {
+  module_patrol: {
+    enabled: true,
+    allow_route_assignment: true,
+    allow_live_gps_trail: true,
+    allow_geofence_audit: true,
+  },
+  module_incidents: {
+    enabled: true,
+    allow_web_ticket_queue: true,
+    allow_mobile_incident_creation: true,
+    allowed_creation_options: {
+      option_1_severity: false,
+      option_2_category: false,
+      option_3_group_routing: false,
+      option_4_title: true,
+      option_5_description: true,
+      option_6_camera_photo: true,
+    },
+  },
+  module_integrations: {
+    enabled: true,
+    channels: {
+      gmail_oauth: true,
+      whatsapp_api: false,
+      telegram_bot: false,
+    },
+  },
+  module_qr_generator: {
+    enabled: true,
+    allow_pdf_export: true,
+  },
+  module_activity_logs: {
+    enabled: true,
+  },
+  module_sync_queue: {
+    enabled: true,
+  },
+}
+
+// --- APP PERMISSIONS INTERFACE (USER LEVEL) ---
+export interface AppPermissions {
+  patrol_route: boolean
+  report_incident: boolean
+  incident_tickets: boolean
+  activity_log: boolean
+  sync_queue: boolean
+  incident_option_1_severity: boolean
+  incident_option_2_category: boolean
+  incident_option_3_group: boolean
+  incident_option_4_title: boolean
+  incident_option_5_description: boolean
+  incident_option_6_photo: boolean
+}
+
+export const DEFAULT_GUARD_PERMISSIONS: AppPermissions = {
+  patrol_route: true,
+  report_incident: true,
+  incident_tickets: true,
+  activity_log: true,
+  sync_queue: true,
+  incident_option_1_severity: false,
+  incident_option_2_category: false,
+  incident_option_3_group: false,
+  incident_option_4_title: true,
+  incident_option_5_description: true,
+  incident_option_6_photo: true,
+}
+
+export const DEFAULT_SUPERVISOR_PERMISSIONS: AppPermissions = {
+  patrol_route: true,
+  report_incident: true,
+  incident_tickets: true,
+  activity_log: true,
+  sync_queue: true,
+  incident_option_1_severity: true,
+  incident_option_2_category: true,
+  incident_option_3_group: true,
+  incident_option_4_title: true,
+  incident_option_5_description: true,
+  incident_option_6_photo: true,
+}
+
+// --- DUAL-LAYER RESOLUTION ENGINE ---
+function resolveDualLayerPermissions(
+  tenantFeatures: TenantFeatures,
+  userPermissions: AppPermissions
+): { active_permissions: AppPermissions; visible_modules: Record<string, boolean> } {
+  const pEnabled = tenantFeatures.module_patrol?.enabled ?? true
+  const incEnabled = tenantFeatures.module_incidents?.enabled ?? true
+  const incOptions = tenantFeatures.module_incidents?.allowed_creation_options || DEFAULT_TENANT_FEATURES.module_incidents.allowed_creation_options
+
+  const active: AppPermissions = {
+    // 1. Patrol module
+    patrol_route: pEnabled && (userPermissions.patrol_route ?? true),
+
+    // 2. Incident module (Completely revoked if tenant did not license module_incidents)
+    report_incident: incEnabled && (userPermissions.report_incident ?? true),
+    incident_tickets: incEnabled && (userPermissions.incident_tickets ?? true),
+
+    // 3. Nested 6-Step Incident Form Options: Gated by Tenant License AND Guard Permission
+    incident_option_1_severity: incEnabled && incOptions.option_1_severity && (userPermissions.incident_option_1_severity ?? false),
+    incident_option_2_category: incEnabled && incOptions.option_2_category && (userPermissions.incident_option_2_category ?? false),
+    incident_option_3_group: incEnabled && incOptions.option_3_group_routing && (userPermissions.incident_option_3_group ?? false),
+    incident_option_4_title: incEnabled && incOptions.option_4_title && (userPermissions.incident_option_4_title ?? true),
+    incident_option_5_description: incEnabled && incOptions.option_5_description && (userPermissions.incident_option_5_description ?? true),
+    incident_option_6_photo: incEnabled && incOptions.option_6_camera_photo && (userPermissions.incident_option_6_photo ?? true),
+
+    // 4. Utility modules
+    activity_log: (tenantFeatures.module_activity_logs?.enabled ?? true) && (userPermissions.activity_log ?? true),
+    sync_queue: (tenantFeatures.module_sync_queue?.enabled ?? true) && (userPermissions.sync_queue ?? true),
+  }
+
+  const visible: Record<string, boolean> = {
+    module_patrol: pEnabled,
+    module_incidents: incEnabled,
+    module_qr_generator: tenantFeatures.module_qr_generator?.enabled ?? true,
+    module_integrations: tenantFeatures.module_integrations?.enabled ?? true,
+    module_activity_logs: tenantFeatures.module_activity_logs?.enabled ?? true,
+    module_sync_queue: tenantFeatures.module_sync_queue?.enabled ?? true,
+    integration_gmail: tenantFeatures.module_integrations?.channels?.gmail_oauth ?? false,
+    integration_whatsapp: tenantFeatures.module_integrations?.channels?.whatsapp_api ?? false,
+    integration_telegram: tenantFeatures.module_integrations?.channels?.telegram_bot ?? false,
+  }
+
+  return { active_permissions: active, visible_modules: visible }
 }
 
 // --- SCHEMAS ---
@@ -98,6 +277,8 @@ const createGuardSchema = z.object({
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
+  app_permissions: z.record(z.boolean()).optional().nullable(),
+  tenant_id: sanitizeUuid
 })
 
 const updateGuardSchema = z.object({
@@ -114,6 +295,7 @@ const updateGuardSchema = z.object({
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
+  app_permissions: z.record(z.boolean()).optional().nullable()
 })
 
 const getSupabase = (env: Bindings) =>
@@ -122,11 +304,12 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
-// --- HELPER: Read & Write Guard Extended Profiles (Email, Phone, Multi-Groups) in admin_configurations ---
+// --- HELPER: Extended profile storage ---
 interface GuardExtendedProfile {
   email?: string | null;
   phone?: string | null;
   assignment_groups?: string[];
+  app_permissions?: Record<string, boolean> | null;
 }
 
 async function getGuardExtendedProfilesMap(supabase: any): Promise<Record<string, GuardExtendedProfile>> {
@@ -156,6 +339,7 @@ async function saveGuardExtendedProfile(
     ...(updates.email !== undefined ? { email: updates.email } : {}),
     ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
     ...(updates.assignment_groups !== undefined ? { assignment_groups: updates.assignment_groups } : {}),
+    ...(updates.app_permissions !== undefined ? { app_permissions: updates.app_permissions } : {}),
   };
 
   await supabase
@@ -164,6 +348,86 @@ async function saveGuardExtendedProfile(
       [{ key_name: 'GUARD_EXTENDED_PROFILES', key_value: JSON.stringify(currentMap) }],
       { onConflict: 'key_name' }
     );
+}
+
+// --- OPTION C HYBRID ENGINE RESOLVER ---
+async function resolveEffectivePermissions(
+  supabase: any,
+  roleName: string,
+  guardOverride: Record<string, boolean> | null | undefined
+): Promise<{ permissions: AppPermissions; is_custom_override: boolean; role_defaults: AppPermissions }> {
+  let roleBaseline: AppPermissions = ['Shift Supervisor', 'Security Manager', 'Chief Security Officer', 'Admin'].includes(roleName)
+    ? { ...DEFAULT_SUPERVISOR_PERMISSIONS }
+    : { ...DEFAULT_GUARD_PERMISSIONS };
+
+  const { data: roleRow } = await supabase
+    .from('app_role_permissions')
+    .select('permissions')
+    .eq('role_name', roleName)
+    .maybeSingle();
+
+  if (roleRow?.permissions && typeof roleRow.permissions === 'object') {
+    roleBaseline = { ...roleBaseline, ...roleRow.permissions };
+  }
+
+  const hasOverride = guardOverride !== null && guardOverride !== undefined && Object.keys(guardOverride).length > 0;
+  const effective: AppPermissions = hasOverride
+    ? { ...roleBaseline, ...guardOverride }
+    : { ...roleBaseline };
+
+  return {
+    permissions: effective,
+    is_custom_override: hasOverride,
+    role_defaults: roleBaseline
+  };
+}
+
+// Helper: Resolve tenant features with safe fallback
+async function getTenantFeatures(supabase: any, tenantId: string | null | undefined): Promise<TenantFeatures> {
+  if (!tenantId) return DEFAULT_TENANT_FEATURES;
+  const { data: tenant } = await supabase
+    .from('tenants')
+    .select('features, status')
+    .eq('id', tenantId)
+    .maybeSingle();
+
+  if (tenant?.features && typeof tenant.features === 'object') {
+    return tenant.features as TenantFeatures;
+  }
+  return DEFAULT_TENANT_FEATURES;
+}
+
+// --- SUPER ADMIN AUTH MIDDLEWARE ---
+async function requireSuperAdmin(c: any, next: () => Promise<void>) {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ success: false, message: 'Authentication required.' }, 401);
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const role = (payload.role || '').toString();
+
+    const isSuperAdmin = ['Admin', 'Chief Security Officer'].includes(role);
+    if (!isSuperAdmin) {
+      return c.json({
+        success: false,
+        message: 'Forbidden: Super Admin privilege required.'
+      }, 403);
+    }
+
+    c.set('adminUser', {
+      guard_id: payload.sub,
+      role: role,
+      employee_code: payload.employee_code || '',
+      tenant_id: payload.tenant_id || '',
+      is_platform_super_admin: payload.is_platform_super_admin === true
+    });
+    await next();
+  } catch (err) {
+    return c.json({ success: false, message: 'Invalid or expired authorization token.' }, 401);
+  }
 }
 
 function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
@@ -238,7 +502,7 @@ app.get('/api/v1/media/*', async (c) => {
 });
 
 // ==========================================
-// 1. AUTH ROUTES
+// 1. AUTH ROUTES (WITH DUAL-LAYER FEATURE INJECTION)
 // ==========================================
 app.post('/api/v1/auth/login', async (c) => {
   try {
@@ -257,9 +521,34 @@ app.post('/api/v1/auth/login', async (c) => {
       return c.json({ error_code: 'INVALID_CREDENTIALS', message: 'Invalid Login.' }, 401)
     }
 
+    const roleName = guard.role || 'Guard';
+    const extMap = await getGuardExtendedProfilesMap(supabase);
+    const ext = extMap[guard.guard_id] || {};
+    const effectiveOverrides = guard.app_permissions ?? ext.app_permissions ?? null;
+
+    // 1. Resolve Tier-2 & Tier-3 User Permissions
+    const { permissions: userPerms, is_custom_override } = await resolveEffectivePermissions(
+      supabase,
+      roleName,
+      effectiveOverrides
+    );
+
+    // 2. Resolve Tier-1 Tenant Licensed Modules
+    const tenantFeatures = await getTenantFeatures(supabase, guard.tenant_id);
+
+    // 3. Compute Final Active Features
+    const { active_permissions, visible_modules } = resolveDualLayerPermissions(tenantFeatures, userPerms);
+
+    const isPlatformSuperAdmin = employee_code === 'superadmin' || roleName === 'Chief Security Officer';
+    const isSuperAdmin = ['Admin', 'Chief Security Officer'].includes(roleName);
+
     const payload = {
       sub: guard.guard_id,
-      role: guard.role || 'guard',
+      role: roleName,
+      employee_code: guard.employee_code,
+      tenant_id: guard.tenant_id || '',
+      is_platform_super_admin: isPlatformSuperAdmin,
+      is_super_admin: isSuperAdmin,
       device_id: device_id || 'unknown',
       exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60) 
     }
@@ -273,11 +562,17 @@ app.post('/api/v1/auth/login', async (c) => {
         guard_id: guard.guard_id,
         full_name: guard.full_name,
         employee_code: guard.employee_code,
-        role: guard.role || 'Guard',
+        role: roleName,
+        tenant_id: guard.tenant_id,
+        is_platform_super_admin: isPlatformSuperAdmin,
+        is_super_admin: isSuperAdmin,
         site_location: guard.site_location || 'Main Plant',
         assigned_round_id: guard.assigned_round_id || null,
         assigned_round_ids: guard.assigned_round_ids || []
       },
+      app_permissions: active_permissions,
+      visible_modules: visible_modules,
+      is_custom_override: is_custom_override,
       active_shift: null 
     }, 200)
 
@@ -989,7 +1284,7 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 });
 
 // ==========================================
-// 5. GUARD MANAGEMENT CRUD & MULTI-GROUP / MULTI-ROUTE HIERARCHY
+// 5. GUARD MANAGEMENT & HYBRID ACCESS CONTROL
 // ==========================================
 app.get('/api/v1/guards', async (c) => {
   try {
@@ -1005,7 +1300,7 @@ app.get('/api/v1/guards', async (c) => {
 
     const roundsMap = new Map((roundsRes.data || []).map((r: any) => [r.id, r]));
 
-    const guardsWithRounds = (guardsRes.data || []).map((g: any) => {
+    const guardsWithRounds = await Promise.all((guardsRes.data || []).map(async (g: any) => {
       const ext = extProfilesMap[g.guard_id] || {};
 
       const rawRoundIds: string[] = Array.isArray(g.assigned_round_ids) && g.assigned_round_ids.length > 0
@@ -1030,6 +1325,9 @@ app.get('/api/v1/guards', async (c) => {
       const resolvedEmail = g.email || ext.email || null;
       const resolvedPhone = g.phone || ext.phone || null;
 
+      const rawOverrides = g.app_permissions ?? ext.app_permissions ?? null;
+      const hybrid = await resolveEffectivePermissions(supabase, g.role || 'Guard', rawOverrides);
+
       return {
         guard_id: g.guard_id,
         full_name: g.full_name,
@@ -1037,6 +1335,7 @@ app.get('/api/v1/guards', async (c) => {
         email: resolvedEmail,
         phone: resolvedPhone,
         role: g.role,
+        tenant_id: g.tenant_id,
         site_location: g.site_location,
         shift_timing: g.shift_timing,
         is_active: g.is_active,
@@ -1047,13 +1346,190 @@ app.get('/api/v1/guards', async (c) => {
         assigned_round_id: uniqueRoundIds[0] || null,
         assigned_round_ids: uniqueRoundIds,
         rounds: assignedRounds[0] || null,
-        assigned_rounds: assignedRounds
+        assigned_rounds: assignedRounds,
+        app_permissions: hybrid.permissions,
+        app_permissions_override: rawOverrides,
+        is_custom_override: hybrid.is_custom_override,
+        role_defaults: hybrid.role_defaults
       };
-    });
+    }));
 
     return c.json({ success: true, guards: guardsWithRounds });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to fetch guards' }, 500);
+  }
+});
+
+// Mobile App Endpoint: Fetch logged-in guard's latest calculated permissions
+app.get('/api/v1/guards/my-permissions', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ success: false, message: 'Unauthorized' }, 401);
+    }
+    const token = authHeader.split(' ')[1];
+    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const guardId = payload.sub as string;
+
+    const supabase = getSupabase(c.env);
+    const [guardRes, extMap] = await Promise.all([
+      supabase.from('guards').select('guard_id, full_name, role, is_active, tenant_id, app_permissions').eq('guard_id', guardId).maybeSingle(),
+      getGuardExtendedProfilesMap(supabase)
+    ]);
+
+    const guard = guardRes.data;
+    if (!guard) return c.json({ success: false, message: 'Guard record not found' }, 404);
+
+    const ext = extMap[guardId] || {};
+    const rawOverrides = guard.app_permissions ?? ext.app_permissions ?? null;
+
+    // 1. Resolve User Tier Hybrid Permissions
+    const { permissions: userPerms, is_custom_override } = await resolveEffectivePermissions(
+      supabase,
+      guard.role || 'Guard',
+      rawOverrides
+    );
+
+    // 2. Resolve Tenant Tier Licensed Features
+    const tenantFeatures = await getTenantFeatures(supabase, guard.tenant_id);
+
+    // 3. Dual-Layer Final Gating
+    const { active_permissions, visible_modules } = resolveDualLayerPermissions(tenantFeatures, userPerms);
+
+    return c.json({
+      success: true,
+      guard_id: guardId,
+      full_name: guard.full_name,
+      role: guard.role || 'Guard',
+      tenant_id: guard.tenant_id,
+      is_super_admin: ['Admin', 'Chief Security Officer'].includes(guard.role || ''),
+      app_permissions: active_permissions,
+      visible_modules: visible_modules,
+      is_custom_override: is_custom_override,
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+  }
+});
+
+// ==========================================
+// ACCESS CONTROL ADMIN ENDPOINTS (SUPER ADMIN ONLY)
+// ==========================================
+
+// 1. Get All Role Default Templates
+app.get('/api/v1/access-control/roles', requireSuperAdmin, async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data, error } = await supabase.from('app_role_permissions').select('*');
+    if (error) throw error;
+    return c.json({ success: true, roles: data || [] });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
+  }
+});
+
+// 2. Update a Role Baseline Template
+app.put('/api/v1/access-control/roles/:role', requireSuperAdmin, async (c) => {
+  try {
+    const roleName = decodeURIComponent(c.req.param('role'));
+    const body = await c.req.json();
+    const permissions = body.permissions;
+
+    if (!permissions || typeof permissions !== 'object') {
+      return c.json({ success: false, message: 'Invalid permissions payload' }, 400);
+    }
+
+    const supabase = getSupabase(c.env);
+    const { data, error } = await supabase
+      .from('app_role_permissions')
+      .upsert({
+        role_name: roleName,
+        permissions: permissions,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'role_name' })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return c.json({ success: true, role: data });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
+  }
+});
+
+// 3. Super Admin updates individual guard permissions (or resets to role default)
+app.patch('/api/v1/access-control/guards/:id', requireSuperAdmin, async (c) => {
+  try {
+    const targetGuardId = c.req.param('id');
+    const body = await c.req.json();
+    const overrides = body.overrides !== undefined ? body.overrides : body.app_permissions;
+
+    const supabase = getSupabase(c.env);
+
+    await saveGuardExtendedProfile(supabase, targetGuardId, { app_permissions: overrides });
+
+    let { data: updatedGuard, error } = await supabase
+      .from('guards')
+      .update({ app_permissions: overrides })
+      .eq('guard_id', targetGuardId)
+      .select('*')
+      .maybeSingle();
+
+    if (error) {
+      const { data: existing } = await supabase.from('guards').select('*').eq('guard_id', targetGuardId).maybeSingle();
+      updatedGuard = existing;
+    }
+
+    const hybrid = await resolveEffectivePermissions(supabase, updatedGuard.role || 'Guard', overrides);
+
+    return c.json({
+      success: true,
+      guard_id: targetGuardId,
+      full_name: updatedGuard.full_name,
+      role: updatedGuard.role,
+      app_permissions: hybrid.permissions,
+      is_custom_override: hybrid.is_custom_override
+    });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
+  }
+});
+
+// ==========================================
+// PLATFORM SUPER ADMIN: MULTI-TENANT MANAGEMENT
+// ==========================================
+app.get('/api/v1/super-admin/tenants', requireSuperAdmin, async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data: tenants, error } = await supabase.from('tenants').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    return c.json({ success: true, tenants: tenants || [] });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
+  }
+});
+
+app.patch('/api/v1/super-admin/tenants/:id', requireSuperAdmin, async (c) => {
+  try {
+    const tenantId = c.req.param('id');
+    const body = await c.req.json();
+    const supabase = getSupabase(c.env);
+
+    const { data: updated, error } = await supabase
+      .from('tenants')
+      .update({
+        features: body.features,
+        status: body.status || 'ACTIVE',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', tenantId)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+    return c.json({ success: true, tenant: updated });
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500);
   }
 });
 
@@ -1100,6 +1576,8 @@ app.post('/api/v1/guards', async (c) => {
       assigned_round_ids: roundIds,
       reporting_to: parsed.reporting_to,
       is_active: true,
+      tenant_id: parsed.tenant_id || null,
+      app_permissions: parsed.app_permissions ?? null
     };
 
     let { data: newGuard, error } = await supabase
@@ -1109,7 +1587,6 @@ app.post('/api/v1/guards', async (c) => {
       .single();
 
     if (error) {
-      // Fallback if SQL columns (email, phone, assignment_groups, etc.) weren't added to guards table yet
       const basePayload: Record<string, any> = {
         full_name: parsed.full_name.trim(),
         employee_code: parsed.employee_code.trim(),
@@ -1131,8 +1608,11 @@ app.post('/api/v1/guards', async (c) => {
         email: cleanEmail,
         phone: cleanPhone,
         assignment_groups: groupsList,
+        app_permissions: parsed.app_permissions ?? null
       });
     }
+
+    const hybrid = await resolveEffectivePermissions(supabase, newGuard.role || 'Guard', parsed.app_permissions);
 
     return c.json({
       success: true,
@@ -1142,6 +1622,8 @@ app.post('/api/v1/guards', async (c) => {
         phone: cleanPhone,
         assignment_group: groupsList[0],
         assignment_groups: groupsList,
+        app_permissions: hybrid.permissions,
+        is_custom_override: hybrid.is_custom_override
       },
     }, 201);
   } catch (error: any) {
@@ -1190,6 +1672,11 @@ app.patch('/api/v1/guards/:id', async (c) => {
       extUpdates.assignment_groups = updates.assignment_groups;
     }
 
+    if (parsed.app_permissions !== undefined) {
+      updates.app_permissions = parsed.app_permissions;
+      extUpdates.app_permissions = parsed.app_permissions;
+    }
+
     if (parsed.assigned_round_ids !== undefined) {
       updates.assigned_round_ids = parsed.assigned_round_ids;
       updates.assigned_round_id = parsed.assigned_round_ids[0] || null;
@@ -1198,11 +1685,10 @@ app.patch('/api/v1/guards/:id', async (c) => {
       updates.assigned_round_ids = parsed.assigned_round_id ? [parsed.assigned_round_id] : [];
     }
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && Object.keys(extUpdates).length === 0) {
       return c.json({ success: false, message: 'No fields provided to update.' }, 400);
     }
 
-    // Always persist email, phone, and assignment_groups in admin_configurations so it never fails
     if (Object.keys(extUpdates).length > 0) {
       await saveGuardExtendedProfile(supabase, guardId, extUpdates);
     }
@@ -1221,6 +1707,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
       delete safeUpdates.assignment_group;
       delete safeUpdates.assignment_groups;
       delete safeUpdates.assigned_round_ids;
+      delete safeUpdates.app_permissions;
 
       if (Object.keys(safeUpdates).length > 0) {
         const retry = await supabase
@@ -1326,23 +1813,74 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 });
 
 // ==========================================
-// 6. TICKETING & INCIDENT COMMAND + STRICT GROUP-ONLY EMAIL DISPATCH
+// 6. TICKETING & INCIDENT COMMAND (WITH DUAL-LAYER GATING ENFORCEMENT)
 // ==========================================
 app.post('/api/v1/incidents', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
-    let tokenGuardId: string | null = null;
+    let callerTokenGuardId: string | null = null;
+    let callerTenantId: string | null = null;
+    let callerRole: string = 'Guard';
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       try {
         const token = authHeader.split(' ')[1];
         const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-        tokenGuardId = payload.sub as string;
+        callerTokenGuardId = payload.sub as string;
+        callerTenantId = payload.tenant_id as string;
+        callerRole = (payload.role || 'Guard').toString();
       } catch (_) {}
     }
 
     const url = new URL(c.req.url);
     const body = await c.req.json();
+    const supabase = getSupabase(c.env);
+
+    // GATE 1: Verify Tenant License
+    const tenantFeatures = await getTenantFeatures(supabase, callerTenantId);
+    if (!tenantFeatures.module_incidents?.enabled) {
+      return c.json({
+        success: false,
+        message: 'Endpoint Not Found: Incident Command is not licensed for this organization.'
+      }, 404);
+    }
+
+    // GATE 2: Verify Guard Permission and scrub inputs
+    if (callerTokenGuardId) {
+      const [guardRow, extMap] = await Promise.all([
+        supabase.from('guards').select('role, app_permissions').eq('guard_id', callerTokenGuardId).maybeSingle(),
+        getGuardExtendedProfilesMap(supabase)
+      ]);
+      const ext = extMap[callerTokenGuardId] || {};
+      const override = guardRow.data?.app_permissions ?? ext.app_permissions ?? null;
+
+      const { permissions: userPerms } = await resolveEffectivePermissions(
+        supabase,
+        guardRow.data?.role || callerRole,
+        override
+      );
+
+      const { active_permissions } = resolveDualLayerPermissions(tenantFeatures, userPerms);
+
+      if (!active_permissions.report_incident) {
+        return c.json({
+          success: false,
+          message: 'Access Denied: You do not have permission to report incidents.'
+        }, 403);
+      }
+
+      // Enforce safe defaults if option is not licensed to tenant or enabled for guard
+      if (!active_permissions.incident_option_1_severity) {
+        body.priority = 'P3';
+      }
+      if (!active_permissions.incident_option_2_category) {
+        body.category = 'Security / Patrol';
+      }
+      if (!active_permissions.incident_option_3_group) {
+        body.assignment_group = 'Security Operations L1';
+      }
+    }
+
     const {
       client_incident_id,
       guard_id,
@@ -1357,8 +1895,7 @@ app.post('/api/v1/incidents', async (c) => {
       assignment_group
     } = body;
 
-    const resolvedGuardId = guard_id || tokenGuardId || null;
-
+    const resolvedGuardId = guard_id || callerTokenGuardId || null;
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
@@ -1377,7 +1914,6 @@ app.post('/api/v1/incidents', async (c) => {
     }
 
     const targetGroup = assignment_group || 'Security Operations L1';
-    const supabase = getSupabase(c.env);
 
     const insertRecord: Record<string, any> = {
       client_incident_id: incidentUuid,
@@ -1391,7 +1927,7 @@ app.post('/api/v1/incidents', async (c) => {
       photo_url: finalPhotoUrl,
       status: 'OPEN',
       assignment_group: targetGroup,
-      assigned_to: null, // Always blank / unassigned on new ticket creation
+      assigned_to: null,
       reported_at: reported_at || new Date().toISOString()
     };
 
@@ -1402,7 +1938,6 @@ app.post('/api/v1/incidents', async (c) => {
       .single();
 
     if (error) {
-      // Fallback if optional columns are not in incidents table
       const basicRecord = {
         client_incident_id: incidentUuid,
         guard_id: resolvedGuardId,
@@ -1423,19 +1958,23 @@ app.post('/api/v1/incidents', async (c) => {
       data = retry.data;
     }
 
-    const emailResult = await sendGroupAssignmentEmail(c.env, {
-      incidentId: incidentUuid,
-      priority: priority || 'P3',
-      description: description || title || 'Security Incident',
-      photoUrl: finalPhotoUrl,
-      assignmentGroup: targetGroup,
-      assignedTo: 'Unassigned (Group Queue)',
-      status: 'OPEN',
-    });
+    // Only dispatch Gmail if licensed to this tenant
+    let emailResult = { ok: false, recipients: [] as string[], error: 'Module not licensed' };
+    if (tenantFeatures.module_integrations?.channels?.gmail_oauth) {
+      emailResult = await sendGroupAssignmentEmail(c.env, {
+        incidentId: incidentUuid,
+        priority: body.priority || 'P3',
+        description: description || title || 'Security Incident',
+        photoUrl: finalPhotoUrl,
+        assignmentGroup: targetGroup,
+        assignedTo: 'Unassigned (Group Queue)',
+        status: 'OPEN',
+      });
+    }
 
     const emailLogLine = emailResult.ok
       ? `Incident created & Auto-Email Dispatched to [${targetGroup}] members (${emailResult.recipients.join(', ')})`
-      : `Incident created. Auto-Email Notice for [${targetGroup}]: ${emailResult.error}`;
+      : `Incident created. Auto-Email Notice: ${emailResult.error}`;
 
     await supabase.from('incident_updates').insert([{
       incident_id: incidentUuid,
@@ -1670,7 +2209,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       );
     }
 
-    // Fire email when Assignment Group changes OR when a specific Assignee is selected
     let emailTriggered = false;
     let emailDispatchResult: { ok: boolean; recipients: string[]; error?: string } = {
       ok: false,
@@ -1970,7 +2508,6 @@ async function sendGroupAssignmentEmail(
   const targetGroupClean = (params.assignmentGroup || '').trim().toLowerCase();
   const recipientSet = new Set<string>();
 
-  // STRICT: Collect emails ONLY from active guards on the Guards page who belong to this Assignment Group
   (guardsRes.data || []).forEach((g: any) => {
     if (g.is_active === false) return;
     const ext = extProfilesMap[g.guard_id] || {};
@@ -1994,7 +2531,6 @@ async function sendGroupAssignmentEmail(
     }
   });
 
-  // Only include MANAGER_EMAIL on SLA breach escalations or explicit test button (NEVER on group dispatch)
   if (params.includeManagerFallback) {
     const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
     if (managerEmail && managerEmail.includes('@')) {

@@ -4,7 +4,7 @@ import axios from 'axios';
 import { Lock, User, Shield } from 'lucide-react';
 
 interface LoginProps {
-  onLoginSuccess?: (token: string, userData: any) => void;
+  onLoginSuccess?: (token: string, userData: any, modules?: any) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
@@ -22,26 +22,27 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     const baseUrl = import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev';
 
     try {
-      // 1. Matched the backend URL and mapped adminId to employee_code
       const response = await axios.post(`${baseUrl}/api/v1/auth/login`, {
         employee_code: adminId,
         password: password
       });
 
-      // 2. Matched the backend response structure (access_token and guard)
       const token = response.data.access_token;
       const userData = response.data.guard || { full_name: 'Admin', employee_code: adminId };
+      const visibleModules = response.data.visible_modules || {};
 
       if (onLoginSuccess) {
-        onLoginSuccess(token, userData);
+        onLoginSuccess(token, userData, visibleModules);
       } else {
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(userData));
+        localStorage.setItem('visible_modules', JSON.stringify(visibleModules));
       }
 
-      navigate('/reports');
+      // Route dynamically: if Patrol is disabled for this tenant, land on /guards
+      const defaultRoute = visibleModules.module_patrol !== false ? '/reports' : '/guards';
+      navigate(defaultRoute);
     } catch (err: any) {
-      // Handle the exact error message returned by your Hono backend
       setError(err.response?.data?.message || 'Invalid Employee Code or Password');
     } finally {
       setIsLoading(false);

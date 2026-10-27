@@ -13,9 +13,9 @@ import {
   X,
   Users,
   Mail,
-  Phone,
   Trash2,
-  FolderPlus
+  FolderPlus,
+  Sliders
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
@@ -26,6 +26,48 @@ const DEFAULT_GROUPS = [
   'Site Supervisors L2',
   'Fire & Safety Response',
 ];
+
+export interface AppPermissions {
+  patrol_route: boolean;
+  report_incident: boolean;
+  incident_tickets: boolean;
+  activity_log: boolean;
+  sync_queue: boolean;
+  incident_option_1_severity: boolean;
+  incident_option_2_category: boolean;
+  incident_option_3_group: boolean;
+  incident_option_4_title: boolean;
+  incident_option_5_description: boolean;
+  incident_option_6_photo: boolean;
+}
+
+const BASIC_GUARD_PERMISSIONS: AppPermissions = {
+  patrol_route: true,
+  report_incident: true,
+  incident_tickets: true,
+  activity_log: true,
+  sync_queue: true,
+  incident_option_1_severity: false,
+  incident_option_2_category: false,
+  incident_option_3_group: false,
+  incident_option_4_title: true,
+  incident_option_5_description: true,
+  incident_option_6_photo: true,
+};
+
+const FULL_ACCESS_PERMISSIONS: AppPermissions = {
+  patrol_route: true,
+  report_incident: true,
+  incident_tickets: true,
+  activity_log: true,
+  sync_queue: true,
+  incident_option_1_severity: true,
+  incident_option_2_category: true,
+  incident_option_3_group: true,
+  incident_option_4_title: true,
+  incident_option_5_description: true,
+  incident_option_6_photo: true,
+};
 
 interface RoundItem {
   id: string;
@@ -43,6 +85,7 @@ interface Guard {
   shift_timing?: string;
   is_active: boolean;
   created_at: string;
+  tenant_id?: string | null;
   assignment_group?: string | null;
   assignment_groups?: string[];
   assigned_round_id?: string | null;
@@ -50,6 +93,8 @@ interface Guard {
   reporting_to?: string | null;
   rounds?: { id: string; name: string } | null;
   assigned_rounds?: { id: string; name: string }[];
+  app_permissions?: Partial<AppPermissions>;
+  is_custom_override?: boolean;
 }
 
 export const GuardsView: React.FC = () => {
@@ -70,6 +115,11 @@ export const GuardsView: React.FC = () => {
   const [assigningGroupsGuard, setAssigningGroupsGuard] = useState<Guard | null>(null);
   const [editingGuard, setEditingGuard] = useState<Guard | null>(null);
   const [resettingGuard, setResettingGuard] = useState<Guard | null>(null);
+
+  // App Permissions Modal State
+  const [permissionsGuard, setPermissionsGuard] = useState<Guard | null>(null);
+  const [permForm, setPermForm] = useState<AppPermissions>(BASIC_GUARD_PERMISSIONS);
+  const [savingPerms, setSavingPerms] = useState(false);
 
   // Add Form State
   const [newGuard, setNewGuard] = useState({
@@ -118,6 +168,17 @@ export const GuardsView: React.FC = () => {
     return guard.assigned_round_id ? [guard.assigned_round_id] : [];
   };
 
+  const getGuardPermissions = (guard: Guard): AppPermissions => {
+    const isSup = ['Shift Supervisor', 'Security Manager', 'Chief Security Officer', 'Admin'].includes(
+      guard.role || ''
+    );
+    const defaults = isSup ? FULL_ACCESS_PERMISSIONS : BASIC_GUARD_PERMISSIONS;
+    return {
+      ...defaults,
+      ...(guard.app_permissions || {}),
+    };
+  };
+
   const fetchData = async () => {
     try {
       setLoading(true);
@@ -135,7 +196,6 @@ export const GuardsView: React.FC = () => {
       setGuards(loadedGuards);
       if (roundsData.success) setRounds(roundsData.rounds || []);
 
-      // Merge saved custom groups + any groups already assigned to guards
       let customGroups: string[] = [...DEFAULT_GROUPS];
       if (cfgData.success && Array.isArray(cfgData.configs)) {
         const found = cfgData.configs.find(
@@ -173,7 +233,6 @@ export const GuardsView: React.FC = () => {
     return arr.includes(item) ? arr.filter((x) => x !== item) : [...arr, item];
   };
 
-  // Persist custom group list to admin_configurations
   const persistCustomGroups = async (updatedGroups: string[]) => {
     setSavingGroups(true);
     try {
@@ -219,6 +278,42 @@ export const GuardsView: React.FC = () => {
     await persistCustomGroups(updated);
   };
 
+  const openPermissionsModal = (guard: Guard) => {
+    setPermissionsGuard(guard);
+    setPermForm(getGuardPermissions(guard));
+  };
+
+  const handleSavePermissions = async (overridesToSave?: AppPermissions | null) => {
+    if (!permissionsGuard) return;
+    setSavingPerms(true);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const payload = {
+        overrides: overridesToSave !== undefined ? overridesToSave : permForm,
+      };
+
+      const res = await fetch(`${API_BASE_URL}/access-control/guards/${permissionsGuard.guard_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPermissionsGuard(null);
+        fetchData();
+      } else {
+        alert(data.message || 'Failed to update app permissions.');
+      }
+    } catch (e) {
+      alert('Network error saving app permissions.');
+    } finally {
+      setSavingPerms(false);
+    }
+  };
+
   const handleCreateGuard = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGuard.full_name.trim() || !newGuard.employee_code.trim() || !newGuard.password.trim()) {
@@ -230,6 +325,10 @@ export const GuardsView: React.FC = () => {
       newGuard.assignment_groups.length > 0
         ? newGuard.assignment_groups
         : [availableGroups[0] || 'Security Operations L1'];
+
+    const storedUser = localStorage.getItem('user');
+    const parsedUser = storedUser ? JSON.parse(storedUser) : null;
+    const resolvedTenantId = parsedUser?.tenant_id || (guards[0]?.tenant_id ?? null);
 
     try {
       const payload = {
@@ -245,6 +344,7 @@ export const GuardsView: React.FC = () => {
         assignment_group: groupsToSave[0],
         assigned_round_ids: newGuard.assigned_round_ids,
         assigned_round_id: newGuard.assigned_round_ids[0] || null,
+        tenant_id: resolvedTenantId,
       };
 
       const res = await fetch(`${API_BASE_URL}/guards`, {
@@ -539,10 +639,10 @@ export const GuardsView: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Security Workforce, Assignment Groups & Routes
+              Security Workforce, Assignment Groups & App Access
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Create custom Assignment Groups, bind personnel & notification emails for automatic incident dispatch, and assign patrol routes.
+              Manage personnel, custom Assignment Groups, patrol routes, and granular Mobile App feature permissions.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -636,8 +736,8 @@ export const GuardsView: React.FC = () => {
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
                 <tr>
                   <th className="px-4 py-3.5">Staff Member & Contact</th>
-                  <th className="px-4 py-3.5">Role / Hierarchy</th>
-                  <th className="px-4 py-3.5">Assignment Groups (Incident Dispatch)</th>
+                  <th className="px-4 py-3.5">Role & Access State</th>
+                  <th className="px-4 py-3.5">Assignment Groups</th>
                   <th className="px-4 py-3.5">Site & Shift</th>
                   <th className="px-4 py-3.5">Assigned Patrol Routes</th>
                   <th className="px-4 py-3.5">Status</th>
@@ -667,6 +767,11 @@ export const GuardsView: React.FC = () => {
                         : [];
 
                     const memberGroups = getGuardGroups(guard);
+                    const perms = getGuardPermissions(guard);
+                    const isRestrictedForm =
+                      !perms.incident_option_1_severity &&
+                      !perms.incident_option_2_category &&
+                      !perms.incident_option_3_group;
 
                     return (
                       <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
@@ -686,14 +791,14 @@ export const GuardsView: React.FC = () => {
                                 </div>
                               ) : (
                                 <div className="text-[10px] text-amber-600 italic mt-0.5">
-                                  No email set (Click Edit to add)
+                                  No email set
                                 </div>
                               )}
                             </div>
                           </div>
                         </td>
 
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3 space-y-1">
                           <span
                             className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${getRoleBadge(
                               guard.role
@@ -702,6 +807,14 @@ export const GuardsView: React.FC = () => {
                             <ShieldCheck className="w-3 h-3" />
                             {guard.role || 'Guard'}
                           </span>
+                          <div className="text-[10px] font-semibold text-slate-500">
+                            Mode:{' '}
+                            <span className="font-bold text-slate-800">
+                              {guard.is_custom_override ? 'Custom Override' : 'Role Default'}
+                            </span>
+                            {' • '}
+                            <span>{isRestrictedForm ? 'Options 4-6' : 'Options 1-6'}</span>
+                          </div>
                         </td>
 
                         {/* Multi-Group Cell */}
@@ -780,6 +893,13 @@ export const GuardsView: React.FC = () => {
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              onClick={() => openPermissionsModal(guard)}
+                              className="px-2.5 py-1 rounded border border-purple-200 bg-purple-50 text-purple-800 hover:bg-purple-100 text-[11px] font-bold flex items-center gap-1"
+                              title="Configure Mobile App Access & Incident Form Options"
+                            >
+                              <Sliders className="w-3 h-3" /> App Access
+                            </button>
+                            <button
                               onClick={() => openEditModal(guard)}
                               className="px-2 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-[11px] font-semibold flex items-center gap-1"
                             >
@@ -815,6 +935,204 @@ export const GuardsView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* SUPER ADMIN MODAL: Mobile App Access Control */}
+      {permissionsGuard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-purple-600" />
+                  App Access Control — {permissionsGuard.full_name}
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Role: <strong className="text-slate-800">{permissionsGuard.role || 'Guard'}</strong> • {permissionsGuard.is_custom_override ? 'Custom Override Active' : 'Inheriting Role Template'}
+                </p>
+              </div>
+              <button
+                onClick={() => setPermissionsGuard(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Quick Actions / Reset to Role Defaults */}
+            <div className="flex flex-wrap items-center gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <span className="text-[11px] font-bold text-slate-600 uppercase mr-1">
+                Presets:
+              </span>
+              <button
+                type="button"
+                onClick={() => setPermForm({ ...BASIC_GUARD_PERMISSIONS })}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition"
+              >
+                Standard Guard (Options 4, 5, 6 Only)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPermForm({ ...FULL_ACCESS_PERMISSIONS })}
+                className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold transition"
+              >
+                Supervisor / Admin (Options 1–6)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSavePermissions(null)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold transition ml-auto"
+                title="Clears custom override and inherits Role defaults"
+              >
+                Reset to Role Template
+              </button>
+            </div>
+
+            {/* Section 1: Home Action Cards */}
+            <div className="space-y-2.5">
+              <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
+                1. Mobile Home Screen Modules ("Patrol Actions")
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {[
+                  { key: 'patrol_route', label: 'Patrol Route (Assigned Stops)' },
+                  { key: 'report_incident', label: 'Report Incident (Log Issue)' },
+                  { key: 'incident_tickets', label: 'Incident Tickets (Active & Resolved)' },
+                  { key: 'activity_log', label: 'Activity Log (Recent Scans)' },
+                  { key: 'sync_queue', label: 'Sync Queue (Force Upload)' },
+                ].map((mod) => {
+                  const checked = permForm[mod.key as keyof AppPermissions];
+                  return (
+                    <div
+                      key={mod.key}
+                      onClick={() =>
+                        setPermForm((prev) => ({
+                          ...prev,
+                          [mod.key]: !prev[mod.key as keyof AppPermissions],
+                        }))
+                      }
+                      className={`p-3 rounded-xl border flex items-center gap-2.5 cursor-pointer transition ${
+                        checked
+                          ? 'bg-blue-50/70 border-blue-300 text-blue-950 font-bold'
+                          : 'bg-white border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      {checked ? (
+                        <CheckSquare className="w-4 h-4 text-blue-600 shrink-0" />
+                      ) : (
+                        <Square className="w-4 h-4 text-slate-400 shrink-0" />
+                      )}
+                      <span>{mod.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Section 2: Report Incident Form Options */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
+                  2. Incident Reporting Form Fields (Options 1–6)
+                </h4>
+                <span className="text-[11px] text-slate-500">
+                  Unchecked fields are completely hidden from user
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                {[
+                  {
+                    key: 'incident_option_1_severity',
+                    label: 'Option 1: Select Severity Level (P1 - P4)',
+                    note: 'If hidden, server automatically sets default P3 - Moderate',
+                  },
+                  {
+                    key: 'incident_option_2_category',
+                    label: 'Option 2: Category Selector',
+                    note: 'If hidden, server automatically sets Security / Patrol',
+                  },
+                  {
+                    key: 'incident_option_3_group',
+                    label: 'Option 3: Dispatch Assignment Group',
+                    note: 'If hidden, routes automatically to Security Operations L1',
+                  },
+                  {
+                    key: 'incident_option_4_title',
+                    label: 'Option 4: Incident Title / Summary & Quick Chips',
+                    note: '1-tap template chips and custom title input',
+                  },
+                  {
+                    key: 'incident_option_5_description',
+                    label: 'Option 5: Detailed Observations & Location',
+                    note: 'Field description textarea',
+                  },
+                  {
+                    key: 'incident_option_6_photo',
+                    label: 'Option 6: Field Photo Evidence (Camera)',
+                    note: 'Live camera capture attachment',
+                  },
+                ].map((opt) => {
+                  const checked = permForm[opt.key as keyof AppPermissions];
+                  return (
+                    <div
+                      key={opt.key}
+                      onClick={() =>
+                        setPermForm((prev) => ({
+                          ...prev,
+                          [opt.key]: !prev[opt.key as keyof AppPermissions],
+                        }))
+                      }
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition ${
+                        checked
+                          ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950'
+                          : 'bg-white border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        {checked ? (
+                          <CheckSquare className="w-4 h-4 text-emerald-600 shrink-0" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-400 shrink-0" />
+                        )}
+                        <div>
+                          <div className="font-bold">{opt.label}</div>
+                          <div className="text-[11px] opacity-75">{opt.note}</div>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                          checked
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {checked ? 'Visible' : 'Hidden'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setPermissionsGuard(null)}
+                className="px-4 py-2 border rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSavePermissions()}
+                disabled={savingPerms}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold shadow disabled:opacity-50"
+              >
+                {savingPerms ? 'Saving Permissions...' : 'Save App Access Override'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL A: Create & Manage Custom Assignment Groups */}
       {showManageGroupsModal && (
@@ -910,7 +1228,7 @@ export const GuardsView: React.FC = () => {
 
             <p className="text-xs text-slate-600">
               Select one or multiple Assignment Groups for{' '}
-              <strong className="text-slate-900">{assigningGroupsGuard.full_name}</strong>. When an incident is assigned to any of these groups, they will appear as an eligible responder and receive automatic email alerts.
+              <strong className="text-slate-900">{assigningGroupsGuard.full_name}</strong>.
             </p>
 
             {renderMultiGroupSelector(selectedGroupNames, setSelectedGroupNames)}
