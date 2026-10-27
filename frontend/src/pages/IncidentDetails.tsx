@@ -45,7 +45,7 @@ interface Incident {
   reported_at: string;
   category?: string;
   assignment_group?: string;
-  assigned_to?: string;
+  assigned_to?: string | null;
   impact?: string;
   urgency?: string;
   resolution_code?: string;
@@ -239,6 +239,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             ? currentInc.assignment_group
             : allGroupsList[0] || 'Security Operations L1';
         setAssignmentGroup(grp);
+        // Keep blank if not explicitly assigned
         setAssignedTo(currentInc.assigned_to || '');
 
         if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
@@ -263,22 +264,18 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchAllDetails();
   }, [id]);
 
-  // Filter Assignees strictly to guards who belong to the selected Assignment Group on the Guards page
+  // Filter Assignees strictly to guards who belong to the selected Assignment Group
   const eligibleGuardsForGroup = useMemo(() => {
     const activeGuards = guards.filter((g) => g.is_active !== false);
-    const matching = activeGuards.filter((g) => getGuardGroups(g).includes(assignmentGroup));
-    return matching;
+    return activeGuards.filter((g) => getGuardGroups(g).includes(assignmentGroup));
   }, [assignmentGroup, guards]);
 
-  // Keep Assigned To valid when switching Assignment Groups
+  // If the currently assigned person is not a member of the selected group, clear to blank (do NOT auto-assign)
   useEffect(() => {
-    if (eligibleGuardsForGroup.length === 0) {
-      setAssignedTo('');
-      return;
-    }
+    if (!assignedTo) return;
     const isCurrentValid = eligibleGuardsForGroup.some((g) => g.full_name === assignedTo);
     if (!isCurrentValid) {
-      setAssignedTo(eligibleGuardsForGroup[0].full_name);
+      setAssignedTo('');
     }
   }, [assignmentGroup, eligibleGuardsForGroup]);
 
@@ -296,7 +293,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         priority: priorityCode,
         status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
         assignment_group: assignmentGroup,
-        assigned_to: assignedTo,
+        assigned_to: assignedTo.trim() || null,
         guard_id: callerGuardId,
         updated_by: user?.full_name || 'SOC Command Admin',
         work_note: workNoteMessage.trim() || undefined,
@@ -717,7 +714,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               </label>
               <select
                 value={assignmentGroup}
-                onChange={(e) => setAssignmentGroup(e.target.value)}
+                onChange={(e) => {
+                  setAssignmentGroup(e.target.value);
+                  setAssignedTo(''); // Always reset Assigned To to blank when group changes
+                }}
                 className="w-full border border-blue-300 bg-blue-50/50 rounded-xl px-3 py-2 font-bold text-blue-950 outline-none"
               >
                 {availableGroups.map((grp) => {
@@ -747,6 +747,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   onChange={(e) => setAssignedTo(e.target.value)}
                   className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
                 >
+                  <option value="">-- Unassigned --</option>
                   {eligibleGuardsForGroup.map((g) => (
                     <option key={g.guard_id} value={g.full_name}>
                       {g.full_name} ({g.employee_code}) — {g.role || 'Guard'}

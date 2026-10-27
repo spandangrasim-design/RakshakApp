@@ -1346,7 +1346,7 @@ app.post('/api/v1/incidents', async (c) => {
 
     const url = new URL(c.req.url);
     const body = await c.req.json();
-    const { client_incident_id, title, description, priority, photo_url, reported_at, assignment_group, assigned_to } = body;
+    const { client_incident_id, title, description, priority, photo_url, reported_at, assignment_group } = body;
 
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
@@ -1379,6 +1379,7 @@ app.post('/api/v1/incidents', async (c) => {
         photo_url: finalPhotoUrl,
         status: 'OPEN',
         assignment_group: targetGroup,
+        assigned_to: null, // Always blank / unassigned on new ticket generation
         reported_at: reported_at || new Date().toISOString()
       }, { onConflict: 'client_incident_id' }) 
       .select()
@@ -1392,7 +1393,7 @@ app.post('/api/v1/incidents', async (c) => {
       description: description || title || 'Security Incident',
       photoUrl: finalPhotoUrl,
       assignmentGroup: targetGroup,
-      assignedTo: assigned_to || 'All Group Members',
+      assignedTo: 'Unassigned (Group Queue)',
       status: 'OPEN',
     });
 
@@ -1540,6 +1541,11 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     }
     const incidentId = current.client_incident_id;
 
+    const normalizedNewAssignee =
+      body.assigned_to !== undefined
+        ? (body.assigned_to && String(body.assigned_to).trim() !== '' ? String(body.assigned_to).trim() : null)
+        : undefined;
+
     const updates: Record<string, any> = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
@@ -1549,7 +1555,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.impact !== undefined) updates.impact = body.impact;
     if (body.urgency !== undefined) updates.urgency = body.urgency;
     if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
-    if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to;
+    if (normalizedNewAssignee !== undefined) updates.assigned_to = normalizedNewAssignee;
     if (body.guard_id !== undefined) updates.guard_id = body.guard_id;
 
     let { data: updatedIncident, error: updateErr } = await supabase
@@ -1592,18 +1598,25 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     const groupChanged =
       body.assignment_group !== undefined &&
       body.assignment_group !== (current.assignment_group || '');
+
+    const currentAssigneeClean = (current.assigned_to || '').trim();
+    const newAssigneeClean = (normalizedNewAssignee || '').trim();
     const assigneeChanged =
-      body.assigned_to !== undefined &&
-      body.assigned_to !== (current.assigned_to || '');
+      normalizedNewAssignee !== undefined &&
+      newAssigneeClean !== currentAssigneeClean;
 
     if (groupChanged) {
       changes.push(`Assignment group set to "${body.assignment_group}"`);
     }
     if (assigneeChanged) {
-      changes.push(`Assigned to "${body.assigned_to}"`);
+      changes.push(
+        newAssigneeClean
+          ? `Assigned to "${newAssigneeClean}"`
+          : `Assigned to cleared (Unassigned)`
+      );
     }
 
-    // Smart Auto-Email: Fire email when Assignment Group or Assignee changes
+    // Fire email when Assignment Group changes OR when a specific Assignee is selected
     let emailTriggered = false;
     let emailDispatchResult: { ok: boolean; recipients: string[]; error?: string } = {
       ok: false,
@@ -1611,10 +1624,10 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     };
     let emailLogLine = '';
 
-    if (groupChanged || assigneeChanged) {
+    if (groupChanged || (assigneeChanged && newAssigneeClean !== '')) {
       emailTriggered = true;
       const targetGroup = body.assignment_group || current.assignment_group || 'Security Operations L1';
-      const targetAssignee = body.assigned_to || current.assigned_to || 'Unit Member';
+      const targetAssignee = newAssigneeClean || 'Unassigned (Group Queue)';
 
       emailDispatchResult = await sendGroupAssignmentEmail(c.env, {
         incidentId,
@@ -1875,7 +1888,6 @@ async function sendGroupAssignmentEmail(
 ): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
   const supabase = getSupabase(env);
 
-  // Use select('*') so missing SQL columns on guards never cause the query to fail
   const [cfgRes, guardsRes] = await Promise.all([
     supabase.from('admin_configurations').select('key_name, key_value'),
     supabase.from('guards').select('*')
@@ -1904,7 +1916,7 @@ async function sendGroupAssignmentEmail(
   const targetGroupClean = (params.assignmentGroup || '').trim().toLowerCase();
   const recipientSet = new Set<string>();
 
-  // 1. Collect emails ONLY from active guards who belong to this Assignment Group
+  // STRICT: Collect emails ONLY from active guards on the Guards page who belong to this Assignment Group
   (guardsRes.data || []).forEach((g: any) => {
     if (g.is_active === false) return;
     const ext = extProfilesMap[g.guard_id] || {};
@@ -1928,23 +1940,7 @@ async function sendGroupAssignmentEmail(
     }
   });
 
-  // 2. Also check ASSIGNMENT_GROUP_BINDINGS if any emails were bound earlier
-  if (configMap['ASSIGNMENT_GROUP_BINDINGS']) {
-    try {
-      const parsedBindings = JSON.parse(configMap['ASSIGNMENT_GROUP_BINDINGS']);
-      for (const [grpName, members] of Object.entries(parsedBindings)) {
-        if (grpName.trim().toLowerCase() === targetGroupClean && Array.isArray(members)) {
-          members.forEach((m: any) => {
-            if (m.email && m.email.includes('@')) {
-              recipientSet.add(m.email.trim());
-            }
-          });
-        }
-      }
-    } catch (_) {}
-  }
-
-  // 3. ONLY include MANAGER_EMAIL on SLA breach escalations or explicit test button (NOT on group dispatch!)
+  // Only include MANAGER_EMAIL on SLA breach escalations or explicit test button (NEVER on group dispatch)
   if (params.includeManagerFallback) {
     const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
     if (managerEmail && managerEmail.includes('@')) {
@@ -1957,7 +1953,7 @@ async function sendGroupAssignmentEmail(
     return {
       ok: false,
       recipients: [],
-      error: `No members in "${params.assignmentGroup}" have an email address configured. Go to the Guards page → click Edit on the guards in "${params.assignmentGroup}" → add their Email Address.`,
+      error: `No members in "${params.assignmentGroup}" have an email address configured on the Guards page.`,
     };
   }
 
@@ -1995,7 +1991,7 @@ async function sendGroupAssignmentEmail(
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assigned Responder</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignedTo}</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignedTo || 'Unassigned (Group Queue)'}</td>
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Description</td>
