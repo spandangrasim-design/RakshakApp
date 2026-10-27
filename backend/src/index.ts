@@ -122,6 +122,50 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
+// --- HELPER: Read & Write Guard Extended Profiles (Email, Phone, Multi-Groups) in admin_configurations ---
+interface GuardExtendedProfile {
+  email?: string | null;
+  phone?: string | null;
+  assignment_groups?: string[];
+}
+
+async function getGuardExtendedProfilesMap(supabase: any): Promise<Record<string, GuardExtendedProfile>> {
+  const { data } = await supabase
+    .from('admin_configurations')
+    .select('key_value')
+    .eq('key_name', 'GUARD_EXTENDED_PROFILES')
+    .maybeSingle();
+
+  if (data?.key_value) {
+    try {
+      return JSON.parse(data.key_value);
+    } catch (_) {}
+  }
+  return {};
+}
+
+async function saveGuardExtendedProfile(
+  supabase: any,
+  guardId: string,
+  updates: Partial<GuardExtendedProfile>
+) {
+  const currentMap = await getGuardExtendedProfilesMap(supabase);
+  const existing = currentMap[guardId] || {};
+  currentMap[guardId] = {
+    ...existing,
+    ...(updates.email !== undefined ? { email: updates.email } : {}),
+    ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
+    ...(updates.assignment_groups !== undefined ? { assignment_groups: updates.assignment_groups } : {}),
+  };
+
+  await supabase
+    .from('admin_configurations')
+    .upsert(
+      [{ key_name: 'GUARD_EXTENDED_PROFILES', key_value: JSON.stringify(currentMap) }],
+      { onConflict: 'key_name' }
+    );
+}
+
 function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
   const directLat = Number(scan.guard_lat ?? scan.lat ?? 0);
   const directLng = Number(scan.guard_lng ?? scan.lng ?? 0);
@@ -826,7 +870,7 @@ app.get('/api/v1/rounds', async (c) => {
     const [roundsRes, cpRes, guardsRes] = await Promise.all([
       supabase.from('rounds').select('*').order('created_at', { ascending: false }),
       supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload'),
-      supabase.from('guards').select('guard_id, full_name, employee_code, assigned_round_id, assigned_round_ids')
+      supabase.from('guards').select('*')
     ]);
 
     if (roundsRes.error) return c.json({ success: false, message: roundsRes.error.message }, 500);
@@ -951,20 +995,19 @@ app.get('/api/v1/guards', async (c) => {
   try {
     const supabase = getSupabase(c.env);
     
-    const { data: guards, error } = await supabase
-      .from('guards')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const [guardsRes, roundsRes, extProfilesMap] = await Promise.all([
+      supabase.from('guards').select('*').order('created_at', { ascending: false }),
+      supabase.from('rounds').select('id, name'),
+      getGuardExtendedProfilesMap(supabase)
+    ]);
 
-    if (error) throw error;
+    if (guardsRes.error) throw guardsRes.error;
 
-    const { data: rounds } = await supabase
-      .from('rounds')
-      .select('id, name');
+    const roundsMap = new Map((roundsRes.data || []).map((r: any) => [r.id, r]));
 
-    const roundsMap = new Map((rounds || []).map((r: any) => [r.id, r]));
+    const guardsWithRounds = (guardsRes.data || []).map((g: any) => {
+      const ext = extProfilesMap[g.guard_id] || {};
 
-    const guardsWithRounds = (guards || []).map((g: any) => {
       const rawRoundIds: string[] = Array.isArray(g.assigned_round_ids) && g.assigned_round_ids.length > 0
         ? g.assigned_round_ids
         : (g.assigned_round_id ? [g.assigned_round_id] : []);
@@ -974,17 +1017,25 @@ app.get('/api/v1/guards', async (c) => {
         .map((id) => roundsMap.get(id))
         .filter(Boolean);
 
-      const rawGroups: string[] = Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
-        ? g.assignment_groups
-        : (g.assignment_group ? [g.assignment_group] : ['Security Operations L1']);
+      const rawGroups: string[] =
+        Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
+          ? g.assignment_groups
+          : Array.isArray(ext.assignment_groups) && ext.assignment_groups.length > 0
+          ? ext.assignment_groups
+          : g.assignment_group
+          ? [g.assignment_group]
+          : ['Security Operations L1'];
+
       const uniqueGroups = Array.from(new Set(rawGroups.filter(Boolean)));
+      const resolvedEmail = g.email || ext.email || null;
+      const resolvedPhone = g.phone || ext.phone || null;
 
       return {
         guard_id: g.guard_id,
         full_name: g.full_name,
         employee_code: g.employee_code,
-        email: g.email || null,
-        phone: g.phone || null,
+        email: resolvedEmail,
+        phone: resolvedPhone,
         role: g.role,
         site_location: g.site_location,
         shift_timing: g.shift_timing,
@@ -1031,11 +1082,14 @@ app.post('/api/v1/guards', async (c) => {
       ? parsed.assignment_groups
       : (parsed.assignment_group ? [parsed.assignment_group] : ['Security Operations L1']);
 
+    const cleanEmail = parsed.email ? parsed.email.trim() : null;
+    const cleanPhone = parsed.phone ? parsed.phone.trim() : null;
+
     const insertPayload: Record<string, any> = {
       full_name: parsed.full_name.trim(),
       employee_code: parsed.employee_code.trim(),
-      email: parsed.email ? parsed.email.trim() : null,
-      phone: parsed.phone ? parsed.phone.trim() : null,
+      email: cleanEmail,
+      phone: cleanPhone,
       password_hash: parsed.password,
       role: parsed.role,
       site_location: parsed.site_location,
@@ -1055,14 +1109,41 @@ app.post('/api/v1/guards', async (c) => {
       .single();
 
     if (error) {
-      delete insertPayload.assignment_groups;
-      delete insertPayload.assigned_round_ids;
-      const retry = await supabase.from('guards').insert([insertPayload]).select().single();
+      // Fallback if SQL columns (email, phone, assignment_groups, etc.) weren't added to guards table yet
+      const basePayload: Record<string, any> = {
+        full_name: parsed.full_name.trim(),
+        employee_code: parsed.employee_code.trim(),
+        password_hash: parsed.password,
+        role: parsed.role,
+        site_location: parsed.site_location,
+        shift_timing: parsed.shift_timing,
+        assigned_round_id: primaryRoundId,
+        reporting_to: parsed.reporting_to,
+        is_active: true,
+      };
+      const retry = await supabase.from('guards').insert([basePayload]).select().single();
       if (retry.error) throw retry.error;
       newGuard = retry.data;
     }
 
-    return c.json({ success: true, guard: newGuard }, 201);
+    if (newGuard?.guard_id) {
+      await saveGuardExtendedProfile(supabase, newGuard.guard_id, {
+        email: cleanEmail,
+        phone: cleanPhone,
+        assignment_groups: groupsList,
+      });
+    }
+
+    return c.json({
+      success: true,
+      guard: {
+        ...newGuard,
+        email: cleanEmail,
+        phone: cleanPhone,
+        assignment_group: groupsList[0],
+        assignment_groups: groupsList,
+      },
+    }, 201);
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
@@ -1079,9 +1160,19 @@ app.patch('/api/v1/guards/:id', async (c) => {
     const supabase = getSupabase(c.env);
 
     const updates: Record<string, any> = {};
+    const extUpdates: Partial<GuardExtendedProfile> = {};
+
     if (parsed.full_name !== undefined) updates.full_name = parsed.full_name.trim();
-    if (parsed.email !== undefined) updates.email = parsed.email ? parsed.email.trim() : null;
-    if (parsed.phone !== undefined) updates.phone = parsed.phone ? parsed.phone.trim() : null;
+    if (parsed.email !== undefined) {
+      const cleanEmail = parsed.email ? parsed.email.trim() : null;
+      updates.email = cleanEmail;
+      extUpdates.email = cleanEmail;
+    }
+    if (parsed.phone !== undefined) {
+      const cleanPhone = parsed.phone ? parsed.phone.trim() : null;
+      updates.phone = cleanPhone;
+      extUpdates.phone = cleanPhone;
+    }
     if (parsed.password !== undefined && parsed.password.trim() !== '') updates.password_hash = parsed.password;
     if (parsed.is_active !== undefined) updates.is_active = parsed.is_active;
     if (parsed.role !== undefined) updates.role = parsed.role;
@@ -1092,9 +1183,11 @@ app.patch('/api/v1/guards/:id', async (c) => {
     if (parsed.assignment_groups !== undefined) {
       updates.assignment_groups = parsed.assignment_groups;
       updates.assignment_group = parsed.assignment_groups[0] || 'Security Operations L1';
+      extUpdates.assignment_groups = parsed.assignment_groups;
     } else if (parsed.assignment_group !== undefined) {
       updates.assignment_group = parsed.assignment_group;
       updates.assignment_groups = parsed.assignment_group ? [parsed.assignment_group] : [];
+      extUpdates.assignment_groups = updates.assignment_groups;
     }
 
     if (parsed.assigned_round_ids !== undefined) {
@@ -1109,6 +1202,11 @@ app.patch('/api/v1/guards/:id', async (c) => {
       return c.json({ success: false, message: 'No fields provided to update.' }, 400);
     }
 
+    // Always persist email, phone, and assignment_groups in admin_configurations so it never fails
+    if (Object.keys(extUpdates).length > 0) {
+      await saveGuardExtendedProfile(supabase, guardId, extUpdates);
+    }
+
     let { data: updatedGuard, error } = await supabase
       .from('guards')
       .update(updates)
@@ -1117,14 +1215,39 @@ app.patch('/api/v1/guards/:id', async (c) => {
       .maybeSingle();
 
     if (error) {
-      delete updates.assignment_groups;
-      delete updates.assigned_round_ids;
-      const retry = await supabase.from('guards').update(updates).eq('guard_id', guardId).select().maybeSingle();
-      if (retry.error) throw retry.error;
-      updatedGuard = retry.data;
+      const safeUpdates = { ...updates };
+      delete safeUpdates.email;
+      delete safeUpdates.phone;
+      delete safeUpdates.assignment_group;
+      delete safeUpdates.assignment_groups;
+      delete safeUpdates.assigned_round_ids;
+
+      if (Object.keys(safeUpdates).length > 0) {
+        const retry = await supabase
+          .from('guards')
+          .update(safeUpdates)
+          .eq('guard_id', guardId)
+          .select()
+          .maybeSingle();
+        if (retry.error) throw retry.error;
+        updatedGuard = retry.data;
+      } else {
+        const { data: existing } = await supabase
+          .from('guards')
+          .select('*')
+          .eq('guard_id', guardId)
+          .maybeSingle();
+        updatedGuard = existing;
+      }
     }
 
-    return c.json({ success: true, guard: updatedGuard });
+    return c.json({
+      success: true,
+      guard: {
+        ...updatedGuard,
+        ...extUpdates,
+      },
+    });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
@@ -1203,7 +1326,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 });
 
 // ==========================================
-// 6. TICKETING & INCIDENT COMMAND + SMART AUTO GROUP EMAIL
+// 6. TICKETING & INCIDENT COMMAND + STRICT GROUP-ONLY EMAIL DISPATCH
 // ==========================================
 app.post('/api/v1/incidents', async (c) => {
   try {
@@ -1285,7 +1408,7 @@ app.get('/api/v1/incidents', async (c) => {
     const supabase = getSupabase(c.env);
     const [incRes, guardsRes] = await Promise.all([
       supabase.from('incidents').select('*').order('reported_at', { ascending: false }),
-      supabase.from('guards').select('guard_id, full_name, employee_code, role, site_location')
+      supabase.from('guards').select('*')
     ]);
     
     if (incRes.error) throw incRes.error;
@@ -1480,7 +1603,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       changes.push(`Assigned to "${body.assigned_to}"`);
     }
 
-    // Smart Auto-Email: Only fire email when Assignment Group or Assignee actually changes
+    // Smart Auto-Email: Fire email when Assignment Group or Assignee changes
     let emailTriggered = false;
     let emailDispatchResult: { ok: boolean; recipients: string[]; error?: string } = {
       ok: false,
@@ -1505,7 +1628,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       });
 
       emailLogLine = emailDispatchResult.ok
-        ? `Auto-Email Dispatched to [${targetGroup}] (${emailDispatchResult.recipients.join(', ')})`
+        ? `Auto-Email Dispatched to [${targetGroup}] members (${emailDispatchResult.recipients.join(', ')})`
         : `Auto-Email Notice for [${targetGroup}]: ${emailDispatchResult.error}`;
     }
 
@@ -1672,6 +1795,7 @@ app.post('/api/v1/admin/test-gmail', async (c) => {
     assignmentGroup: 'Security Operations L1',
     assignedTo: 'System Test',
     status: 'ACTIVE',
+    includeManagerFallback: true,
   });
 
   if (!result.ok) {
@@ -1688,23 +1812,25 @@ async function getValidGmailAccessToken(
   const clientSecret = (configMap['GMAIL_CLIENT_SECRET'] || '').trim();
   const refreshToken = (configMap['GMAIL_REFRESH_TOKEN'] || '').trim();
 
-  // 1. Prefer OAuth2 Refresh Token flow (mints a fresh access token automatically)
-  if (clientId && clientSecret && refreshToken) {
+  if (clientId && refreshToken) {
     try {
+      const params: Record<string, string> = {
+        client_id: clientId,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      };
+      if (clientSecret) {
+        params.client_secret = clientSecret;
+      }
+
       const res = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          refresh_token: refreshToken,
-          grant_type: 'refresh_token',
-        }).toString(),
+        body: new URLSearchParams(params).toString(),
       });
 
       const data: any = await res.json().catch(() => ({}));
       if (res.ok && data.access_token) {
-        // Cache the freshly minted access token in admin_configurations
         await supabase
           .from('admin_configurations')
           .upsert([{ key_name: 'GMAIL_ACCESS_TOKEN', key_value: data.access_token }], {
@@ -1722,7 +1848,6 @@ async function getValidGmailAccessToken(
     }
   }
 
-  // 2. Fallback to direct Access Token if provided
   const directToken = (configMap['GMAIL_ACCESS_TOKEN'] || '').trim();
   if (directToken) {
     return { token: directToken };
@@ -1730,7 +1855,7 @@ async function getValidGmailAccessToken(
 
   return {
     token: null,
-    error: 'Missing OAuth2 Refresh Token (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) in API Integrations.',
+    error: 'Missing OAuth2 Refresh Token in API Integrations.',
   };
 }
 
@@ -1745,13 +1870,15 @@ async function sendGroupAssignmentEmail(
     assignedTo: string;
     status: string;
     workNote?: string;
+    includeManagerFallback?: boolean;
   }
 ): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
   const supabase = getSupabase(env);
 
+  // Use select('*') so missing SQL columns on guards never cause the query to fail
   const [cfgRes, guardsRes] = await Promise.all([
     supabase.from('admin_configurations').select('key_name, key_value'),
-    supabase.from('guards').select('guard_id, full_name, email, assignment_group, assignment_groups, is_active')
+    supabase.from('guards').select('*')
   ]);
 
   if (cfgRes.error || !cfgRes.data) {
@@ -1767,30 +1894,70 @@ async function sendGroupAssignmentEmail(
     return { ok: false, recipients: [], error: 'Gmail integration is disabled' };
   }
 
-  const recipientSet = new Set<string>();
-  const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
-  if (managerEmail && managerEmail.includes('@')) {
-    recipientSet.add(managerEmail);
+  let extProfilesMap: Record<string, GuardExtendedProfile> = {};
+  if (configMap['GUARD_EXTENDED_PROFILES']) {
+    try {
+      extProfilesMap = JSON.parse(configMap['GUARD_EXTENDED_PROFILES']);
+    } catch (_) {}
   }
 
-  // Collect emails of all active guards on the Guards page who belong to this Assignment Group
+  const targetGroupClean = (params.assignmentGroup || '').trim().toLowerCase();
+  const recipientSet = new Set<string>();
+
+  // 1. Collect emails ONLY from active guards who belong to this Assignment Group
   (guardsRes.data || []).forEach((g: any) => {
     if (g.is_active === false) return;
-    const gGroups: string[] = Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
-      ? g.assignment_groups
-      : (g.assignment_group ? [g.assignment_group] : []);
+    const ext = extProfilesMap[g.guard_id] || {};
 
-    if (gGroups.includes(params.assignmentGroup) && g.email && g.email.includes('@')) {
-      recipientSet.add(g.email.trim());
+    const gGroups: string[] =
+      Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
+        ? g.assignment_groups
+        : Array.isArray(ext.assignment_groups) && ext.assignment_groups.length > 0
+        ? ext.assignment_groups
+        : g.assignment_group
+        ? [g.assignment_group]
+        : ['Security Operations L1'];
+
+    const belongsToTargetGroup = gGroups.some(
+      (grp) => (grp || '').trim().toLowerCase() === targetGroupClean
+    );
+
+    const memberEmail = (g.email || ext.email || '').trim();
+    if (belongsToTargetGroup && memberEmail && memberEmail.includes('@')) {
+      recipientSet.add(memberEmail);
     }
   });
+
+  // 2. Also check ASSIGNMENT_GROUP_BINDINGS if any emails were bound earlier
+  if (configMap['ASSIGNMENT_GROUP_BINDINGS']) {
+    try {
+      const parsedBindings = JSON.parse(configMap['ASSIGNMENT_GROUP_BINDINGS']);
+      for (const [grpName, members] of Object.entries(parsedBindings)) {
+        if (grpName.trim().toLowerCase() === targetGroupClean && Array.isArray(members)) {
+          members.forEach((m: any) => {
+            if (m.email && m.email.includes('@')) {
+              recipientSet.add(m.email.trim());
+            }
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. ONLY include MANAGER_EMAIL on SLA breach escalations or explicit test button (NOT on group dispatch!)
+  if (params.includeManagerFallback) {
+    const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
+    if (managerEmail && managerEmail.includes('@')) {
+      recipientSet.add(managerEmail);
+    }
+  }
 
   const recipients = Array.from(recipientSet);
   if (recipients.length === 0) {
     return {
       ok: false,
       recipients: [],
-      error: `No email addresses found for group "${params.assignmentGroup}". Add emails to guards on the Guards page.`,
+      error: `No members in "${params.assignmentGroup}" have an email address configured. Go to the Guards page → click Edit on the guards in "${params.assignmentGroup}" → add their Email Address.`,
     };
   }
 
@@ -1875,7 +2042,7 @@ async function sendGroupAssignmentEmail(
       return {
         ok: false,
         recipients,
-        error: `${msg} — Configure your permanent OAuth2 Refresh Token in API Integrations.`,
+        error: `${msg}`,
       };
     }
 
@@ -1936,6 +2103,7 @@ async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, prior
     assignmentGroup: 'Security Operations L1',
     assignedTo: 'SLA Escalation',
     status: 'ESCALATED',
+    includeManagerFallback: true,
   });
   return res.ok;
 }
