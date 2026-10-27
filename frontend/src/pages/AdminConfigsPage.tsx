@@ -1,5 +1,5 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { Eye, EyeOff, CheckCircle2, Power } from 'lucide-react';
+import { Eye, EyeOff, CheckCircle2, Power, HelpCircle, Send, AlertCircle } from 'lucide-react';
 
 const API_BASE_URL = "https://rakshak-api.spandangrasim.workers.dev";
 
@@ -7,10 +7,10 @@ export default function AdminConfigsPage() {
   const [configs, setConfigs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [testingEmail, setTestingEmail] = useState<boolean>(false);
   const [message, setMessage] = useState<{ text: string; type: string }>({ text: '', type: '' });
-
-  // Toggle visibility for secret token fields
   const [showTokens, setShowTokens] = useState<Record<string, boolean>>({});
+  const [showOAuthGuide, setShowOAuthGuide] = useState<boolean>(false);
 
   useEffect(() => {
     fetchConfigs();
@@ -28,11 +28,11 @@ export default function AdminConfigsPage() {
           configMap[item.key_name] = item.key_value;
         });
 
-        // Default toggle states if not yet saved in Supabase:
-        // Auto-enable if credentials already exist, otherwise default to 'false'
         if (configMap['ENABLE_GMAIL'] === undefined) {
           configMap['ENABLE_GMAIL'] =
-            configMap['MANAGER_EMAIL'] || configMap['GMAIL_ACCESS_TOKEN'] ? 'true' : 'false';
+            configMap['MANAGER_EMAIL'] || configMap['GMAIL_REFRESH_TOKEN'] || configMap['GMAIL_ACCESS_TOKEN']
+              ? 'true'
+              : 'false';
         }
         if (configMap['ENABLE_WHATSAPP'] === undefined) {
           configMap['ENABLE_WHATSAPP'] =
@@ -70,8 +70,8 @@ export default function AdminConfigsPage() {
     setShowTokens(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleSave = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSave = async (e?: FormEvent) => {
+    if (e) e.preventDefault();
     setSaving(true);
     setMessage({ text: '', type: '' });
 
@@ -100,6 +100,45 @@ export default function AdminConfigsPage() {
     }
   };
 
+  const handleTestGmail = async () => {
+    setTestingEmail(true);
+    setMessage({ text: '', type: '' });
+
+    // Save current inputs first
+    const payload = Object.keys(configs).map(key => ({
+      key_name: key,
+      key_value: configs[key] || ''
+    }));
+    await fetch(`${API_BASE_URL}/api/v1/admin/configs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/admin/test-gmail`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage({
+          text: `Test email sent successfully to ${(data.recipients || []).join(', ')}!`,
+          type: 'success'
+        });
+      } else {
+        setMessage({
+          text: `Gmail Test Failed: ${data.message}`,
+          type: 'error'
+        });
+      }
+    } catch (err) {
+      setMessage({ text: 'Network error calling test-gmail endpoint.', type: 'error' });
+    } finally {
+      setTestingEmail(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-screen bg-slate-50">
@@ -116,32 +155,30 @@ export default function AdminConfigsPage() {
     <div className="min-h-screen bg-slate-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         
-        {/* Header */}
-        <div className="bg-blue-900 px-6 py-5 text-white">
+        <div className="bg-slate-900 px-6 py-5 text-white">
           <h1 className="text-xl font-bold">Rakshak Patrol - Admin Integrations</h1>
-          <p className="text-blue-200 text-sm mt-1">
-            Enable or disable emergency SLA notification channels and configure API credentials dynamically.
+          <p className="text-slate-300 text-xs mt-1">
+            Configure enterprise Google OAuth2 Refresh Token credentials for automatic group email dispatch and SLA escalations.
           </p>
         </div>
 
-        {/* Feedback Banner */}
         {message.text && (
-          <div className={`mx-6 mt-6 p-4 rounded-xl text-sm font-medium flex items-center gap-2 ${
+          <div className={`mx-6 mt-6 p-4 rounded-xl text-xs font-bold flex items-center gap-2 ${
             message.type === 'success'
               ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
               : 'bg-red-50 text-red-800 border border-red-200'
           }`}>
-            {message.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />}
-            {message.text}
+            {message.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span>{message.text}</span>
           </div>
         )}
 
-        {/* Form */}
         <form onSubmit={handleSave} className="p-6 space-y-5">
-          
-          {/* ================================================= */}
-          {/* 1. Section: Email & Google Gmail API              */}
-          {/* ================================================= */}
+          {/* 1. Google Gmail OAuth2 Refresh Token Settings */}
           <div className={`rounded-2xl border transition-all ${
             isGmailEnabled ? 'border-blue-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
           }`}>
@@ -150,22 +187,19 @@ export default function AdminConfigsPage() {
                 <span className={`w-2.5 h-2.5 rounded-full ${isGmailEnabled ? 'bg-blue-600' : 'bg-slate-400'}`}></span>
                 <div>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
-                    Google Gmail API & Email Settings
+                    Google Gmail OAuth2 Auto-Dispatch
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                      isGmailEnabled
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-slate-200 text-slate-600'
+                      isGmailEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
                     }`}>
                       {isGmailEnabled ? 'Enabled' : 'Disabled'}
                     </span>
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Send automated HTML incident escalation emails when P1/P2 SLAs breach.
+                    Uses OAuth2 Refresh Token to automatically mint fresh access tokens and email all guards in an Assignment Group.
                   </p>
                 </div>
               </div>
 
-              {/* Enable / Disable Toggle Button */}
               <button
                 type="button"
                 onClick={() => handleToggleIntegration('ENABLE_GMAIL')}
@@ -181,22 +215,108 @@ export default function AdminConfigsPage() {
             </div>
 
             {isGmailEnabled && (
-              <div className="px-5 pb-5 pt-3 border-t border-slate-100 grid grid-cols-1 gap-4">
+              <div className="px-5 pb-5 pt-3 border-t border-slate-100 space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                    Manager Email Address
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Manager / Fallback Notification Email
                   </label>
                   <input
                     type="email"
                     value={configs['MANAGER_EMAIL'] || ''}
                     onChange={(e) => handleChange('MANAGER_EMAIL', e.target.value)}
-                    placeholder="manager@company.com"
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm bg-white"
+                    placeholder="spandangrasim@gmail.com"
+                    className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm bg-white"
                   />
                 </div>
+
+                {/* Enterprise OAuth2 Refresh Token Block */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                      Permanent OAuth2 Refresh Token Credentials (Recommended)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowOAuthGuide(!showOAuthGuide)}
+                      className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                      {showOAuthGuide ? 'Hide 4-Step Guide' : 'How to Generate Refresh Token'}
+                    </button>
+                  </div>
+
+                  {showOAuthGuide && (
+                    <div className="p-3.5 rounded-xl bg-slate-900 text-slate-200 text-xs space-y-1.5 leading-relaxed">
+                      <p><strong>1. Google Cloud Console:</strong> Go to <em>APIs & Services → OAuth consent screen</em> and set Publishing Status to <strong>"In production"</strong> (so your Refresh Token never expires).</p>
+                      <p><strong>2. Create OAuth Client ID:</strong> Go to <em>Credentials → Create Credentials → OAuth client ID (Web application)</em>. Add <code className="text-emerald-300">https://developers.google.com/oauthplayground</code> to <strong>Authorized redirect URIs</strong>.</p>
+                      <p><strong>3. OAuth2 Playground:</strong> Open <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-sky-400 underline">developers.google.com/oauthplayground</a> → Click the top-right Gear icon ⚙️ → Check <strong>"Use your own OAuth credentials"</strong> and paste your Client ID & Client Secret.</p>
+                      <p><strong>4. Authorize & Exchange:</strong> In Step 1 on the left, enter scope <code className="text-emerald-300">https://www.googleapis.com/auth/gmail.send</code> → Click <strong>Authorize APIs</strong> → In Step 2, click <strong>Exchange authorization code for tokens</strong> → Copy the <strong>Refresh token</strong> (`1//04...`) below!</p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+                        Google OAuth Client ID
+                      </label>
+                      <input
+                        type="text"
+                        value={configs['GMAIL_CLIENT_ID'] || ''}
+                        onChange={(e) => handleChange('GMAIL_CLIENT_ID', e.target.value)}
+                        placeholder="123456789-abc.apps.googleusercontent.com"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+                        Google OAuth Client Secret
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showTokens['GMAIL_CLIENT_SECRET'] ? 'text' : 'password'}
+                          value={configs['GMAIL_CLIENT_SECRET'] || ''}
+                          onChange={(e) => handleChange('GMAIL_CLIENT_SECRET', e.target.value)}
+                          placeholder="GOCSPX-..."
+                          className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleTokenVisibility('GMAIL_CLIENT_SECRET')}
+                          className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                        >
+                          {showTokens['GMAIL_CLIENT_SECRET'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+                      Google OAuth2 Refresh Token (Permanent — Starts with 1//...)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showTokens['GMAIL_REFRESH_TOKEN'] ? 'text' : 'password'}
+                        value={configs['GMAIL_REFRESH_TOKEN'] || ''}
+                        onChange={(e) => handleChange('GMAIL_REFRESH_TOKEN', e.target.value)}
+                        placeholder="1//04..."
+                        className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleTokenVisibility('GMAIL_REFRESH_TOKEN')}
+                        className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                      >
+                        {showTokens['GMAIL_REFRESH_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Fallback Direct Access Token */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                    Gmail OAuth2 Access Token
+                  <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
+                    Optional: Direct OAuth2 Access Token (ya29... — Valid for 60 mins if Refresh Token is not set)
                   </label>
                   <div className="relative">
                     <input
@@ -204,24 +324,34 @@ export default function AdminConfigsPage() {
                       value={configs['GMAIL_ACCESS_TOKEN'] || ''}
                       onChange={(e) => handleChange('GMAIL_ACCESS_TOKEN', e.target.value)}
                       placeholder="ya29.a0..."
-                      className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono bg-white"
+                      className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-200 text-xs font-mono bg-white"
                     />
                     <button
                       type="button"
                       onClick={() => toggleTokenVisibility('GMAIL_ACCESS_TOKEN')}
-                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                      className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
                     >
                       {showTokens['GMAIL_ACCESS_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={handleTestGmail}
+                    disabled={testingEmail}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {testingEmail ? 'Sending Test Email...' : 'Save & Send Test Email'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
 
-          {/* ================================================= */}
-          {/* 2. Section: Meta WhatsApp API                     */}
-          {/* ================================================= */}
+          {/* 2. Meta WhatsApp API */}
           <div className={`rounded-2xl border transition-all ${
             isWhatsappEnabled ? 'border-emerald-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
           }`}>
@@ -232,9 +362,7 @@ export default function AdminConfigsPage() {
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
                     Meta WhatsApp API Settings
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                      isWhatsappEnabled
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-slate-200 text-slate-600'
+                      isWhatsappEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
                     }`}>
                       {isWhatsappEnabled ? 'Enabled' : 'Disabled'}
                     </span>
@@ -245,7 +373,6 @@ export default function AdminConfigsPage() {
                 </div>
               </div>
 
-              {/* Enable / Disable Toggle Button */}
               <button
                 type="button"
                 onClick={() => handleToggleIntegration('ENABLE_WHATSAPP')}
@@ -272,7 +399,7 @@ export default function AdminConfigsPage() {
                       value={configs['MANAGER_PHONE'] || ''}
                       onChange={(e) => handleChange('MANAGER_PHONE', e.target.value)}
                       placeholder="+919876543210"
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm bg-white"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm bg-white"
                     />
                   </div>
                   <div>
@@ -284,7 +411,7 @@ export default function AdminConfigsPage() {
                       value={configs['WHATSAPP_PHONE_ID'] || ''}
                       onChange={(e) => handleChange('WHATSAPP_PHONE_ID', e.target.value)}
                       placeholder="10692..."
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono bg-white"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
                     />
                   </div>
                 </div>
@@ -298,7 +425,7 @@ export default function AdminConfigsPage() {
                       value={configs['WHATSAPP_API_TOKEN'] || ''}
                       onChange={(e) => handleChange('WHATSAPP_API_TOKEN', e.target.value)}
                       placeholder="EAAG..."
-                      className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono bg-white"
+                      className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
                     />
                     <button
                       type="button"
@@ -313,9 +440,7 @@ export default function AdminConfigsPage() {
             )}
           </div>
 
-          {/* ================================================= */}
-          {/* 3. Section: Telegram Bot API                      */}
-          {/* ================================================= */}
+          {/* 3. Telegram Bot API */}
           <div className={`rounded-2xl border transition-all ${
             isTelegramEnabled ? 'border-sky-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
           }`}>
@@ -326,9 +451,7 @@ export default function AdminConfigsPage() {
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
                     Telegram Bot Settings
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                      isTelegramEnabled
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-slate-200 text-slate-600'
+                      isTelegramEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
                     }`}>
                       {isTelegramEnabled ? 'Enabled' : 'Disabled'}
                     </span>
@@ -339,7 +462,6 @@ export default function AdminConfigsPage() {
                 </div>
               </div>
 
-              {/* Enable / Disable Toggle Button */}
               <button
                 type="button"
                 onClick={() => handleToggleIntegration('ENABLE_TELEGRAM')}
@@ -355,50 +477,30 @@ export default function AdminConfigsPage() {
             </div>
 
             {isTelegramEnabled && (
-              <div className="px-5 pb-5 pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                    Telegram Bot Token
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showTokens['TELEGRAM_BOT_TOKEN'] ? 'text' : 'password'}
-                      value={configs['TELEGRAM_BOT_TOKEN'] || ''}
-                      onChange={(e) => handleChange('TELEGRAM_BOT_TOKEN', e.target.value)}
-                      placeholder="123456:ABC-DEF..."
-                      className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono bg-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => toggleTokenVisibility('TELEGRAM_BOT_TOKEN')}
-                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
-                    >
-                      {showTokens['TELEGRAM_BOT_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
+              <div className="px-5 pb-5 pt-3 border-t border-slate-100">
+                <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                  Telegram Bot Token
+                </label>
+                <input
+                  type={showTokens['TELEGRAM_BOT_TOKEN'] ? 'text' : 'password'}
+                  value={configs['TELEGRAM_BOT_TOKEN'] || ''}
+                  onChange={(e) => handleChange('TELEGRAM_BOT_TOKEN', e.target.value)}
+                  placeholder="123456:ABC-DEF..."
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
+                />
               </div>
             )}
           </div>
 
-          {/* Action Button */}
           <div className="pt-4 border-t border-slate-100 flex justify-end">
             <button
               type="submit"
               disabled={saving}
-              className="px-6 py-3 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-xl text-sm transition-all shadow-sm disabled:opacity-50 flex items-center gap-2"
+              className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition-all shadow-sm disabled:opacity-50"
             >
-              {saving ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Saving Changes...
-                </>
-              ) : (
-                'Save All Configurations'
-              )}
+              {saving ? 'Saving Changes...' : 'Save All Configurations'}
             </button>
           </div>
-
         </form>
       </div>
     </div>

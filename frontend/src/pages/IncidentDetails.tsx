@@ -7,31 +7,31 @@ import {
   X,
   AlertCircle,
   CheckCircle2,
-  ShieldAlert,
   Users,
   UserCheck,
-  Clock,
-  Trash2,
-  Sliders,
-  FileText
+  Trash2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
 
+const DEFAULT_GROUPS = [
+  'Security Operations L1',
+  'Quick Response Team (QRT)',
+  'Site Supervisors L2',
+  'Fire & Safety Response',
+];
+
 interface GuardUser {
   guard_id: string;
   full_name: string;
   employee_code: string;
+  email?: string | null;
   role?: string;
   site_location?: string;
-}
-
-interface BoundGroupMember {
-  guard_id: string;
-  full_name: string;
-  employee_code: string;
-  email: string;
+  is_active?: boolean;
+  assignment_group?: string | null;
+  assignment_groups?: string[];
 }
 
 interface Incident {
@@ -64,13 +64,6 @@ interface IncidentUpdate {
   created_at: string;
 }
 
-const ASSIGNMENT_GROUPS = [
-  'Security Operations L1',
-  'Quick Response Team (QRT)',
-  'Site Supervisors L2',
-  'Fire & Safety Response',
-];
-
 const calculatePriority = (impact: string, urgency: string): { label: string; code: string } => {
   const imp = impact.charAt(0);
   const urg = urgency.charAt(0);
@@ -90,13 +83,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [incident, setIncident] = useState<Incident | null>(null);
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
-  const [groupBindings, setGroupBindings] = useState<Record<string, BoundGroupMember[]>>({});
-  const [defaultManagerEmail, setDefaultManagerEmail] = useState<string>('spandangrasim@gmail.com');
+  const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
   const [loading, setLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<'notes' | 'resolution'>('notes');
-  const [showGroupModal, setShowGroupModal] = useState(false);
-  const [savingGroupConfig, setSavingGroupConfig] = useState(false);
 
   // Case Fields
   const [callerGuardId, setCallerGuardId] = useState('');
@@ -127,6 +117,16 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resolutionNotesRef = useRef<HTMLTextAreaElement>(null);
 
+  const getGuardGroups = (g: GuardUser): string[] => {
+    if (Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0) {
+      return g.assignment_groups;
+    }
+    if (g.assignment_group && g.assignment_group.trim() !== '') {
+      return [g.assignment_group.trim()];
+    }
+    return ['Security Operations L1'];
+  };
+
   const handleImpactChange = (newImpact: string) => {
     setImpact(newImpact);
     const result = calculatePriority(newImpact, urgency);
@@ -139,34 +139,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     const result = calculatePriority(impact, newUrgency);
     setPriorityLabel(result.label);
     setPriorityCode(result.code);
-  };
-
-  // Initialize default group -> user bindings if none saved yet in Supabase
-  const buildDefaultGroupBindings = (guardList: GuardUser[], fallbackEmail: string) => {
-    const map: Record<string, BoundGroupMember[]> = {};
-    ASSIGNMENT_GROUPS.forEach((gName) => (map[gName] = []));
-
-    guardList.forEach((g, idx) => {
-      const member: BoundGroupMember = {
-        guard_id: g.guard_id,
-        full_name: g.full_name,
-        employee_code: g.employee_code,
-        email: fallbackEmail,
-      };
-      const roleLower = (g.role || '').toLowerCase();
-      if (roleLower.includes('senior') || roleLower.includes('supervisor')) {
-        map['Site Supervisors L2'].push(member);
-        map['Security Operations L1'].push(member);
-      } else if (idx % 2 === 0) {
-        map['Security Operations L1'].push(member);
-        map['Quick Response Team (QRT)'].push(member);
-      } else {
-        map['Security Operations L1'].push(member);
-        map['Fire & Safety Response'].push(member);
-      }
-    });
-
-    return map;
   };
 
   const fetchAllDetails = async () => {
@@ -187,25 +159,29 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       const loadedGuards: GuardUser[] = guardsData.guards || [];
       setGuards(loadedGuards);
 
-      let mgrEmail = 'spandangrasim@gmail.com';
-      let savedBindings: Record<string, BoundGroupMember[]> | null = null;
-
+      let customGroups: string[] = [...DEFAULT_GROUPS];
       if (cfgData.success && Array.isArray(cfgData.configs)) {
-        cfgData.configs.forEach((item: { key_name: string; key_value: string }) => {
-          if (item.key_name === 'MANAGER_EMAIL' && item.key_value) {
-            mgrEmail = item.key_value;
-          }
-          if (item.key_name === 'ASSIGNMENT_GROUP_BINDINGS' && item.key_value) {
-            try {
-              savedBindings = JSON.parse(item.key_value);
-            } catch (_) {}
-          }
-        });
+        const found = cfgData.configs.find(
+          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
+        );
+        if (found?.key_value) {
+          try {
+            const parsed = JSON.parse(found.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              customGroups = parsed;
+            }
+          } catch (_) {}
+        }
       }
-      setDefaultManagerEmail(mgrEmail);
 
-      const activeBindings = savedBindings || buildDefaultGroupBindings(loadedGuards, mgrEmail);
-      setGroupBindings(activeBindings);
+      const groupSet = new Set<string>(customGroups);
+      loadedGuards.forEach((g) => {
+        getGuardGroups(g).forEach((grp) => {
+          if (grp) groupSet.add(grp);
+        });
+      });
+      const allGroupsList = Array.from(groupSet);
+      setAvailableGroups(allGroupsList);
 
       let currentInc: Incident | null = null;
       let rawUpdates: IncidentUpdate[] = [];
@@ -259,9 +235,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         );
 
         const grp =
-          currentInc.assignment_group && ASSIGNMENT_GROUPS.includes(currentInc.assignment_group)
+          currentInc.assignment_group && allGroupsList.includes(currentInc.assignment_group)
             ? currentInc.assignment_group
-            : 'Security Operations L1';
+            : allGroupsList[0] || 'Security Operations L1';
         setAssignmentGroup(grp);
         setAssignedTo(currentInc.assigned_to || '');
 
@@ -287,81 +263,24 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchAllDetails();
   }, [id]);
 
-  // Strictly filter eligible Assignees to ONLY members bound to the selected Assignment Group
-  const eligibleMembersForGroup = useMemo(() => {
-    const bound = groupBindings[assignmentGroup] || [];
-    if (bound.length > 0) return bound;
-    return guards.map((g) => ({
-      guard_id: g.guard_id,
-      full_name: g.full_name,
-      employee_code: g.employee_code,
-      email: defaultManagerEmail,
-    }));
-  }, [assignmentGroup, groupBindings, guards, defaultManagerEmail]);
+  // Filter Assignees strictly to guards who belong to the selected Assignment Group on the Guards page
+  const eligibleGuardsForGroup = useMemo(() => {
+    const activeGuards = guards.filter((g) => g.is_active !== false);
+    const matching = activeGuards.filter((g) => getGuardGroups(g).includes(assignmentGroup));
+    return matching;
+  }, [assignmentGroup, guards]);
 
-  // Automatically keep Assigned To valid within the selected Assignment Group
+  // Keep Assigned To valid when switching Assignment Groups
   useEffect(() => {
-    if (eligibleMembersForGroup.length === 0) return;
-    const isCurrentValid = eligibleMembersForGroup.some((m) => m.full_name === assignedTo);
+    if (eligibleGuardsForGroup.length === 0) {
+      setAssignedTo('');
+      return;
+    }
+    const isCurrentValid = eligibleGuardsForGroup.some((g) => g.full_name === assignedTo);
     if (!isCurrentValid) {
-      setAssignedTo(eligibleMembersForGroup[0].full_name);
+      setAssignedTo(eligibleGuardsForGroup[0].full_name);
     }
-  }, [assignmentGroup, eligibleMembersForGroup]);
-
-  const toggleGuardInGroup = (groupName: string, guard: GuardUser) => {
-    setGroupBindings((prev) => {
-      const current = prev[groupName] || [];
-      const exists = current.some((m) => m.guard_id === guard.guard_id);
-      const nextList = exists
-        ? current.filter((m) => m.guard_id !== guard.guard_id)
-        : [
-            ...current,
-            {
-              guard_id: guard.guard_id,
-              full_name: guard.full_name,
-              employee_code: guard.employee_code,
-              email: defaultManagerEmail,
-            },
-          ];
-      return { ...prev, [groupName]: nextList };
-    });
-  };
-
-  const updateMemberEmailInGroup = (groupName: string, guardId: string, newEmail: string) => {
-    setGroupBindings((prev) => {
-      const current = prev[groupName] || [];
-      const nextList = current.map((m) =>
-        m.guard_id === guardId ? { ...m, email: newEmail } : m
-      );
-      return { ...prev, [groupName]: nextList };
-    });
-  };
-
-  const saveGroupBindingsToServer = async () => {
-    setSavingGroupConfig(true);
-    try {
-      const payload = [
-        {
-          key_name: 'ASSIGNMENT_GROUP_BINDINGS',
-          key_value: JSON.stringify(groupBindings),
-        },
-      ];
-      await fetch(`${API_BASE_URL}/admin/configs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      setShowGroupModal(false);
-      setStatusBanner({
-        type: 'ok',
-        text: `Group members & emails saved! Assigning a ticket to "${assignmentGroup}" will automatically email all bound members.`,
-      });
-    } catch (e) {
-      setStatusBanner({ type: 'err', text: 'Failed to save group bindings.' });
-    } finally {
-      setSavingGroupConfig(false);
-    }
-  };
+  }, [assignmentGroup, eligibleGuardsForGroup]);
 
   const handleUpdateIncident = async () => {
     if (!incident) return;
@@ -369,18 +288,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     setStatusBanner(null);
 
     try {
-      // Ensure latest group bindings are persisted so the backend emails all bound members
-      await fetch(`${API_BASE_URL}/admin/configs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([
-          {
-            key_name: 'ASSIGNMENT_GROUP_BINDINGS',
-            key_value: JSON.stringify(groupBindings),
-          },
-        ]),
-      });
-
       const payload = {
         description: shortDescription,
         category,
@@ -403,23 +310,32 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const data = await res.json();
       if (data.success) {
+        if (data.incident) {
+          setIncident(data.incident);
+        }
         if (data.activity) {
           setUpdates((prev) => [data.activity, ...prev]);
         }
         setWorkNoteMessage('');
-        if (data.email_dispatched) {
-          setStatusBanner({
-            type: 'ok',
-            text: `Case saved & automatic email dispatched to all "${assignmentGroup}" members (${(
-              data.email_recipients || []
-            ).join(', ')})!`,
-          });
+
+        if (data.email_triggered) {
+          if (data.email_dispatched) {
+            setStatusBanner({
+              type: 'ok',
+              text: `Case updated. Automatic dispatch email sent to "${assignmentGroup}" (${(
+                data.email_recipients || []
+              ).join(', ')}).`,
+            });
+          } else {
+            setStatusBanner({
+              type: 'err',
+              text: `Case saved, but auto-email to "${assignmentGroup}" failed: ${data.email_error}`,
+            });
+          }
         } else {
           setStatusBanner({
-            type: 'err',
-            text: `Case saved, but auto-email reported: ${
-              data.email_error || 'Check Gmail OAuth2 Token in API Integrations'
-            }`,
+            type: 'ok',
+            text: 'Case updated successfully.',
           });
         }
       } else {
@@ -570,7 +486,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] font-sans text-xs text-slate-800 pb-12">
-      {/* Rakshak SOC Command Header Bar */}
+      {/* Clean Rakshak SOC Command Header Bar */}
       <div className="bg-slate-900 text-white px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -594,7 +510,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </span>
               </div>
               <h1 className="text-sm font-bold text-slate-200 mt-1">
-                Rakshak Security Dispatch & Assignment Console
+                Rakshak Security Dispatch Console
               </h1>
             </div>
           </div>
@@ -602,19 +518,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           <div className="flex items-center gap-2.5">
             <button
               type="button"
-              onClick={() => setShowGroupModal(true)}
-              className="rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 font-bold flex items-center gap-1.5 transition"
-            >
-              <Users className="w-3.5 h-3.5 text-sky-400" /> Manage Group Members & Emails
-            </button>
-
-            <button
-              type="button"
               onClick={handleUpdateIncident}
               disabled={isUpdating}
               className="rounded-xl bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 font-bold shadow-sm transition disabled:opacity-50"
             >
-              {isUpdating ? 'Saving & Emailing Group...' : 'Save & Auto-Notify Group'}
+              {isUpdating ? 'Updating...' : 'Update Case'}
             </button>
 
             {state !== 'Resolved' && (
@@ -656,7 +564,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           </div>
         )}
 
-        {/* Modern 2-Card Dispatch Layout */}
+        {/* 2-Card Dispatch Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Card 1: Reporter & Threat Classification */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
@@ -768,8 +676,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   2. Group Routing & Bound Assignee
                 </h2>
               </div>
-              <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-                Auto-Email Active ({eligibleMembersForGroup.length} members)
+              <span className="text-[11px] font-bold text-slate-500">
+                {eligibleGuardsForGroup.length} staff in group
               </span>
             </div>
 
@@ -804,46 +712,49 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold uppercase text-slate-500">
-                  Assignment Group (Auto-Emails All Group Members on Save)
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowGroupModal(true)}
-                  className="text-[11px] font-bold text-blue-600 hover:underline"
-                >
-                  + Bind Users & Emails
-                </button>
-              </div>
+              <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
+                Assignment Group
+              </label>
               <select
                 value={assignmentGroup}
                 onChange={(e) => setAssignmentGroup(e.target.value)}
                 className="w-full border border-blue-300 bg-blue-50/50 rounded-xl px-3 py-2 font-bold text-blue-950 outline-none"
               >
-                {ASSIGNMENT_GROUPS.map((grp) => (
-                  <option key={grp} value={grp}>
-                    {grp} ({(groupBindings[grp] || []).length} members bound)
-                  </option>
-                ))}
+                {availableGroups.map((grp) => {
+                  const count = guards.filter(
+                    (g) => g.is_active !== false && getGuardGroups(g).includes(grp)
+                  ).length;
+                  return (
+                    <option key={grp} value={grp}>
+                      {grp} ({count} members)
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Assigned To (Filtered Strictly to "{assignmentGroup}" Members)
+                Assigned To (Members of "{assignmentGroup}")
               </label>
-              <select
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-                className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
-              >
-                {eligibleMembersForGroup.map((m) => (
-                  <option key={m.guard_id} value={m.full_name}>
-                    {m.full_name} ({m.employee_code}) — {m.email}
-                  </option>
-                ))}
-              </select>
+              {eligibleGuardsForGroup.length === 0 ? (
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
+                  No guards are currently assigned to <strong>{assignmentGroup}</strong>. Assign staff to this group on the <strong>Guards</strong> page.
+                </div>
+              ) : (
+                <select
+                  value={assignedTo}
+                  onChange={(e) => setAssignedTo(e.target.value)}
+                  className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
+                >
+                  {eligibleGuardsForGroup.map((g) => (
+                    <option key={g.guard_id} value={g.full_name}>
+                      {g.full_name} ({g.employee_code}) — {g.role || 'Guard'}
+                      {g.email ? ` • ${g.email}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
         </div>
@@ -967,7 +878,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
               <div className="space-y-3 pt-4 border-t border-slate-100">
                 <span className="font-bold text-slate-600 uppercase tracking-wider text-[11px] block">
-                  Case Audit & Auto-Email History
+                  Case Audit & Dispatch History
                 </span>
 
                 {updates.length === 0 ? (
@@ -1066,108 +977,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           )}
         </div>
       </div>
-
-      {/* Modal: Bind Users & Email Addresses to Assignment Groups */}
-      {showGroupModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[88vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div>
-                <h3 className="text-base font-black text-slate-900">
-                  Bind Guards & Emails to Assignment Groups
-                </h3>
-                <p className="text-xs text-slate-500">
-                  When an incident is assigned to a group, an email is automatically sent to every member listed in that group.
-                </p>
-              </div>
-              <button onClick={() => setShowGroupModal(false)}>
-                <X className="w-5 h-5 text-slate-400 hover:text-slate-700" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {ASSIGNMENT_GROUPS.map((grpName) => {
-                const boundList = groupBindings[grpName] || [];
-                return (
-                  <div key={grpName} className="border border-slate-200 rounded-xl p-4 bg-slate-50 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-slate-900 text-sm">{grpName}</span>
-                      <span className="text-xs font-bold text-blue-600">
-                        {boundList.length} members bound
-                      </span>
-                    </div>
-
-                    {/* Toggle Guard Buttons */}
-                    <div className="flex flex-wrap gap-1.5">
-                      {guards.map((g) => {
-                        const isBound = boundList.some((m) => m.guard_id === g.guard_id);
-                        return (
-                          <button
-                            key={g.guard_id}
-                            type="button"
-                            onClick={() => toggleGuardInGroup(grpName, g)}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
-                              isBound
-                                ? 'bg-blue-600 text-white border-blue-600'
-                                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                            }`}
-                          >
-                            {isBound ? '✓ ' : '+ '}
-                            {g.full_name} ({g.employee_code})
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Member Email Inputs */}
-                    {boundList.length > 0 && (
-                      <div className="space-y-2 pt-2 border-t border-slate-200">
-                        <div className="text-[11px] font-bold text-slate-500 uppercase">
-                          Group Member Notification Emails:
-                        </div>
-                        {boundList.map((member) => (
-                          <div key={member.guard_id} className="flex items-center gap-2">
-                            <span className="w-44 text-xs font-bold text-slate-800 truncate">
-                              {member.full_name}:
-                            </span>
-                            <input
-                              type="email"
-                              value={member.email}
-                              onChange={(e) =>
-                                updateMemberEmailInGroup(grpName, member.guard_id, e.target.value)
-                              }
-                              placeholder="member@company.com"
-                              className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-mono"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setShowGroupModal(false)}
-                className="px-4 py-2 rounded-xl border border-slate-200 font-bold text-xs"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={saveGroupBindingsToServer}
-                disabled={savingGroupConfig}
-                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow"
-              >
-                {savingGroupConfig ? 'Saving...' : 'Save Group Bindings'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

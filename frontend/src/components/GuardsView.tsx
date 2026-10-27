@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Plus, 
-  ShieldCheck, 
+import {
+  Plus,
+  ShieldCheck,
   RefreshCw,
   Search,
   Route,
@@ -10,10 +10,22 @@ import {
   Edit2,
   CheckSquare,
   Square,
-  X
+  X,
+  Users,
+  Mail,
+  Phone,
+  Trash2,
+  FolderPlus
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+
+const DEFAULT_GROUPS = [
+  'Security Operations L1',
+  'Quick Response Team (QRT)',
+  'Site Supervisors L2',
+  'Fire & Safety Response',
+];
 
 interface RoundItem {
   id: string;
@@ -24,11 +36,15 @@ interface Guard {
   guard_id: string;
   full_name: string;
   employee_code: string;
+  email?: string | null;
+  phone?: string | null;
   role?: string;
   site_location?: string;
   shift_timing?: string;
   is_active: boolean;
   created_at: string;
+  assignment_group?: string | null;
+  assignment_groups?: string[];
   assigned_round_id?: string | null;
   assigned_round_ids?: string[];
   reporting_to?: string | null;
@@ -39,12 +55,19 @@ interface Guard {
 export const GuardsView: React.FC = () => {
   const [guards, setGuards] = useState<Guard[]>([]);
   const [rounds, setRounds] = useState<RoundItem[]>([]);
+  const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
+  const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showManageGroupsModal, setShowManageGroupsModal] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [savingGroups, setSavingGroups] = useState(false);
+
   const [assigningGuard, setAssigningGuard] = useState<Guard | null>(null);
+  const [assigningGroupsGuard, setAssigningGroupsGuard] = useState<Guard | null>(null);
   const [editingGuard, setEditingGuard] = useState<Guard | null>(null);
   const [resettingGuard, setResettingGuard] = useState<Guard | null>(null);
 
@@ -52,38 +75,89 @@ export const GuardsView: React.FC = () => {
   const [newGuard, setNewGuard] = useState({
     full_name: '',
     employee_code: '',
+    email: '',
+    phone: '',
     password: '',
     role: 'Guard',
     site_location: 'Main Plant & Gate 1',
     shift_timing: 'Morning (06:00 - 14:00)',
+    assignment_groups: ['Security Operations L1'] as string[],
     assigned_round_ids: [] as string[],
   });
 
   // Edit Form State
   const [editForm, setEditForm] = useState({
     full_name: '',
+    email: '',
+    phone: '',
     role: 'Guard',
     site_location: 'Main Plant & Gate 1',
     shift_timing: 'Morning (06:00 - 14:00)',
+    assignment_groups: [] as string[],
     assigned_round_ids: [] as string[],
   });
 
   const [selectedRoundIds, setSelectedRoundIds] = useState<string[]>([]);
+  const [selectedGroupNames, setSelectedGroupNames] = useState<string[]>([]);
   const [newPassword, setNewPassword] = useState('');
+
+  const getGuardGroups = (guard: Guard): string[] => {
+    if (Array.isArray(guard.assignment_groups) && guard.assignment_groups.length > 0) {
+      return guard.assignment_groups;
+    }
+    if (guard.assignment_group && guard.assignment_group.trim() !== '') {
+      return [guard.assignment_group.trim()];
+    }
+    return ['Security Operations L1'];
+  };
+
+  const getGuardRoundIds = (guard: Guard): string[] => {
+    if (Array.isArray(guard.assigned_round_ids) && guard.assigned_round_ids.length > 0) {
+      return guard.assigned_round_ids;
+    }
+    return guard.assigned_round_id ? [guard.assigned_round_id] : [];
+  };
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [guardsRes, roundsRes] = await Promise.all([
+      const [guardsRes, roundsRes, cfgRes] = await Promise.all([
         fetch(`${API_BASE_URL}/guards`),
         fetch(`${API_BASE_URL}/rounds`),
+        fetch(`${API_BASE_URL}/admin/configs`),
       ]);
 
       const guardsData = await guardsRes.json();
       const roundsData = await roundsRes.json();
+      const cfgData = await cfgRes.json();
 
-      if (guardsData.success) setGuards(guardsData.guards || []);
+      const loadedGuards: Guard[] = guardsData.guards || [];
+      setGuards(loadedGuards);
       if (roundsData.success) setRounds(roundsData.rounds || []);
+
+      // Merge saved custom groups + any groups already assigned to guards
+      let customGroups: string[] = [...DEFAULT_GROUPS];
+      if (cfgData.success && Array.isArray(cfgData.configs)) {
+        const found = cfgData.configs.find(
+          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
+        );
+        if (found?.key_value) {
+          try {
+            const parsed = JSON.parse(found.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              customGroups = parsed;
+            }
+          } catch (_) {}
+        }
+      }
+
+      const groupSet = new Set<string>(customGroups);
+      loadedGuards.forEach((g) => {
+        getGuardGroups(g).forEach((grp) => {
+          if (grp) groupSet.add(grp);
+        });
+      });
+      setAvailableGroups(Array.from(groupSet));
     } catch (err) {
       console.error('Failed to load guard records:', err);
     } finally {
@@ -95,15 +169,54 @@ export const GuardsView: React.FC = () => {
     fetchData();
   }, []);
 
-  const toggleIdInArray = (arr: string[], id: string): string[] => {
-    return arr.includes(id) ? arr.filter((item) => item !== id) : [...arr, id];
+  const toggleItemInArray = (arr: string[], item: string): string[] => {
+    return arr.includes(item) ? arr.filter((x) => x !== item) : [...arr, item];
   };
 
-  const getGuardRoundIds = (guard: Guard): string[] => {
-    if (Array.isArray(guard.assigned_round_ids) && guard.assigned_round_ids.length > 0) {
-      return guard.assigned_round_ids;
+  // Persist custom group list to admin_configurations
+  const persistCustomGroups = async (updatedGroups: string[]) => {
+    setSavingGroups(true);
+    try {
+      await fetch(`${API_BASE_URL}/admin/configs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          {
+            key_name: 'CUSTOM_ASSIGNMENT_GROUPS',
+            key_value: JSON.stringify(updatedGroups),
+          },
+        ]),
+      });
+      setAvailableGroups(updatedGroups);
+    } catch (e) {
+      alert('Failed to save assignment groups.');
+    } finally {
+      setSavingGroups(false);
     }
-    return guard.assigned_round_id ? [guard.assigned_round_id] : [];
+  };
+
+  const handleAddCustomGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newGroupName.trim();
+    if (!trimmed) return;
+    if (availableGroups.some((g) => g.toLowerCase() === trimmed.toLowerCase())) {
+      alert('An Assignment Group with this name already exists.');
+      return;
+    }
+    const updated = [...availableGroups, trimmed];
+    setNewGroupName('');
+    await persistCustomGroups(updated);
+  };
+
+  const handleDeleteCustomGroup = async (groupToDelete: string) => {
+    if (availableGroups.length <= 1) {
+      alert('At least one Assignment Group must remain.');
+      return;
+    }
+    if (!window.confirm(`Remove "${groupToDelete}" from Assignment Groups?`)) return;
+    const updated = availableGroups.filter((g) => g !== groupToDelete);
+    if (selectedGroupFilter === groupToDelete) setSelectedGroupFilter('ALL');
+    await persistCustomGroups(updated);
   };
 
   const handleCreateGuard = async (e: React.FormEvent) => {
@@ -113,14 +226,23 @@ export const GuardsView: React.FC = () => {
       return;
     }
 
+    const groupsToSave =
+      newGuard.assignment_groups.length > 0
+        ? newGuard.assignment_groups
+        : [availableGroups[0] || 'Security Operations L1'];
+
     try {
       const payload = {
         full_name: newGuard.full_name.trim(),
         employee_code: newGuard.employee_code.trim(),
+        email: newGuard.email.trim() || null,
+        phone: newGuard.phone.trim() || null,
         password: newGuard.password,
         role: newGuard.role,
         site_location: newGuard.site_location,
         shift_timing: newGuard.shift_timing,
+        assignment_groups: groupsToSave,
+        assignment_group: groupsToSave[0],
         assigned_round_ids: newGuard.assigned_round_ids,
         assigned_round_id: newGuard.assigned_round_ids[0] || null,
       };
@@ -132,15 +254,17 @@ export const GuardsView: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        alert('Personnel registered successfully.');
         setShowAddModal(false);
         setNewGuard({
           full_name: '',
           employee_code: '',
+          email: '',
+          phone: '',
           password: '',
           role: 'Guard',
           site_location: 'Main Plant & Gate 1',
           shift_timing: 'Morning (06:00 - 14:00)',
+          assignment_groups: [availableGroups[0] || 'Security Operations L1'],
           assigned_round_ids: [],
         });
         fetchData();
@@ -156,9 +280,12 @@ export const GuardsView: React.FC = () => {
     setEditingGuard(guard);
     setEditForm({
       full_name: guard.full_name,
+      email: guard.email || '',
+      phone: guard.phone || '',
       role: guard.role || 'Guard',
       site_location: guard.site_location || 'Main Plant & Gate 1',
       shift_timing: guard.shift_timing || 'Morning (06:00 - 14:00)',
+      assignment_groups: getGuardGroups(guard),
       assigned_round_ids: getGuardRoundIds(guard),
     });
   };
@@ -167,12 +294,21 @@ export const GuardsView: React.FC = () => {
     e.preventDefault();
     if (!editingGuard) return;
 
+    const groupsToSave =
+      editForm.assignment_groups.length > 0
+        ? editForm.assignment_groups
+        : [availableGroups[0] || 'Security Operations L1'];
+
     try {
       const payload = {
         full_name: editForm.full_name.trim(),
+        email: editForm.email.trim() || null,
+        phone: editForm.phone.trim() || null,
         role: editForm.role,
         site_location: editForm.site_location,
         shift_timing: editForm.shift_timing,
+        assignment_groups: groupsToSave,
+        assignment_group: groupsToSave[0],
         assigned_round_ids: editForm.assigned_round_ids,
         assigned_round_id: editForm.assigned_round_ids[0] || null,
       };
@@ -185,7 +321,6 @@ export const GuardsView: React.FC = () => {
 
       const data = await res.json();
       if (data.success) {
-        alert(`Details updated for ${editForm.full_name}.`);
         setEditingGuard(null);
         fetchData();
       } else {
@@ -209,7 +344,6 @@ export const GuardsView: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        alert(`Patrol routes updated for ${assigningGuard.full_name}.`);
         setAssigningGuard(null);
         fetchData();
       } else {
@@ -217,6 +351,34 @@ export const GuardsView: React.FC = () => {
       }
     } catch (err) {
       alert('Network error while assigning routes.');
+    }
+  };
+
+  const handleSaveGroupAssignment = async () => {
+    if (!assigningGroupsGuard) return;
+    const groupsToSave =
+      selectedGroupNames.length > 0
+        ? selectedGroupNames
+        : [availableGroups[0] || 'Security Operations L1'];
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/guards/${assigningGroupsGuard.guard_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assignment_groups: groupsToSave,
+          assignment_group: groupsToSave[0],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAssigningGroupsGuard(null);
+        fetchData();
+      } else {
+        alert(data.message || 'Failed to update assignment groups.');
+      }
+    } catch (err) {
+      alert('Network error while updating assignment groups.');
     }
   };
 
@@ -262,15 +424,22 @@ export const GuardsView: React.FC = () => {
 
   const totalGuards = guards.length;
   const activeStaff = guards.filter((g) => g.is_active).length;
-  const deactivatedStaff = totalGuards - activeStaff;
 
   const filteredGuards = guards.filter((g) => {
+    if (selectedGroupFilter !== 'ALL') {
+      const gGroups = getGuardGroups(g);
+      if (!gGroups.includes(selectedGroupFilter)) return false;
+    }
+
+    if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
       g.full_name.toLowerCase().includes(q) ||
       g.employee_code.toLowerCase().includes(q) ||
+      (g.email || '').toLowerCase().includes(q) ||
       (g.role || '').toLowerCase().includes(q) ||
-      (g.site_location || '').toLowerCase().includes(q)
+      (g.site_location || '').toLowerCase().includes(q) ||
+      getGuardGroups(g).some((grp) => grp.toLowerCase().includes(q))
     );
   });
 
@@ -289,11 +458,47 @@ export const GuardsView: React.FC = () => {
     }
   };
 
+  const renderMultiGroupSelector = (
+    selectedGroups: string[],
+    onChange: (newGroups: string[]) => void
+  ) => (
+    <div className="border border-slate-200 rounded-xl max-h-40 overflow-y-auto divide-y divide-slate-100 bg-slate-50/50">
+      {availableGroups.map((grp) => {
+        const isChecked = selectedGroups.includes(grp);
+        return (
+          <div
+            key={grp}
+            onClick={() => onChange(toggleItemInArray(selectedGroups, grp))}
+            className={`flex items-center justify-between px-3 py-2 cursor-pointer transition ${
+              isChecked
+                ? 'bg-emerald-50/90 text-emerald-950 font-bold'
+                : 'hover:bg-white text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {isChecked ? (
+                <CheckSquare className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              ) : (
+                <Square className="w-4 h-4 text-slate-400 flex-shrink-0" />
+              )}
+              <span>{grp}</span>
+            </div>
+            {isChecked && (
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+                Member
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
   const renderMultiRouteSelector = (
     selectedIds: string[],
     onChange: (newIds: string[]) => void
   ) => (
-    <div className="border border-slate-200 rounded-xl max-h-44 overflow-y-auto divide-y divide-slate-100 bg-slate-50/50">
+    <div className="border border-slate-200 rounded-xl max-h-40 overflow-y-auto divide-y divide-slate-100 bg-slate-50/50">
       {rounds.length === 0 ? (
         <div className="p-3 text-slate-400 text-center italic">No routes created yet</div>
       ) : (
@@ -302,8 +507,8 @@ export const GuardsView: React.FC = () => {
           return (
             <div
               key={r.id}
-              onClick={() => onChange(toggleIdInArray(selectedIds, r.id))}
-              className={`flex items-center justify-between px-3 py-2.5 cursor-pointer transition ${
+              onClick={() => onChange(toggleItemInArray(selectedIds, r.id))}
+              className={`flex items-center justify-between px-3 py-2 cursor-pointer transition ${
                 isChecked ? 'bg-blue-50/80 text-blue-900 font-semibold' : 'hover:bg-white text-slate-700'
               }`}
             >
@@ -333,17 +538,27 @@ export const GuardsView: React.FC = () => {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Security Hierarchy & Personnel</h1>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
+              Security Workforce, Assignment Groups & Routes
+            </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Configure personnel hierarchy levels, assign one or multiple patrol routes, and manage credentials.
+              Create custom Assignment Groups, bind personnel & notification emails for automatic incident dispatch, and assign patrol routes.
             </p>
           </div>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700 transition"
-          >
-            <Plus className="w-4 h-4" /> Add Security Personnel
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => setShowManageGroupsModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-slate-800 transition"
+            >
+              <Users className="w-4 h-4 text-emerald-400" /> Manage Assignment Groups ({availableGroups.length})
+            </button>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700 transition"
+            >
+              <Plus className="w-4 h-4" /> Add Security Personnel
+            </button>
+          </div>
         </div>
 
         {/* Metric Cards */}
@@ -353,13 +568,44 @@ export const GuardsView: React.FC = () => {
             <div className="text-3xl font-black text-slate-900 mt-2">{totalGuards}</div>
           </div>
           <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-            <div className="text-xs font-bold uppercase tracking-wider text-emerald-600">Active Staff</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-emerald-600">Active On-Duty Staff</div>
             <div className="text-3xl font-black text-emerald-600 mt-2">{activeStaff}</div>
           </div>
           <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-            <div className="text-xs font-bold uppercase tracking-wider text-rose-500">Deactivated</div>
-            <div className="text-3xl font-black text-rose-500 mt-2">{deactivatedStaff}</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-blue-600">Active Assignment Groups</div>
+            <div className="text-3xl font-black text-blue-600 mt-2">{availableGroups.length}</div>
           </div>
+        </div>
+
+        {/* Assignment Group Filter Pills */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setSelectedGroupFilter('ALL')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
+              selectedGroupFilter === 'ALL'
+                ? 'bg-slate-900 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            All Units ({guards.length})
+          </button>
+          {availableGroups.map((grp) => {
+            const count = guards.filter((g) => getGuardGroups(g).includes(grp)).length;
+            const active = selectedGroupFilter === grp;
+            return (
+              <button
+                key={grp}
+                onClick={() => setSelectedGroupFilter(grp)}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                  active
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {grp} ({count})
+              </button>
+            );
+          })}
         </div>
 
         {/* Search Bar */}
@@ -368,7 +614,7 @@ export const GuardsView: React.FC = () => {
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Search by name, employee code, role, or site..."
+              placeholder="Search by name, employee code, email, group, or site..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-blue-500"
@@ -389,10 +635,10 @@ export const GuardsView: React.FC = () => {
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
                 <tr>
-                  <th className="px-4 py-3.5">Staff Member</th>
+                  <th className="px-4 py-3.5">Staff Member & Contact</th>
                   <th className="px-4 py-3.5">Role / Hierarchy</th>
-                  <th className="px-4 py-3.5">Site / Plant</th>
-                  <th className="px-4 py-3.5">Shift Window</th>
+                  <th className="px-4 py-3.5">Assignment Groups (Incident Dispatch)</th>
+                  <th className="px-4 py-3.5">Site & Shift</th>
                   <th className="px-4 py-3.5">Assigned Patrol Routes</th>
                   <th className="px-4 py-3.5">Status</th>
                   <th className="px-4 py-3.5 text-right">Actions</th>
@@ -420,37 +666,74 @@ export const GuardsView: React.FC = () => {
                         ? [guard.rounds]
                         : [];
 
+                    const memberGroups = getGuardGroups(guard);
+
                     return (
                       <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="h-9 w-9 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold flex items-center justify-center text-xs">
+                            <div className="h-9 w-9 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold flex items-center justify-center text-xs shrink-0">
                               {guard.full_name.charAt(0).toUpperCase()}
                             </div>
                             <div>
                               <div className="font-bold text-slate-900">{guard.full_name}</div>
-                              <div className="text-[11px] text-slate-400 font-mono">Code: {guard.employee_code}</div>
+                              <div className="text-[11px] text-slate-400 font-mono">
+                                Code: {guard.employee_code}
+                              </div>
+                              {guard.email ? (
+                                <div className="text-[11px] text-blue-600 flex items-center gap-1 mt-0.5">
+                                  <Mail className="w-3 h-3" /> {guard.email}
+                                </div>
+                              ) : (
+                                <div className="text-[10px] text-amber-600 italic mt-0.5">
+                                  No email set (Click Edit to add)
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
 
                         <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${getRoleBadge(guard.role)}`}>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${getRoleBadge(
+                              guard.role
+                            )}`}
+                          >
                             <ShieldCheck className="w-3 h-3" />
                             {guard.role || 'Guard'}
                           </span>
                         </td>
 
-                        <td className="px-4 py-3 text-slate-700 font-medium">
-                          <div className="flex items-center gap-1">
-                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                            {guard.site_location || 'Main Plant & Gate 1'}
+                        {/* Multi-Group Cell */}
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap items-center gap-1.5 max-w-xs">
+                            {memberGroups.map((grp) => (
+                              <span
+                                key={grp}
+                                className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-[10px]"
+                              >
+                                {grp}
+                              </span>
+                            ))}
+                            <button
+                              onClick={() => {
+                                setAssigningGroupsGuard(guard);
+                                setSelectedGroupNames(memberGroups);
+                              }}
+                              className="text-[11px] font-bold text-emerald-700 hover:underline ml-1"
+                            >
+                              Edit Groups
+                            </button>
                           </div>
                         </td>
 
-                        <td className="px-4 py-3 text-slate-600">
-                          <div className="flex items-center gap-1 font-mono text-[11px]">
-                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                        <td className="px-4 py-3 text-slate-700">
+                          <div className="flex items-center gap-1 font-semibold">
+                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                            {guard.site_location || 'Main Plant & Gate 1'}
+                          </div>
+                          <div className="flex items-center gap-1 font-mono text-[11px] text-slate-500 mt-0.5">
+                            <Clock className="w-3 h-3 text-slate-400" />
                             {guard.shift_timing || 'Morning'}
                           </div>
                         </td>
@@ -483,9 +766,13 @@ export const GuardsView: React.FC = () => {
                         </td>
 
                         <td className="px-4 py-3">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            guard.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                          }`}>
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              guard.is_active
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
                             {guard.is_active ? 'Active' : 'Deactivated'}
                           </span>
                         </td>
@@ -505,7 +792,7 @@ export const GuardsView: React.FC = () => {
                               }}
                               className="px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
                             >
-                              Reset Password
+                              Password
                             </button>
                             <button
                               onClick={() => handleToggleStatus(guard)}
@@ -529,10 +816,129 @@ export const GuardsView: React.FC = () => {
         </div>
       </div>
 
+      {/* MODAL A: Create & Manage Custom Assignment Groups */}
+      {showManageGroupsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-base font-bold text-slate-900">Manage Assignment Groups</h3>
+              </div>
+              <button
+                onClick={() => setShowManageGroupsModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Create custom Assignment Groups for your plant. Any group added here can be assigned to multiple guards and selected on Incident tickets.
+            </p>
+
+            <form onSubmit={handleAddCustomGroup} className="flex gap-2">
+              <input
+                type="text"
+                placeholder="e.g. Gate 2 QRT or Electrical Safety L2"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                className="flex-1 border border-slate-300 rounded-xl px-3 py-2 text-xs outline-none focus:border-blue-600"
+              />
+              <button
+                type="submit"
+                disabled={savingGroups || !newGroupName.trim()}
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 disabled:opacity-50"
+              >
+                <FolderPlus className="w-3.5 h-3.5" /> Add
+              </button>
+            </form>
+
+            <div className="border border-slate-200 rounded-xl max-h-60 overflow-y-auto divide-y divide-slate-100">
+              {availableGroups.map((grp) => {
+                const memberCount = guards.filter((g) => getGuardGroups(g).includes(grp)).length;
+                return (
+                  <div key={grp} className="px-3.5 py-2.5 flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-bold text-slate-900">{grp}</span>
+                      <span className="ml-2 text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold">
+                        {memberCount} staff
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCustomGroup(grp)}
+                      className="text-slate-400 hover:text-rose-600 p-1"
+                      title="Delete Group"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowManageGroupsModal(false)}
+                className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL B: Quick Multi-Group Assignment Modal */}
+      {assigningGroupsGuard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-base font-bold text-slate-900">Assign Response Groups</h3>
+              </div>
+              <button
+                onClick={() => setAssigningGroupsGuard(null)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Select one or multiple Assignment Groups for{' '}
+              <strong className="text-slate-900">{assigningGroupsGuard.full_name}</strong>. When an incident is assigned to any of these groups, they will appear as an eligible responder and receive automatic email alerts.
+            </p>
+
+            {renderMultiGroupSelector(selectedGroupNames, setSelectedGroupNames)}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setAssigningGroupsGuard(null)}
+                className="px-4 py-2 border rounded-xl text-xs font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveGroupAssignment}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-xl text-xs font-bold text-white shadow"
+              >
+                Save Groups ({selectedGroupNames.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL 1: Edit Personnel Details */}
       {editingGuard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
               <h3 className="text-base font-bold text-slate-900">
                 Edit Details: {editingGuard.full_name}
@@ -544,7 +950,7 @@ export const GuardsView: React.FC = () => {
 
             <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Full Name</label>
+                <label className="font-bold text-slate-700 block mb-1">Full Name *</label>
                 <input
                   type="text"
                   required
@@ -552,6 +958,31 @@ export const GuardsView: React.FC = () => {
                   onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Email Address (For Incident Alerts)
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="guard@company.com"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Phone Number</label>
+                  <input
+                    type="text"
+                    placeholder="+91..."
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -594,19 +1025,19 @@ export const GuardsView: React.FC = () => {
               </div>
 
               <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Assignment Groups ({editForm.assignment_groups.length} selected)
+                </label>
+                {renderMultiGroupSelector(editForm.assignment_groups, (grps) =>
+                  setEditForm({ ...editForm, assignment_groups: grps })
+                )}
+              </div>
+
+              <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="font-bold text-slate-700">
                     Assigned Patrol Routes ({editForm.assigned_round_ids.length} selected)
                   </label>
-                  {editForm.assigned_round_ids.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setEditForm({ ...editForm, assigned_round_ids: [] })}
-                      className="text-[11px] text-rose-600 hover:underline font-semibold"
-                    >
-                      Clear All
-                    </button>
-                  )}
                 </div>
                 {renderMultiRouteSelector(editForm.assigned_round_ids, (ids) =>
                   setEditForm({ ...editForm, assigned_round_ids: ids })
@@ -648,27 +1079,11 @@ export const GuardsView: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-600">
-              Select one or multiple patrol routes for <strong className="text-slate-900">{assigningGuard.full_name}</strong>.
-              All selected routes will be available in their mobile app.
+              Select one or multiple patrol routes for{' '}
+              <strong className="text-slate-900">{assigningGuard.full_name}</strong>.
             </p>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-700">
-                  Available Routes ({selectedRoundIds.length} selected)
-                </label>
-                {selectedRoundIds.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRoundIds([])}
-                    className="text-[11px] text-rose-600 hover:underline font-semibold"
-                  >
-                    Unselect All
-                  </button>
-                )}
-              </div>
-              {renderMultiRouteSelector(selectedRoundIds, setSelectedRoundIds)}
-            </div>
+            {renderMultiRouteSelector(selectedRoundIds, setSelectedRoundIds)}
 
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -693,7 +1108,7 @@ export const GuardsView: React.FC = () => {
       {/* MODAL 3: Register New Personnel */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b pb-3">
               <h3 className="text-base font-bold text-slate-900">Register Security Personnel</h3>
               <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
@@ -741,6 +1156,31 @@ export const GuardsView: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Email Address (For Incident Alerts)
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="guard@company.com"
+                    value={newGuard.email}
+                    onChange={(e) => setNewGuard({ ...newGuard, email: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Phone Number</label>
+                  <input
+                    type="text"
+                    placeholder="+91..."
+                    value={newGuard.phone}
+                    onChange={(e) => setNewGuard({ ...newGuard, phone: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
                   <label className="font-bold text-slate-700 block mb-1">Role / Rank</label>
                   <select
                     value={newGuard.role}
@@ -776,6 +1216,15 @@ export const GuardsView: React.FC = () => {
                   onChange={(e) => setNewGuard({ ...newGuard, site_location: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg p-2 outline-none text-slate-800"
                 />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Assign to Response Groups ({newGuard.assignment_groups.length} selected)
+                </label>
+                {renderMultiGroupSelector(newGuard.assignment_groups, (grps) =>
+                  setNewGuard({ ...newGuard, assignment_groups: grps })
+                )}
               </div>
 
               <div>
@@ -845,3 +1294,5 @@ export const GuardsView: React.FC = () => {
     </div>
   );
 };
+
+export default GuardsView;

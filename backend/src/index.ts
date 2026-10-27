@@ -17,7 +17,6 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/*', cors())
 
-// --- UTF-8 SAFE BASE64 ENCODER FOR GMAIL API ---
 function utf8ToBase64(str: string): string {
   const bytes = new TextEncoder().encode(str);
   let binary = '';
@@ -42,6 +41,14 @@ const sanitizeUuidArray = z
     Array.isArray(arr)
       ? arr.map((id) => id.trim()).filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
       : undefined
+  );
+
+const sanitizeStringArray = z
+  .array(z.string())
+  .optional()
+  .nullable()
+  .transform((arr) =>
+    Array.isArray(arr) ? arr.map((s) => s.trim()).filter(Boolean) : undefined
   );
 
 const loginSchema = z.object({
@@ -80,10 +87,14 @@ const roundSaveSchema = z.object({
 const createGuardSchema = z.object({
   full_name: z.string().min(1, 'Full name is required'),
   employee_code: z.string().min(1, 'Employee code is required'),
+  email: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
   password: z.string().min(4, 'Password must be at least 4 characters'),
   role: z.string().optional().default('Guard'),
   site_location: z.string().optional().default('Main Plant & Gate 1'),
   shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
+  assignment_group: z.string().optional().nullable(),
+  assignment_groups: sanitizeStringArray,
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
@@ -91,11 +102,15 @@ const createGuardSchema = z.object({
 
 const updateGuardSchema = z.object({
   full_name: z.string().optional(),
+  email: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
   password: z.string().optional(),
   is_active: z.boolean().optional(),
   role: z.string().optional(),
   site_location: z.string().optional(),
   shift_timing: z.string().optional(),
+  assignment_group: z.string().optional().nullable(),
+  assignment_groups: sanitizeStringArray,
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
@@ -107,7 +122,6 @@ const getSupabase = (env: Bindings) =>
     global: { fetch: (...args) => fetch(...args) } 
   });
 
-// Decodes PostGIS EWKB Hex Point or GeoJSON into numeric { lat, lng }
 function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
   const directLat = Number(scan.guard_lat ?? scan.lat ?? 0);
   const directLng = Number(scan.guard_lng ?? scan.lng ?? 0);
@@ -191,7 +205,7 @@ app.post('/api/v1/auth/login', async (c) => {
 
     const { data: guard, error } = await supabase
       .from('guards')
-      .select('guard_id, full_name, employee_code, password_hash, is_active, role, site_location, shift_timing, assigned_round_id, assigned_round_ids')
+      .select('*')
       .eq('employee_code', employee_code)
       .single()
 
@@ -232,7 +246,7 @@ app.post('/api/v1/auth/login', async (c) => {
 })
 
 // ==========================================
-// 2. PATROL SCANS API (2-STEP VERIFICATION)
+// 2. PATROL SCANS API
 // ==========================================
 async function isValidCheckpointSignature(
   supabase: any,
@@ -330,7 +344,6 @@ app.post('/api/v1/scans', async (c) => {
         await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
         return `${url.origin}/api/v1/media/${fileName}`;
       } catch (err) {
-        console.error(`Failed to upload ${prefix} image to R2:`, err);
         return null;
       }
     };
@@ -460,7 +473,7 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 });
 
 // ==========================================
-// LIVE PATROL TRACKING (START QR -> WALK -> END QR)
+// LIVE PATROL TRACKING
 // ==========================================
 app.post('/api/v1/patrols/session/start', async (c) => {
   try {
@@ -932,7 +945,7 @@ app.delete('/api/v1/rounds/:id', async (c) => {
 });
 
 // ==========================================
-// 5. GUARD MANAGEMENT CRUD & MULTI-ROUTE HIERARCHY
+// 5. GUARD MANAGEMENT CRUD & MULTI-GROUP / MULTI-ROUTE HIERARCHY
 // ==========================================
 app.get('/api/v1/guards', async (c) => {
   try {
@@ -952,27 +965,36 @@ app.get('/api/v1/guards', async (c) => {
     const roundsMap = new Map((rounds || []).map((r: any) => [r.id, r]));
 
     const guardsWithRounds = (guards || []).map((g: any) => {
-      const rawIds: string[] = Array.isArray(g.assigned_round_ids) && g.assigned_round_ids.length > 0
+      const rawRoundIds: string[] = Array.isArray(g.assigned_round_ids) && g.assigned_round_ids.length > 0
         ? g.assigned_round_ids
         : (g.assigned_round_id ? [g.assigned_round_id] : []);
 
-      const uniqueIds = Array.from(new Set(rawIds.filter(Boolean)));
-      const assignedRounds = uniqueIds
+      const uniqueRoundIds = Array.from(new Set(rawRoundIds.filter(Boolean)));
+      const assignedRounds = uniqueRoundIds
         .map((id) => roundsMap.get(id))
         .filter(Boolean);
+
+      const rawGroups: string[] = Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
+        ? g.assignment_groups
+        : (g.assignment_group ? [g.assignment_group] : ['Security Operations L1']);
+      const uniqueGroups = Array.from(new Set(rawGroups.filter(Boolean)));
 
       return {
         guard_id: g.guard_id,
         full_name: g.full_name,
         employee_code: g.employee_code,
+        email: g.email || null,
+        phone: g.phone || null,
         role: g.role,
         site_location: g.site_location,
         shift_timing: g.shift_timing,
         is_active: g.is_active,
         created_at: g.created_at,
         reporting_to: g.reporting_to,
-        assigned_round_id: uniqueIds[0] || null,
-        assigned_round_ids: uniqueIds,
+        assignment_group: uniqueGroups[0] || 'Security Operations L1',
+        assignment_groups: uniqueGroups,
+        assigned_round_id: uniqueRoundIds[0] || null,
+        assigned_round_ids: uniqueRoundIds,
         rounds: assignedRounds[0] || null,
         assigned_rounds: assignedRounds
       };
@@ -1005,13 +1027,21 @@ app.post('/api/v1/guards', async (c) => {
       : (parsed.assigned_round_id ? [parsed.assigned_round_id] : []);
     const primaryRoundId = roundIds[0] || null;
 
+    const groupsList = parsed.assignment_groups && parsed.assignment_groups.length > 0
+      ? parsed.assignment_groups
+      : (parsed.assignment_group ? [parsed.assignment_group] : ['Security Operations L1']);
+
     const insertPayload: Record<string, any> = {
       full_name: parsed.full_name.trim(),
       employee_code: parsed.employee_code.trim(),
+      email: parsed.email ? parsed.email.trim() : null,
+      phone: parsed.phone ? parsed.phone.trim() : null,
       password_hash: parsed.password,
       role: parsed.role,
       site_location: parsed.site_location,
       shift_timing: parsed.shift_timing,
+      assignment_group: groupsList[0],
+      assignment_groups: groupsList,
       assigned_round_id: primaryRoundId,
       assigned_round_ids: roundIds,
       reporting_to: parsed.reporting_to,
@@ -1025,6 +1055,7 @@ app.post('/api/v1/guards', async (c) => {
       .single();
 
     if (error) {
+      delete insertPayload.assignment_groups;
       delete insertPayload.assigned_round_ids;
       const retry = await supabase.from('guards').insert([insertPayload]).select().single();
       if (retry.error) throw retry.error;
@@ -1049,12 +1080,22 @@ app.patch('/api/v1/guards/:id', async (c) => {
 
     const updates: Record<string, any> = {};
     if (parsed.full_name !== undefined) updates.full_name = parsed.full_name.trim();
+    if (parsed.email !== undefined) updates.email = parsed.email ? parsed.email.trim() : null;
+    if (parsed.phone !== undefined) updates.phone = parsed.phone ? parsed.phone.trim() : null;
     if (parsed.password !== undefined && parsed.password.trim() !== '') updates.password_hash = parsed.password;
     if (parsed.is_active !== undefined) updates.is_active = parsed.is_active;
     if (parsed.role !== undefined) updates.role = parsed.role;
     if (parsed.site_location !== undefined) updates.site_location = parsed.site_location;
     if (parsed.shift_timing !== undefined) updates.shift_timing = parsed.shift_timing;
     if (parsed.reporting_to !== undefined) updates.reporting_to = parsed.reporting_to;
+
+    if (parsed.assignment_groups !== undefined) {
+      updates.assignment_groups = parsed.assignment_groups;
+      updates.assignment_group = parsed.assignment_groups[0] || 'Security Operations L1';
+    } else if (parsed.assignment_group !== undefined) {
+      updates.assignment_group = parsed.assignment_group;
+      updates.assignment_groups = parsed.assignment_group ? [parsed.assignment_group] : [];
+    }
 
     if (parsed.assigned_round_ids !== undefined) {
       updates.assigned_round_ids = parsed.assigned_round_ids;
@@ -1076,6 +1117,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
       .maybeSingle();
 
     if (error) {
+      delete updates.assignment_groups;
       delete updates.assigned_round_ids;
       const retry = await supabase.from('guards').update(updates).eq('guard_id', guardId).select().maybeSingle();
       if (retry.error) throw retry.error;
@@ -1161,7 +1203,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 });
 
 // ==========================================
-// 6. TICKETING & INCIDENT COMMAND + AUTO GROUP EMAIL
+// 6. TICKETING & INCIDENT COMMAND + SMART AUTO GROUP EMAIL
 // ==========================================
 app.post('/api/v1/incidents', async (c) => {
   try {
@@ -1221,14 +1263,13 @@ app.post('/api/v1/incidents', async (c) => {
 
     if (error) return c.json({ success: false, message: 'Database error', error }, 500);
 
-    // Automatically email all members bound to the initial Assignment Group
     await sendGroupAssignmentEmail(c.env, {
       incidentId: incidentUuid,
       priority: priority || 'P3',
       description: description || title || 'Security Incident',
       photoUrl: finalPhotoUrl,
       assignmentGroup: targetGroup,
-      assignedTo: assigned_to || 'All Unit Members',
+      assignedTo: assigned_to || 'All Group Members',
       status: 'OPEN',
     });
 
@@ -1424,31 +1465,49 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.status && body.status !== current.status) {
       changes.push(`State changed from ${current.status} to ${body.status}`);
     }
-    if (body.assignment_group && body.assignment_group !== current.assignment_group) {
+
+    const groupChanged =
+      body.assignment_group !== undefined &&
+      body.assignment_group !== (current.assignment_group || '');
+    const assigneeChanged =
+      body.assigned_to !== undefined &&
+      body.assigned_to !== (current.assigned_to || '');
+
+    if (groupChanged) {
       changes.push(`Assignment group set to "${body.assignment_group}"`);
     }
-    if (body.assigned_to && body.assigned_to !== current.assigned_to) {
+    if (assigneeChanged) {
       changes.push(`Assigned to "${body.assigned_to}"`);
     }
 
-    // Automatically send email to all members of the Assignment Group whenever assigned/updated
-    const targetGroup = body.assignment_group || current.assignment_group || 'Security Operations L1';
-    const targetAssignee = body.assigned_to || current.assigned_to || 'Unit Member';
+    // Smart Auto-Email: Only fire email when Assignment Group or Assignee actually changes
+    let emailTriggered = false;
+    let emailDispatchResult: { ok: boolean; recipients: string[]; error?: string } = {
+      ok: false,
+      recipients: [],
+    };
+    let emailLogLine = '';
 
-    const emailDispatchResult = await sendGroupAssignmentEmail(c.env, {
-      incidentId,
-      priority: body.priority || current.priority || 'P3',
-      description: body.description || current.description || 'Security Incident',
-      photoUrl: current.photo_url || null,
-      assignmentGroup: targetGroup,
-      assignedTo: targetAssignee,
-      status: body.status || current.status || 'OPEN',
-      workNote: body.work_note,
-    });
+    if (groupChanged || assigneeChanged) {
+      emailTriggered = true;
+      const targetGroup = body.assignment_group || current.assignment_group || 'Security Operations L1';
+      const targetAssignee = body.assigned_to || current.assigned_to || 'Unit Member';
 
-    const emailLogLine = emailDispatchResult.ok
-      ? `📧 Auto-Email Dispatched to [${targetGroup}] members (${emailDispatchResult.recipients.join(', ')})`
-      : `⚠️ Auto-Email Notice for [${targetGroup}]: ${emailDispatchResult.error}`;
+      emailDispatchResult = await sendGroupAssignmentEmail(c.env, {
+        incidentId,
+        priority: body.priority || current.priority || 'P3',
+        description: body.description || current.description || 'Security Incident',
+        photoUrl: current.photo_url || null,
+        assignmentGroup: targetGroup,
+        assignedTo: targetAssignee,
+        status: body.status || current.status || 'OPEN',
+        workNote: body.work_note,
+      });
+
+      emailLogLine = emailDispatchResult.ok
+        ? `Auto-Email Dispatched to [${targetGroup}] (${emailDispatchResult.recipients.join(', ')})`
+        : `Auto-Email Notice for [${targetGroup}]: ${emailDispatchResult.error}`;
+    }
 
     let createdActivity = null;
     const combinedMessage = [
@@ -1477,6 +1536,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       success: true, 
       incident: updatedIncident, 
       activity: createdActivity,
+      email_triggered: emailTriggered,
       email_dispatched: emailDispatchResult.ok,
       email_recipients: emailDispatchResult.recipients,
       email_error: emailDispatchResult.error
@@ -1574,7 +1634,7 @@ app.delete('/api/v1/incidents/:id', async (c) => {
 });
 
 // ==========================================
-// 7. ADMIN WEB DASHBOARD: CONFIGS & AUTO GROUP EMAILS
+// 7. ADMIN CONFIGS & GOOGLE OAUTH2 REFRESH TOKEN DISPATCH
 // ==========================================
 app.get('/api/v1/admin/configs', async (c) => {
   try {
@@ -1603,7 +1663,77 @@ app.post('/api/v1/admin/configs', async (c) => {
   }
 });
 
-// Automatically sends HTML email to all members bound to the given Assignment Group
+app.post('/api/v1/admin/test-gmail', async (c) => {
+  const result = await sendGroupAssignmentEmail(c.env, {
+    incidentId: '100999',
+    priority: 'P2 - High',
+    description: 'This is a live verification email from Rakshak Patrol using your Google OAuth2 credentials.',
+    photoUrl: null,
+    assignmentGroup: 'Security Operations L1',
+    assignedTo: 'System Test',
+    status: 'ACTIVE',
+  });
+
+  if (!result.ok) {
+    return c.json({ success: false, message: result.error }, 400);
+  }
+  return c.json({ success: true, recipients: result.recipients });
+});
+
+async function getValidGmailAccessToken(
+  supabase: any,
+  configMap: Record<string, string>
+): Promise<{ token: string | null; error?: string }> {
+  const clientId = (configMap['GMAIL_CLIENT_ID'] || '').trim();
+  const clientSecret = (configMap['GMAIL_CLIENT_SECRET'] || '').trim();
+  const refreshToken = (configMap['GMAIL_REFRESH_TOKEN'] || '').trim();
+
+  // 1. Prefer OAuth2 Refresh Token flow (mints a fresh access token automatically)
+  if (clientId && clientSecret && refreshToken) {
+    try {
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+        }).toString(),
+      });
+
+      const data: any = await res.json().catch(() => ({}));
+      if (res.ok && data.access_token) {
+        // Cache the freshly minted access token in admin_configurations
+        await supabase
+          .from('admin_configurations')
+          .upsert([{ key_name: 'GMAIL_ACCESS_TOKEN', key_value: data.access_token }], {
+            onConflict: 'key_name',
+          });
+        return { token: data.access_token };
+      } else {
+        return {
+          token: null,
+          error: `OAuth2 Refresh Token exchange failed: ${data.error_description || data.error || res.status}`,
+        };
+      }
+    } catch (e: any) {
+      return { token: null, error: e.message || 'Network error refreshing OAuth2 token' };
+    }
+  }
+
+  // 2. Fallback to direct Access Token if provided
+  const directToken = (configMap['GMAIL_ACCESS_TOKEN'] || '').trim();
+  if (directToken) {
+    return { token: directToken };
+  }
+
+  return {
+    token: null,
+    error: 'Missing OAuth2 Refresh Token (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) in API Integrations.',
+  };
+}
+
 async function sendGroupAssignmentEmail(
   env: Bindings,
   params: {
@@ -1618,68 +1748,78 @@ async function sendGroupAssignmentEmail(
   }
 ): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
   const supabase = getSupabase(env);
-  const { data: configs, error } = await supabase
-    .from('admin_configurations')
-    .select('key_name, key_value')
-    .in('key_name', ['ENABLE_GMAIL', 'GMAIL_ACCESS_TOKEN', 'MANAGER_EMAIL', 'ASSIGNMENT_GROUP_BINDINGS']);
 
-  if (error || !configs) {
-    return { ok: false, recipients: [], error: 'Could not read admin_configurations' };
+  const [cfgRes, guardsRes] = await Promise.all([
+    supabase.from('admin_configurations').select('key_name, key_value'),
+    supabase.from('guards').select('guard_id, full_name, email, assignment_group, assignment_groups, is_active')
+  ]);
+
+  if (cfgRes.error || !cfgRes.data) {
+    return { ok: false, recipients: [], error: 'Could not load admin_configurations' };
   }
 
-  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  const configMap = cfgRes.data.reduce((acc: Record<string, string>, curr: any) => {
+    acc[curr.key_name] = curr.key_value;
+    return acc;
+  }, {});
+
   if (configMap['ENABLE_GMAIL'] === 'false') {
-    return { ok: false, recipients: [], error: 'Gmail notifications disabled in API Integrations' };
+    return { ok: false, recipients: [], error: 'Gmail integration is disabled' };
   }
 
-  const token = (configMap['GMAIL_ACCESS_TOKEN'] || '').trim();
-  const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
-
-  // Resolve all member email addresses bound to this Assignment Group
   const recipientSet = new Set<string>();
+  const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
   if (managerEmail && managerEmail.includes('@')) {
     recipientSet.add(managerEmail);
   }
 
-  if (configMap['ASSIGNMENT_GROUP_BINDINGS']) {
-    try {
-      const parsedBindings = JSON.parse(configMap['ASSIGNMENT_GROUP_BINDINGS']);
-      const groupMembers: Array<{ email?: string; full_name?: string }> =
-        parsedBindings[params.assignmentGroup] || [];
-      groupMembers.forEach((m) => {
-        if (m.email && m.email.includes('@')) {
-          recipientSet.add(m.email.trim());
-        }
-      });
-    } catch (_) {}
-  }
+  // Collect emails of all active guards on the Guards page who belong to this Assignment Group
+  (guardsRes.data || []).forEach((g: any) => {
+    if (g.is_active === false) return;
+    const gGroups: string[] = Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
+      ? g.assignment_groups
+      : (g.assignment_group ? [g.assignment_group] : []);
+
+    if (gGroups.includes(params.assignmentGroup) && g.email && g.email.includes('@')) {
+      recipientSet.add(g.email.trim());
+    }
+  });
 
   const recipients = Array.from(recipientSet);
-  if (!token || recipients.length === 0) {
-    return { ok: false, recipients: [], error: 'Missing Gmail OAuth2 Token or recipient emails' };
+  if (recipients.length === 0) {
+    return {
+      ok: false,
+      recipients: [],
+      error: `No email addresses found for group "${params.assignmentGroup}". Add emails to guards on the Guards page.`,
+    };
   }
 
-  const caseNumber = `INC${params.incidentId.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`;
-  const subjectText = `[Rakshak Dispatch - ${params.assignmentGroup}] ${params.priority} Case ${caseNumber} Assigned`;
+  const tokenResult = await getValidGmailAccessToken(supabase, configMap);
+  if (!tokenResult.token) {
+    return { ok: false, recipients, error: tokenResult.error };
+  }
+
+  const caseNumber = `RKS-${params.incidentId.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`;
+  const subjectText = `[Rakshak Dispatch - ${params.assignmentGroup}] ${params.priority} Case ${caseNumber}`;
   const encodedSubject = `=?utf-8?B?${utf8ToBase64(subjectText)}?=`;
 
   const htmlBody = `
     <div style="font-family: Arial, sans-serif; max-width: 620px; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
       <div style="background: #0f172a; color: #ffffff; padding: 16px 20px;">
-        <h2 style="margin: 0; font-size: 17px;">Rakshak Security Group Dispatch Alert</h2>
+        <h2 style="margin: 0; font-size: 17px;">Rakshak Security Dispatch Alert</h2>
         <p style="margin: 4px 0 0; font-size: 12px; color: #94a3b8;">
           Assignment Group: <strong style="color:#38bdf8;">${params.assignmentGroup}</strong> • Case: ${caseNumber}
         </p>
       </div>
       <div style="padding: 20px; color: #1e293b; font-size: 13px; line-height: 1.6; background: #ffffff;">
-        <p style="margin-top:0;">This security incident has been assigned to <strong>${params.assignmentGroup}</strong>. All bound unit members are receiving this automatic dispatch notification.</p>
+        <p style="margin-top:0;">This security incident has been assigned to <strong>${params.assignmentGroup}</strong>.</p>
         <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold; width: 35%;">Case ID</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${caseNumber}</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0; font-family: monospace;">${caseNumber}</td>
           </tr>
           <tr>
-            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Priority / Status</td>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Severity / Status</td>
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${params.priority}</strong> (${params.status})</td>
           </tr>
           <tr>
@@ -1687,7 +1827,7 @@ async function sendGroupAssignmentEmail(
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignmentGroup}</td>
           </tr>
           <tr>
-            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Lead Assignee</td>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assigned Responder</td>
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignedTo}</td>
           </tr>
           <tr>
@@ -1696,7 +1836,7 @@ async function sendGroupAssignmentEmail(
           </tr>
           ${params.workNote ? `
           <tr>
-            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a; font-weight: bold;">Dispatch Instructions</td>
+            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a; font-weight: bold;">Instructions</td>
             <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a;">${params.workNote}</td>
           </tr>` : ''}
         </table>
@@ -1714,8 +1854,7 @@ async function sendGroupAssignmentEmail(
     htmlBody
   ];
 
-  const rawEmail = emailLines.join('\r\n');
-  const base64EncodedEmail = utf8ToBase64(rawEmail)
+  const base64EncodedEmail = utf8ToBase64(emailLines.join('\r\n'))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
@@ -1724,7 +1863,7 @@ async function sendGroupAssignmentEmail(
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${tokenResult.token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ raw: base64EncodedEmail })
@@ -1732,8 +1871,12 @@ async function sendGroupAssignmentEmail(
 
     if (!response.ok) {
       const errBody: any = await response.json().catch(() => ({}));
-      const msg = errBody?.error?.message || `HTTP ${response.status} (Check if Gmail OAuth2 Token expired)`;
-      return { ok: false, recipients, error: msg };
+      const msg = errBody?.error?.message || `HTTP ${response.status}`;
+      return {
+        ok: false,
+        recipients,
+        error: `${msg} — Configure your permanent OAuth2 Refresh Token in API Integrations.`,
+      };
     }
 
     return { ok: true, recipients };
