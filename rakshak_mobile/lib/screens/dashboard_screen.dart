@@ -25,7 +25,6 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  // Set to true to re-enable standalone QR scanning anytime in the future
   static const bool _showStandaloneScanCheckpoint = false;
 
   String _guardName = 'Guard';
@@ -35,6 +34,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isShiftLoading = false;
   bool? _lastScanVerified;
   bool _isLoadingPrefs = true;
+  int _incidentsRefreshTick = 0;
 
   @override
   void initState() {
@@ -60,13 +60,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     if (_token.isNotEmpty) {
-      // Upload anything that was queued while offline / before login
       SyncService().initialize();
       await _syncActiveShiftWithServer();
     }
   }
 
-  // Fetch true server shift state
   Future<void> _syncActiveShiftWithServer() async {
     try {
       final response = await http.get(
@@ -91,9 +89,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
         }
       }
-    } catch (_) {
-      // Offline fallback: keep localShiftState
-    }
+    } catch (_) {}
   }
 
   Future<void> _toggleShift() async {
@@ -157,7 +153,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
           guardName: _guardName,
         ),
       ),
-    );
+    ).then((_) {
+      if (mounted) setState(() => _incidentsRefreshTick++);
+    });
+  }
+
+  void _navigateToReportIncident() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const IncidentReportScreen(),
+      ),
+    ).then((_) {
+      if (mounted) setState(() => _incidentsRefreshTick++);
+    });
   }
 
   Future<void> _handleLogout() async {
@@ -197,190 +206,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           const OfflineBanner(),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Welcome Card
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.grey.shade200),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.04),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 28,
-                          backgroundColor:
-                              const Color(0xFF1E3A8A).withValues(alpha: 0.1),
-                          child: const Icon(Icons.person,
-                              size: 32, color: Color(0xFF1E3A8A)),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Welcome back,',
-                                style: TextStyle(
-                                    color: Colors.black54, fontSize: 13),
-                              ),
-                              Text(
-                                _guardName,
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF0F172A),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Shift Status Banner
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: _isShiftActive
-                          ? const Color(0xFFECFDF5)
-                          : const Color(0xFFFFFBEB),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: _isShiftActive
-                            ? const Color(0xFFA7F3D0)
-                            : const Color(0xFFFDE68A),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _isShiftActive
-                              ? Icons.check_circle
-                              : Icons.pause_circle_filled,
-                          color: _isShiftActive
-                              ? Colors.green.shade700
-                              : Colors.amber.shade800,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            _isShiftActive
-                                ? 'Active Patrol Shift'
-                                : 'Off-Duty (No Active Shift)',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: _isShiftActive
-                                  ? Colors.green.shade900
-                                  : Colors.amber.shade900,
-                            ),
-                          ),
-                        ),
-                        ElevatedButton(
-                          onPressed: _isShiftLoading ? null : _toggleShift,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _isShiftActive
-                                ? Colors.red.shade600
-                                : const Color(0xFF1E3A8A),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8)),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 8),
-                          ),
-                          child: _isShiftLoading
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2, color: Colors.white),
-                                )
-                              : Text(
-                                  _isShiftActive ? 'End Shift' : 'Start Shift'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Active Incidents Preview Widget
-                  if (!_isLoadingPrefs &&
-                      _guardId.isNotEmpty &&
-                      _token.isNotEmpty) ...[
-                    HomeIncidentsPreview(
-                      guardId: _guardId,
-                      token: _token,
-                      guardName: _guardName,
-                    ),
-                    const SizedBox(height: 20),
-                  ],
-
-                  if (_lastScanVerified != null)
+            child: RefreshIndicator(
+              onRefresh: () async {
+                await _syncActiveShiftWithServer();
+                if (mounted) setState(() => _incidentsRefreshTick++);
+              },
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Welcome Card
                     Container(
-                      margin: const EdgeInsets.only(bottom: 24),
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.all(18),
                       decoration: BoxDecoration(
-                        color: _lastScanVerified!
-                            ? Colors.green.shade50
-                            : Colors.orange.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: _lastScanVerified!
-                              ? Colors.green.shade200
-                              : Colors.orange.shade300,
-                        ),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.03),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                       ),
                       child: Row(
                         children: [
-                          Icon(
-                            _lastScanVerified!
-                                ? Icons.verified_user
-                                : Icons.warning_amber_rounded,
-                            color: _lastScanVerified!
-                                ? Colors.green.shade700
-                                : Colors.orange.shade800,
-                            size: 28,
+                          CircleAvatar(
+                            radius: 26,
+                            backgroundColor:
+                                const Color(0xFF1E3A8A).withValues(alpha: 0.1),
+                            child: const Icon(Icons.shield_outlined,
+                                size: 28, color: Color(0xFF1E3A8A)),
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 14),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  _lastScanVerified!
-                                      ? 'Scan Verified'
-                                      : 'Geofence Warning (Amber Flag)',
+                                const Text(
+                                  'On-Duty Security Officer',
                                   style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: _lastScanVerified!
-                                        ? Colors.green.shade900
-                                        : Colors.orange.shade900,
-                                  ),
+                                      color: Color(0xFF64748B),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600),
                                 ),
-                                const SizedBox(height: 4),
+                                const SizedBox(height: 2),
                                 Text(
-                                  _lastScanVerified!
-                                      ? 'Location perfectly matched checkpoint coordinates.'
-                                      : 'Your scan location was > 50 meters from the checkpoint. Flagged for admin audit.',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: _lastScanVerified!
-                                        ? Colors.green.shade700
-                                        : Colors.orange.shade800,
+                                  _guardName,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF0F172A),
                                   ),
                                 ),
                               ],
@@ -389,112 +268,253 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 14),
 
-                  const Text(
-                    'Patrol Actions',
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF334155)),
-                  ),
-                  const SizedBox(height: 12),
+                    // Shift Status Banner
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: _isShiftActive
+                            ? const Color(0xFFECFDF5)
+                            : const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _isShiftActive
+                              ? const Color(0xFFA7F3D0)
+                              : const Color(0xFFFDE68A),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _isShiftActive
+                                ? Icons.check_circle
+                                : Icons.pause_circle_filled,
+                            color: _isShiftActive
+                                ? Colors.green.shade700
+                                : Colors.amber.shade800,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _isShiftActive
+                                  ? 'Active Patrol Shift'
+                                  : 'Off-Duty (No Active Shift)',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: _isShiftActive
+                                    ? Colors.green.shade900
+                                    : Colors.amber.shade900,
+                              ),
+                            ),
+                          ),
+                          ElevatedButton(
+                            onPressed: _isShiftLoading ? null : _toggleShift,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _isShiftActive
+                                  ? Colors.red.shade600
+                                  : const Color(0xFF1E3A8A),
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10)),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 8),
+                            ),
+                            child: _isShiftLoading
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white),
+                                  )
+                                : Text(
+                                    _isShiftActive ? 'End Shift' : 'Start Shift',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
 
-                  // Action Grid
-                  GridView.count(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 14,
-                    mainAxisSpacing: 14,
-                    children: [
-                      // Standalone QR Scanner Card (Hidden while testing patrol routes)
-                      if (_showStandaloneScanCheckpoint)
+                    // Active Incidents Preview Widget (Aligned flush with cards above)
+                    if (!_isLoadingPrefs &&
+                        _guardId.isNotEmpty &&
+                        _token.isNotEmpty) ...[
+                      HomeIncidentsPreview(
+                        guardId: _guardId,
+                        token: _token,
+                        guardName: _guardName,
+                        refreshTick: _incidentsRefreshTick,
+                      ),
+                      const SizedBox(height: 22),
+                    ],
+
+                    if (_lastScanVerified != null)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 20),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: _lastScanVerified!
+                              ? Colors.green.shade50
+                              : Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: _lastScanVerified!
+                                ? Colors.green.shade200
+                                : Colors.orange.shade300,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _lastScanVerified!
+                                  ? Icons.verified_user
+                                  : Icons.warning_amber_rounded,
+                              color: _lastScanVerified!
+                                  ? Colors.green.shade700
+                                  : Colors.orange.shade800,
+                              size: 28,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _lastScanVerified!
+                                        ? 'Scan Verified'
+                                        : 'Geofence Warning (Amber Flag)',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _lastScanVerified!
+                                          ? Colors.green.shade900
+                                          : Colors.orange.shade900,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _lastScanVerified!
+                                        ? 'Location perfectly matched checkpoint coordinates.'
+                                        : 'Your scan location was > 50 meters from the checkpoint. Flagged for admin audit.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: _lastScanVerified!
+                                          ? Colors.green.shade700
+                                          : Colors.orange.shade800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    const Text(
+                      'Patrol Actions',
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF0F172A)),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Action Grid
+                    GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 14,
+                      mainAxisSpacing: 14,
+                      childAspectRatio: 1.15,
+                      children: [
+                        if (_showStandaloneScanCheckpoint)
+                          _buildActionCard(
+                            icon: Icons.qr_code_scanner,
+                            title: 'Scan Checkpoint',
+                            subtitle: 'QR verification',
+                            color: const Color(0xFF2563EB),
+                            onTap: () async {
+                              final result = await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (context) =>
+                                        const QrScannerScreen()),
+                              );
+
+                              if (result != null && result is bool) {
+                                setState(() => _lastScanVerified = result);
+                              } else if (result == null) {
+                                setState(() => _lastScanVerified = null);
+                              }
+                            },
+                          ),
                         _buildActionCard(
-                          icon: Icons.qr_code_scanner,
-                          title: 'Scan Checkpoint',
-                          subtitle: 'QR verification',
-                          color: const Color(0xFF2563EB),
-                          onTap: () async {
-                            final result = await Navigator.push(
+                          icon: Icons.map_outlined,
+                          title: 'Patrol Route',
+                          subtitle: 'Assigned stops',
+                          color: const Color(0xFF0D9488),
+                          onTap: () {
+                            Navigator.push(
                               context,
                               MaterialPageRoute(
-                                  builder: (context) => const QrScannerScreen()),
+                                  builder: (context) =>
+                                      const PatrolRouteScreen()),
                             );
-
-                            if (result != null && result is bool) {
-                              setState(() => _lastScanVerified = result);
-                            } else if (result == null) {
-                              setState(() => _lastScanVerified = null);
-                            }
                           },
                         ),
-                      _buildActionCard(
-                        icon: Icons.map_outlined,
-                        title: 'Patrol Route',
-                        subtitle: 'Assigned stops',
-                        color: const Color(0xFF0D9488),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    const PatrolRouteScreen()),
-                          );
-                        },
-                      ),
-                      _buildActionCard(
-                        icon: Icons.warning_amber_rounded,
-                        title: 'Report Incident',
-                        subtitle: 'Log security issue',
-                        color: const Color(0xFFDC2626),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    const IncidentReportScreen()),
-                          );
-                        },
-                      ),
-                      _buildActionCard(
-                        icon: Icons.assignment_outlined,
-                        title: 'Incident Tickets',
-                        subtitle: 'Active & resolved',
-                        color: const Color(0xFFE11D48),
-                        onTap: _navigateToIncidentList,
-                      ),
-                      _buildActionCard(
-                        icon: Icons.history,
-                        title: 'Activity Log',
-                        subtitle: 'Recent scans',
-                        color: const Color(0xFF475569),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    const ActivityLogScreen()),
-                          );
-                        },
-                      ),
-                      _buildActionCard(
-                        icon: Icons.sync,
-                        title: 'Sync Queue',
-                        subtitle: 'Force upload',
-                        color: const Color(0xFF7C3AED),
-                        onTap: () async {
-                          SyncService().initialize();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Checking and uploading offline queue...'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ],
+                        _buildActionCard(
+                          icon: Icons.warning_amber_rounded,
+                          title: 'Report Incident',
+                          subtitle: 'Log security issue',
+                          color: const Color(0xFFDC2626),
+                          onTap: _navigateToReportIncident,
+                        ),
+                        _buildActionCard(
+                          icon: Icons.assignment_outlined,
+                          title: 'Incident Tickets',
+                          subtitle: 'Active & resolved',
+                          color: const Color(0xFFE11D48),
+                          onTap: _navigateToIncidentList,
+                        ),
+                        _buildActionCard(
+                          icon: Icons.history,
+                          title: 'Activity Log',
+                          subtitle: 'Recent scans',
+                          color: const Color(0xFF475569),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      const ActivityLogScreen()),
+                            );
+                          },
+                        ),
+                        _buildActionCard(
+                          icon: Icons.sync,
+                          title: 'Sync Queue',
+                          subtitle: 'Force upload',
+                          color: const Color(0xFF7C3AED),
+                          onTap: () async {
+                            SyncService().initialize();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                    'Checking and uploading offline queue...'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -510,46 +530,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required Color color,
     required VoidCallback onTap,
   }) {
-    return InkWell(
-      onTap: onTap,
+    return Material(
+      color: Colors.white,
       borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.02),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: color.withValues(alpha: 0.12),
-              child: Icon(icon, color: color, size: 24),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              title,
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                  color: Color(0xFF0F172A)),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              subtitle,
-              style: const TextStyle(fontSize: 12, color: Colors.black45),
-            ),
-          ],
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.02),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircleAvatar(
+                radius: 21,
+                backgroundColor: color.withValues(alpha: 0.12),
+                child: Icon(icon, color: color, size: 22),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                title,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: Color(0xFF0F172A)),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+              ),
+            ],
+          ),
         ),
       ),
     );

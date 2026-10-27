@@ -1331,22 +1331,33 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 app.post('/api/v1/incidents', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ success: false, message: 'Missing or invalid token' }, 401);
-    }
+    let tokenGuardId: string | null = null;
 
-    let payload;
-    try {
-      const token = authHeader.split(' ')[1];
-      payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-    } catch (e) {
-      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.split(' ')[1];
+        const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
+        tokenGuardId = payload.sub as string;
+      } catch (_) {}
     }
-    const guard_id = payload.sub as string;
 
     const url = new URL(c.req.url);
     const body = await c.req.json();
-    const { client_incident_id, title, description, priority, photo_url, reported_at, assignment_group } = body;
+    const {
+      client_incident_id,
+      guard_id,
+      title,
+      description,
+      priority,
+      category,
+      impact,
+      urgency,
+      photo_url,
+      reported_at,
+      assignment_group
+    } = body;
+
+    const resolvedGuardId = guard_id || tokenGuardId || null;
 
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
@@ -1366,28 +1377,53 @@ app.post('/api/v1/incidents', async (c) => {
     }
 
     const targetGroup = assignment_group || 'Security Operations L1';
-
     const supabase = getSupabase(c.env);
-    const { data, error } = await supabase
+
+    const insertRecord: Record<string, any> = {
+      client_incident_id: incidentUuid,
+      guard_id: resolvedGuardId,
+      title: title || (description ? description.substring(0, 40) : 'Security Incident'),
+      description: description || title || 'Security Incident',
+      priority: priority || 'P3',
+      category: category || 'Security / Patrol',
+      impact: impact || '2 - Medium',
+      urgency: urgency || '2 - Medium',
+      photo_url: finalPhotoUrl,
+      status: 'OPEN',
+      assignment_group: targetGroup,
+      assigned_to: null, // Always blank / unassigned on new ticket creation
+      reported_at: reported_at || new Date().toISOString()
+    };
+
+    let { data, error } = await supabase
       .from('incidents')
-      .upsert({
-        client_incident_id: incidentUuid,
-        guard_id: guard_id, 
-        title: title || (description ? description.substring(0, 30) : 'Security Incident'),
-        description: description,
-        priority: priority || 'P3',
-        photo_url: finalPhotoUrl,
-        status: 'OPEN',
-        assignment_group: targetGroup,
-        assigned_to: null, // Always blank / unassigned on new ticket generation
-        reported_at: reported_at || new Date().toISOString()
-      }, { onConflict: 'client_incident_id' }) 
+      .upsert(insertRecord, { onConflict: 'client_incident_id' })
       .select()
       .single();
 
-    if (error) return c.json({ success: false, message: 'Database error', error }, 500);
+    if (error) {
+      // Fallback if optional columns are not in incidents table
+      const basicRecord = {
+        client_incident_id: incidentUuid,
+        guard_id: resolvedGuardId,
+        title: insertRecord.title,
+        description: insertRecord.description,
+        priority: insertRecord.priority,
+        photo_url: finalPhotoUrl,
+        status: 'OPEN',
+        assignment_group: targetGroup,
+        reported_at: insertRecord.reported_at
+      };
+      const retry = await supabase
+        .from('incidents')
+        .upsert(basicRecord, { onConflict: 'client_incident_id' })
+        .select()
+        .single();
+      if (retry.error) return c.json({ success: false, message: 'Database error', error: retry.error }, 500);
+      data = retry.data;
+    }
 
-    await sendGroupAssignmentEmail(c.env, {
+    const emailResult = await sendGroupAssignmentEmail(c.env, {
       incidentId: incidentUuid,
       priority: priority || 'P3',
       description: description || title || 'Security Incident',
@@ -1397,7 +1433,25 @@ app.post('/api/v1/incidents', async (c) => {
       status: 'OPEN',
     });
 
-    return c.json({ success: true, incident: data }, 201);
+    const emailLogLine = emailResult.ok
+      ? `Incident created & Auto-Email Dispatched to [${targetGroup}] members (${emailResult.recipients.join(', ')})`
+      : `Incident created. Auto-Email Notice for [${targetGroup}]: ${emailResult.error}`;
+
+    await supabase.from('incident_updates').insert([{
+      incident_id: incidentUuid,
+      sender_type: 'admin',
+      sender_name: 'SOC Dispatch System',
+      message: emailLogLine,
+      photo_url: null
+    }]);
+
+    return c.json({
+      success: true,
+      incident: data,
+      email_dispatched: emailResult.ok,
+      email_recipients: emailResult.recipients,
+      email_error: emailResult.error
+    }, 201);
 
   } catch (error) {
     return c.json({ success: false, message: 'Internal Server Error' }, 500);
