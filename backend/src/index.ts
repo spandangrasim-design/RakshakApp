@@ -377,24 +377,23 @@ app.use('/api/v1/*', async (c, next) => {
   return requireAuth(c, next)
 })
 
-const patrolUser = [requireModule('module_patrol'), requirePermission('patrol_route')]
 const incidentsMod = requireModule('module_incidents')
 
-app.on('POST',   '/api/v1/scans', ...patrolUser)
-app.on('GET',    '/api/v1/scans', ...patrolUser)
+app.on('POST',   '/api/v1/scans', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('GET',    '/api/v1/scans', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('GET',    '/api/v1/rounds/:id/scans', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
-app.on('POST',   '/api/v1/patrols/session/start', ...patrolUser)
-app.on('POST',   '/api/v1/patrols/session/ping', ...patrolUser)
-app.on('POST',   '/api/v1/patrols/sync', ...patrolUser)
+app.on('POST',   '/api/v1/patrols/session/start', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/patrols/session/ping', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/patrols/sync', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('GET',    '/api/v1/rounds/:id/live-trail', adminTiers, requireModule('module_patrol'),
        requireTenantFlag((f) => f.module_patrol.allow_live_gps_trail), ownedRow('rounds', 'id', 'id'))
-app.on('GET',    '/api/v1/shifts/active', ...patrolUser)
-app.on('POST',   '/api/v1/shifts/start', ...patrolUser)
-app.on('POST',   '/api/v1/shifts/end', ...patrolUser)
+app.on('GET',    '/api/v1/shifts/active', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/shifts/start', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/shifts/end', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('GET',    '/api/v1/rounds', requireModule('module_patrol'))
 app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
 app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
-app.on('GET',    '/api/v1/guards/my-assigned-route', ...patrolUser, requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
+app.on('GET',    '/api/v1/guards/my-assigned-route', requireModule('module_patrol'), requirePermission('patrol_route'), requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
 app.on('GET',    '/api/v1/guards', adminTiers)
 app.on('POST',   '/api/v1/guards', adminTiers)
 app.on('PATCH',  '/api/v1/guards/:id', adminTiers)
@@ -1418,7 +1417,13 @@ app.post('/api/v1/super-admin/tenants', async (c) => {
     const supabase = getSupabase(c.env)
     const { data, error } = await supabase
       .from('tenants')
-      .insert([{ name, status: 'ACTIVE', features: normalizeTenantFeatures(body.features) }])
+      .insert([{
+        name,
+        // tenants.code is NOT NULL + unique in this database: derive a short readable one from the name.
+        code: (name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'TENANT') + '-' + crypto.randomUUID().slice(0, 4).toUpperCase(),
+        status: 'ACTIVE',
+        features: normalizeTenantFeatures(body.features),
+      }])
       .select().single()
     if (error) throw error
     return c.json({ success: true, tenant: data }, 201)
@@ -1901,7 +1906,7 @@ app.post('/api/v1/incidents', async (c) => {
     }
 
     // Only dispatch Gmail if licensed to this tenant
-    let emailResult = { ok: false, recipients: [] as string[], error: 'Module not licensed' };
+    let emailResult: { ok: boolean; recipients: string[]; error?: string } = { ok: false, recipients: [], error: 'Module not licensed' };
     if (tenantFeatures.module_integrations?.channels?.gmail_oauth) {
       emailResult = await sendGroupAssignmentEmail(c.env, {
         incidentId: incidentUuid,
