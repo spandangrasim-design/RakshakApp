@@ -3,7 +3,12 @@ import { cors } from 'hono/cors'
 import { sign, verify } from 'hono/jwt' 
 import { createClient } from '@supabase/supabase-js'
 import { z } from 'zod'
-import CryptoJS from 'crypto-js' 
+import CryptoJS from 'crypto-js'
+import {
+  AppPermissions, AuthContext, PERMISSION_KEYS, INCIDENT_FORM_FIELDS,
+  buildAuthContext, clampToTenant, makeRequireAuth, normalizeTenantFeatures, resolveAccess,
+  applyTenant, scopeTenant, requireModule, requirePermission, requireTenantFlag, requireTier, uiModules, tierFrom,
+} from './rbac'
 
 type Bindings = {
   SUPABASE_URL: string
@@ -14,13 +19,7 @@ type Bindings = {
 }
 
 type Variables = {
-  adminUser?: {
-    guard_id: string
-    role: string
-    employee_code: string
-    tenant_id: string
-    is_platform_super_admin: boolean
-  }
+  auth: AuthContext
 }
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -36,102 +35,7 @@ function utf8ToBase64(str: string): string {
   return btoa(binary);
 }
 
-// --- MASTER NESTED TENANT FEATURES INTERFACE ---
-export interface TenantFeatures {
-  module_patrol: {
-    enabled: boolean
-    allow_route_assignment: boolean
-    allow_live_gps_trail: boolean
-    allow_geofence_audit: boolean
-  }
-  module_incidents: {
-    enabled: boolean
-    allow_web_ticket_queue: boolean
-    allow_mobile_incident_creation: boolean
-    allowed_creation_options: {
-      option_1_severity: boolean
-      option_2_category: boolean
-      option_3_group_routing: boolean
-      option_4_title: boolean
-      option_5_description: boolean
-      option_6_camera_photo: boolean
-    }
-  }
-  module_integrations: {
-    enabled: boolean
-    channels: {
-      gmail_oauth: boolean
-      whatsapp_api: boolean
-      telegram_bot: boolean
-    }
-  }
-  module_qr_generator: {
-    enabled: boolean
-    allow_pdf_export: boolean
-  }
-  module_activity_logs: {
-    enabled: boolean
-  }
-  module_sync_queue: {
-    enabled: boolean
-  }
-}
-
-export const DEFAULT_TENANT_FEATURES: TenantFeatures = {
-  module_patrol: {
-    enabled: true,
-    allow_route_assignment: true,
-    allow_live_gps_trail: true,
-    allow_geofence_audit: true,
-  },
-  module_incidents: {
-    enabled: true,
-    allow_web_ticket_queue: true,
-    allow_mobile_incident_creation: true,
-    allowed_creation_options: {
-      option_1_severity: false,
-      option_2_category: false,
-      option_3_group_routing: false,
-      option_4_title: true,
-      option_5_description: true,
-      option_6_camera_photo: true,
-    },
-  },
-  module_integrations: {
-    enabled: true,
-    channels: {
-      gmail_oauth: true,
-      whatsapp_api: false,
-      telegram_bot: false,
-    },
-  },
-  module_qr_generator: {
-    enabled: true,
-    allow_pdf_export: true,
-  },
-  module_activity_logs: {
-    enabled: true,
-  },
-  module_sync_queue: {
-    enabled: true,
-  },
-}
-
-// --- APP PERMISSIONS INTERFACE (USER LEVEL) ---
-export interface AppPermissions {
-  patrol_route: boolean
-  report_incident: boolean
-  incident_tickets: boolean
-  activity_log: boolean
-  sync_queue: boolean
-  incident_option_1_severity: boolean
-  incident_option_2_category: boolean
-  incident_option_3_group: boolean
-  incident_option_4_title: boolean
-  incident_option_5_description: boolean
-  incident_option_6_photo: boolean
-}
-
+// Role baselines (explicit values only; a missing key means OFF).
 export const DEFAULT_GUARD_PERMISSIONS: AppPermissions = {
   patrol_route: true,
   report_incident: true,
@@ -158,51 +62,6 @@ export const DEFAULT_SUPERVISOR_PERMISSIONS: AppPermissions = {
   incident_option_4_title: true,
   incident_option_5_description: true,
   incident_option_6_photo: true,
-}
-
-// --- DUAL-LAYER RESOLUTION ENGINE ---
-function resolveDualLayerPermissions(
-  tenantFeatures: TenantFeatures,
-  userPermissions: AppPermissions
-): { active_permissions: AppPermissions; visible_modules: Record<string, boolean> } {
-  const pEnabled = tenantFeatures.module_patrol?.enabled ?? true
-  const incEnabled = tenantFeatures.module_incidents?.enabled ?? true
-  const incOptions = tenantFeatures.module_incidents?.allowed_creation_options || DEFAULT_TENANT_FEATURES.module_incidents.allowed_creation_options
-
-  const active: AppPermissions = {
-    // 1. Patrol module
-    patrol_route: pEnabled && (userPermissions.patrol_route ?? true),
-
-    // 2. Incident module (Completely revoked if tenant did not license module_incidents)
-    report_incident: incEnabled && (userPermissions.report_incident ?? true),
-    incident_tickets: incEnabled && (userPermissions.incident_tickets ?? true),
-
-    // 3. Nested 6-Step Incident Form Options: Gated by Tenant License AND Guard Permission
-    incident_option_1_severity: incEnabled && incOptions.option_1_severity && (userPermissions.incident_option_1_severity ?? false),
-    incident_option_2_category: incEnabled && incOptions.option_2_category && (userPermissions.incident_option_2_category ?? false),
-    incident_option_3_group: incEnabled && incOptions.option_3_group_routing && (userPermissions.incident_option_3_group ?? false),
-    incident_option_4_title: incEnabled && incOptions.option_4_title && (userPermissions.incident_option_4_title ?? true),
-    incident_option_5_description: incEnabled && incOptions.option_5_description && (userPermissions.incident_option_5_description ?? true),
-    incident_option_6_photo: incEnabled && incOptions.option_6_camera_photo && (userPermissions.incident_option_6_photo ?? true),
-
-    // 4. Utility modules
-    activity_log: (tenantFeatures.module_activity_logs?.enabled ?? true) && (userPermissions.activity_log ?? true),
-    sync_queue: (tenantFeatures.module_sync_queue?.enabled ?? true) && (userPermissions.sync_queue ?? true),
-  }
-
-  const visible: Record<string, boolean> = {
-    module_patrol: pEnabled,
-    module_incidents: incEnabled,
-    module_qr_generator: tenantFeatures.module_qr_generator?.enabled ?? true,
-    module_integrations: tenantFeatures.module_integrations?.enabled ?? true,
-    module_activity_logs: tenantFeatures.module_activity_logs?.enabled ?? true,
-    module_sync_queue: tenantFeatures.module_sync_queue?.enabled ?? true,
-    integration_gmail: tenantFeatures.module_integrations?.channels?.gmail_oauth ?? false,
-    integration_whatsapp: tenantFeatures.module_integrations?.channels?.whatsapp_api ?? false,
-    integration_telegram: tenantFeatures.module_integrations?.channels?.telegram_bot ?? false,
-  }
-
-  return { active_permissions: active, visible_modules: visible }
 }
 
 // --- SCHEMAS ---
@@ -382,51 +241,87 @@ async function resolveEffectivePermissions(
   };
 }
 
-// Helper: Resolve tenant features with safe fallback
-async function getTenantFeatures(supabase: any, tenantId: string | null | undefined): Promise<TenantFeatures> {
-  if (!tenantId) return DEFAULT_TENANT_FEATURES;
-  const { data: tenant } = await supabase
-    .from('tenants')
-    .select('features, status')
-    .eq('id', tenantId)
-    .maybeSingle();
-
-  if (tenant?.features && typeof tenant.features === 'object') {
-    return tenant.features as TenantFeatures;
+// ---------- password hashing (PBKDF2-SHA256; Workers caps iterations at 100k) ----------
+const PBKDF2_ITER = 100000
+const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u))
+const unb64 = (t: string) => Uint8Array.from(atob(t), (ch) => ch.charCodeAt(0))
+async function pbkdf2(pw: string, salt: Uint8Array, iter: number) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits'])
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, key, 256))
+}
+async function hashPassword(pw: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  return `pbkdf2$${PBKDF2_ITER}$${b64(salt)}$${b64(await pbkdf2(pw, salt, PBKDF2_ITER))}`
+}
+function safeEqual(a: string, b: string) {
+  if (a.length !== b.length) return false
+  let r = 0
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return r === 0
+}
+// Accepts legacy plaintext rows too and flags them for upgrade on next successful login.
+async function verifyPassword(pw: string, stored: string | null): Promise<{ ok: boolean; needsUpgrade: boolean }> {
+  if (!stored) return { ok: false, needsUpgrade: false }
+  if (stored.startsWith('pbkdf2$')) {
+    const [, iter, salt, hash] = stored.split('$')
+    const got = b64(await pbkdf2(pw, unb64(salt), parseInt(iter, 10)))
+    return { ok: safeEqual(got, hash), needsUpgrade: false }
   }
-  return DEFAULT_TENANT_FEATURES;
+  return { ok: safeEqual(pw, stored), needsUpgrade: true }
 }
 
-// --- SUPER ADMIN AUTH MIDDLEWARE ---
-async function requireSuperAdmin(c: any, next: () => Promise<void>) {
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return c.json({ success: false, message: 'Authentication required.' }, 401);
-  }
+// ---------- tier 2/3 loader used by the shared auth builder ----------
+async function loadUserPerms(supabase: any, guard: any): Promise<Partial<AppPermissions>> {
+  const { permissions } = await resolveEffectivePermissions(supabase, guard.role || 'Guard', guard.app_permissions ?? null)
+  return permissions
+}
 
-  const token = authHeader.split(' ')[1];
-  try {
-    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-    const role = (payload.role || '').toString();
+async function rawTenantFeatures(supabase: any, tenantId: string | null | undefined): Promise<any> {
+  if (!tenantId) return null
+  const { data } = await supabase.from('tenants').select('features').eq('id', tenantId).maybeSingle()
+  return data?.features ?? null
+}
 
-    const isSuperAdmin = ['Admin', 'Chief Security Officer'].includes(role);
-    if (!isSuperAdmin) {
-      return c.json({
-        success: false,
-        message: 'Forbidden: Super Admin privilege required.'
-      }, 403);
-    }
+// ---------- per-tenant configuration (admin_configurations rows are stored as "t:<tenantId>:<KEY>") ----------
+const cfgKey = (tenantId: string, key: string) => `t:${tenantId}:${key}`
+const SECRET_KEYS = new Set(['GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_ACCESS_TOKEN', 'WHATSAPP_API_TOKEN', 'TELEGRAM_BOT_TOKEN'])
+const MASK = '********'
 
-    c.set('adminUser', {
-      guard_id: payload.sub,
-      role: role,
-      employee_code: payload.employee_code || '',
-      tenant_id: payload.tenant_id || '',
-      is_platform_super_admin: payload.is_platform_super_admin === true
-    });
-    await next();
-  } catch (err) {
-    return c.json({ success: false, message: 'Invalid or expired authorization token.' }, 401);
+/** Which keys may this tenant even see or write? Unpurchased channel keys do not exist for them. */
+function configKeyAllowed(key: string, f: ReturnType<typeof normalizeTenantFeatures>): boolean {
+  if (key === 'GUARD_EXTENDED_PROFILES') return false // legacy global blob, never exposed
+  const ch = f.module_integrations.channels
+  if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
+  if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return ch.whatsapp_api
+  if (key.startsWith('TELEGRAM_') || key === 'ENABLE_TELEGRAM') return ch.telegram_bot
+  return true // non-integration settings such as CUSTOM_ASSIGNMENT_GROUPS
+}
+
+async function loadTenantConfig(supabase: any, tenantId: string): Promise<Record<string, string>> {
+  const prefix = `t:${tenantId}:`
+  const { data } = await supabase.from('admin_configurations').select('key_name, key_value').like('key_name', `${prefix}%`)
+  const out: Record<string, string> = {}
+  for (const r of data || []) out[String(r.key_name).slice(prefix.length)] = r.key_value
+  return out
+}
+
+async function tenantFeaturesFor(supabase: any, tenantId: string | null | undefined) {
+  return normalizeTenantFeatures(await rawTenantFeatures(supabase, tenantId))
+}
+
+// ---------- gates ----------
+const requireAuth = makeRequireAuth(getSupabase, loadUserPerms)
+const adminTiers = requireTier('SUPER_ADMIN', 'INDUSTRY_ADMIN')
+const superOnly = requireTier('SUPER_ADMIN')
+
+/** Row must belong to the caller's tenant, otherwise it "does not exist" (404). */
+function ownedRow(table: string, column: string, param: string) {
+  return async (c: any, next: () => Promise<void>) => {
+    const a = c.get('auth') as AuthContext
+    if (a.tier === 'SUPER_ADMIN') return next()
+    const { data } = await getSupabase(c.env).from(table).select('tenant_id').eq(column, c.req.param(param)).maybeSingle()
+    if (!data || data.tenant_id !== a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404)
+    await next()
   }
 }
 
@@ -471,6 +366,56 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 }
 
 // ==========================================
+// AUTH + STRICT FEATURE CASCADE (runs BEFORE every handler below)
+//   no token              -> 401
+//   tenant didn't buy it  -> 404  (endpoint "does not exist" for this tenant)
+//   bought, not allocated -> 403
+// ==========================================
+app.use('/api/v1/*', async (c, next) => {
+  const p = new URL(c.req.url).pathname
+  if (p === '/api/v1/auth/login' || p.startsWith('/api/v1/media/')) return next()
+  return requireAuth(c, next)
+})
+
+const patrolUser = [requireModule('module_patrol'), requirePermission('patrol_route')]
+const incidentsMod = requireModule('module_incidents')
+
+app.on('POST',   '/api/v1/scans', ...patrolUser)
+app.on('GET',    '/api/v1/scans', ...patrolUser)
+app.on('GET',    '/api/v1/rounds/:id/scans', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
+app.on('POST',   '/api/v1/patrols/session/start', ...patrolUser)
+app.on('POST',   '/api/v1/patrols/session/ping', ...patrolUser)
+app.on('POST',   '/api/v1/patrols/sync', ...patrolUser)
+app.on('GET',    '/api/v1/rounds/:id/live-trail', adminTiers, requireModule('module_patrol'),
+       requireTenantFlag((f) => f.module_patrol.allow_live_gps_trail), ownedRow('rounds', 'id', 'id'))
+app.on('GET',    '/api/v1/shifts/active', ...patrolUser)
+app.on('POST',   '/api/v1/shifts/start', ...patrolUser)
+app.on('POST',   '/api/v1/shifts/end', ...patrolUser)
+app.on('GET',    '/api/v1/rounds', requireModule('module_patrol'))
+app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
+app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
+app.on('GET',    '/api/v1/guards/my-assigned-route', ...patrolUser, requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
+app.on('GET',    '/api/v1/guards', adminTiers)
+app.on('POST',   '/api/v1/guards', adminTiers)
+app.on('PATCH',  '/api/v1/guards/:id', adminTiers)
+
+app.on('POST',   '/api/v1/incidents', incidentsMod, requirePermission('report_incident'))
+app.on('GET',    '/api/v1/incidents', incidentsMod, requirePermission('incident_tickets'))
+app.on('GET',    '/api/v1/incidents/:id', incidentsMod, requirePermission('incident_tickets'))
+app.on('POST',   '/api/v1/incidents/:id/updates', incidentsMod, requirePermission('incident_tickets'))
+app.on('PATCH',  '/api/v1/incidents/:id', adminTiers, incidentsMod)
+app.on('PATCH',  '/api/v1/incidents/:id/resolve', adminTiers, incidentsMod)
+app.on('DELETE', '/api/v1/incidents/:id', adminTiers, incidentsMod)
+
+app.on(['GET', 'POST'], '/api/v1/admin/configs', adminTiers)
+app.on('POST',   '/api/v1/admin/test-gmail', adminTiers, requireModule('module_integrations'),
+       requireTenantFlag((f) => f.module_integrations.channels.gmail_oauth))
+app.on('GET',    '/api/v1/access-control/roles', adminTiers)
+app.on('PUT',    '/api/v1/access-control/roles/:role', superOnly)
+app.on('PATCH',  '/api/v1/access-control/guards/:id', adminTiers)
+app.on(['GET', 'POST', 'PATCH'], '/api/v1/super-admin/*', superOnly)
+
+// ==========================================
 // R2 MEDIA STREAMING ROUTE
 // ==========================================
 app.get('/api/v1/media/*', async (c) => {
@@ -506,80 +451,59 @@ app.get('/api/v1/media/*', async (c) => {
 // ==========================================
 app.post('/api/v1/auth/login', async (c) => {
   try {
-    const body = await c.req.json()
-    const { employee_code, password, device_id } = loginSchema.parse(body)
+    const { employee_code, password, device_id } = loginSchema.parse(await c.req.json())
+    const supabase = getSupabase(c.env)
 
-    const supabase = getSupabase(c.env);
-
-    const { data: guard, error } = await supabase
-      .from('guards')
-      .select('*')
-      .eq('employee_code', employee_code)
-      .single()
-
-    if (error || !guard || !guard.is_active || guard.password_hash !== password) {
+    const { data: guard } = await supabase.from('guards').select('*').eq('employee_code', employee_code).maybeSingle()
+    // Always run a hash so response time doesn't reveal whether the account exists.
+    const pw = await verifyPassword(password, guard?.password_hash ?? 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAA')
+    if (!guard || guard.is_active === false || !pw.ok) {
       return c.json({ error_code: 'INVALID_CREDENTIALS', message: 'Invalid Login.' }, 401)
     }
-
-    const roleName = guard.role || 'Guard';
-    const extMap = await getGuardExtendedProfilesMap(supabase);
-    const ext = extMap[guard.guard_id] || {};
-    const effectiveOverrides = guard.app_permissions ?? ext.app_permissions ?? null;
-
-    // 1. Resolve Tier-2 & Tier-3 User Permissions
-    const { permissions: userPerms, is_custom_override } = await resolveEffectivePermissions(
-      supabase,
-      roleName,
-      effectiveOverrides
-    );
-
-    // 2. Resolve Tier-1 Tenant Licensed Modules
-    const tenantFeatures = await getTenantFeatures(supabase, guard.tenant_id);
-
-    // 3. Compute Final Active Features
-    const { active_permissions, visible_modules } = resolveDualLayerPermissions(tenantFeatures, userPerms);
-
-    const isPlatformSuperAdmin = employee_code === 'superadmin' || roleName === 'Chief Security Officer';
-    const isSuperAdmin = ['Admin', 'Chief Security Officer'].includes(roleName);
-
-    const payload = {
-      sub: guard.guard_id,
-      role: roleName,
-      employee_code: guard.employee_code,
-      tenant_id: guard.tenant_id || '',
-      is_platform_super_admin: isPlatformSuperAdmin,
-      is_super_admin: isSuperAdmin,
-      device_id: device_id || 'unknown',
-      exp: Math.floor(Date.now() / 1000) + (12 * 60 * 60) 
+    if (pw.needsUpgrade) {
+      await supabase.from('guards').update({ password_hash: await hashPassword(password) }).eq('guard_id', guard.guard_id)
     }
-    const access_token = await sign(payload, c.env.JWT_SECRET, 'HS256')
+
+    const ctx = await buildAuthContext(supabase, guard, loadUserPerms)
+    if (ctx.tier !== 'SUPER_ADMIN' && !ctx.tenant_active) {
+      return c.json({ error_code: 'TENANT_INACTIVE', message: 'Your organization is not active.' }, 403)
+    }
+
+    // Token carries identity only. Entitlements are re-read from the DB on every request.
+    const access_token = await sign({
+      sub: guard.guard_id,
+      tier: ctx.tier,
+      role: ctx.role,
+      employee_code: guard.employee_code,
+      tenant_id: ctx.tenant_id || '',
+      device_id: device_id || 'unknown',
+      exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+    }, c.env.JWT_SECRET, 'HS256')
 
     return c.json({
       access_token,
-      refresh_token: "dummy_refresh_token_for_now",
+      refresh_token: 'dummy_refresh_token_for_now',
       server_time_ms: Date.now(),
       guard: {
         guard_id: guard.guard_id,
         full_name: guard.full_name,
         employee_code: guard.employee_code,
-        role: roleName,
-        tenant_id: guard.tenant_id,
-        is_platform_super_admin: isPlatformSuperAdmin,
-        is_super_admin: isSuperAdmin,
+        role: ctx.role,
+        tier: ctx.tier,
+        tenant_id: ctx.tenant_id,
+        is_platform_super_admin: ctx.tier === 'SUPER_ADMIN',
+        is_super_admin: ctx.tier !== 'USER', // legacy flag kept for older clients: "can use admin console"
         site_location: guard.site_location || 'Main Plant',
         assigned_round_id: guard.assigned_round_id || null,
-        assigned_round_ids: guard.assigned_round_ids || []
+        assigned_round_ids: guard.assigned_round_ids || [],
       },
-      app_permissions: active_permissions,
-      visible_modules: visible_modules,
-      is_custom_override: is_custom_override,
-      active_shift: null 
+      app_permissions: ctx.access.active_permissions,
+      visible_modules: uiModules(ctx),
+      incident_form_fields: ctx.access.incident_form_fields,
+      active_shift: null,
     }, 200)
-
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid fields.' }, 400)
-    }
+    if (error instanceof z.ZodError) return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid fields.' }, 400)
     return c.json({ error_code: 'SERVER_ERROR', message: 'Server error.' }, 500)
   }
 })
@@ -1163,9 +1087,9 @@ app.get('/api/v1/rounds', async (c) => {
     const supabase = getSupabase(c.env);
 
     const [roundsRes, cpRes, guardsRes] = await Promise.all([
-      supabase.from('rounds').select('*').order('created_at', { ascending: false }),
-      supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload'),
-      supabase.from('guards').select('*')
+      applyTenant(supabase.from('rounds').select('*'), scopeTenant(c)).order('created_at', { ascending: false }),
+      applyTenant(supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload'), scopeTenant(c)),
+      applyTenant(supabase.from('guards').select('*'), scopeTenant(c))
     ]);
 
     if (roundsRes.error) return c.json({ success: false, message: roundsRes.error.message }, 500);
@@ -1213,8 +1137,15 @@ app.post('/api/v1/rounds', async (c) => {
     const supabase = getSupabase(c.env);
 
     let activeRoundId = id;
+    const authCtx = c.get('auth');
+    const roundTenant = authCtx.tenant_id;
+    if (!roundTenant) return c.json({ success: false, message: 'Select a tenant before creating routes.' }, 400);
 
     if (activeRoundId) {
+      const { data: existingRound } = await supabase.from('rounds').select('tenant_id').eq('id', activeRoundId).maybeSingle();
+      if (!existingRound || (authCtx.tier !== 'SUPER_ADMIN' && existingRound.tenant_id !== roundTenant)) {
+        return c.json({ success: false, message: 'Not Found' }, 404);
+      }
       const { error: updateError } = await supabase
         .from('rounds')
         .update({ name })
@@ -1226,7 +1157,7 @@ app.post('/api/v1/rounds', async (c) => {
     } else {
       const { data: newRound, error: insertError } = await supabase
         .from('rounds')
-        .insert([{ name }])
+        .insert([{ name, tenant_id: roundTenant }])
         .select()
         .single();
 
@@ -1250,6 +1181,7 @@ app.post('/api/v1/rounds', async (c) => {
           lat: cp.lat.toString(),
           lng: cp.lng.toString(),
           qr_payload: signedPayload,
+          tenant_id: roundTenant,
           location: `SRID=4326;POINT(${cp.lng} ${cp.lat})`
         };
       });
@@ -1291,10 +1223,19 @@ app.get('/api/v1/guards', async (c) => {
     const supabase = getSupabase(c.env);
     
     const [guardsRes, roundsRes, extProfilesMap] = await Promise.all([
-      supabase.from('guards').select('*').order('created_at', { ascending: false }),
-      supabase.from('rounds').select('id, name'),
+      (() => {
+        const a = c.get('auth');
+        let q: any = applyTenant(supabase.from('guards').select('*'), scopeTenant(c));
+        if (a.tier !== 'SUPER_ADMIN') q = q.eq('tier', 'USER'); // plant admins manage users only
+        return q.order('created_at', { ascending: false });
+      })(),
+      applyTenant(supabase.from('rounds').select('id, name'), scopeTenant(c)),
       getGuardExtendedProfilesMap(supabase)
     ]);
+    const callerAuth = c.get('auth');
+    const ceiling = callerAuth.tier === 'SUPER_ADMIN'
+      ? PERMISSION_KEYS
+      : PERMISSION_KEYS.filter((k) => resolveAccess(callerAuth.tenant_features, Object.fromEntries(PERMISSION_KEYS.map((p) => [p, true]))).active_permissions[k]);
 
     if (guardsRes.error) throw guardsRes.error;
 
@@ -1347,77 +1288,42 @@ app.get('/api/v1/guards', async (c) => {
         assigned_round_ids: uniqueRoundIds,
         rounds: assignedRounds[0] || null,
         assigned_rounds: assignedRounds,
-        app_permissions: hybrid.permissions,
+        tier: g.tier,
+        app_permissions: callerAuth.tier === 'SUPER_ADMIN' ? hybrid.permissions : resolveAccess(callerAuth.tenant_features, hybrid.permissions).active_permissions,
         app_permissions_override: rawOverrides,
         is_custom_override: hybrid.is_custom_override,
         role_defaults: hybrid.role_defaults
       };
     }));
 
-    return c.json({ success: true, guards: guardsWithRounds });
+    return c.json({ success: true, guards: guardsWithRounds, licensed_permission_keys: ceiling, incident_form_fields_all: INCIDENT_FORM_FIELDS.map((f) => f.id) });
   } catch (error: any) {
     return c.json({ success: false, message: error.message || 'Failed to fetch guards' }, 500);
   }
 });
 
-// Mobile App Endpoint: Fetch logged-in guard's latest calculated permissions
+// Mobile/Web: the caller's current, fully-resolved access (what the UI may render).
 app.get('/api/v1/guards/my-permissions', async (c) => {
-  try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ success: false, message: 'Unauthorized' }, 401);
-    }
-    const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-    const guardId = payload.sub as string;
-
-    const supabase = getSupabase(c.env);
-    const [guardRes, extMap] = await Promise.all([
-      supabase.from('guards').select('guard_id, full_name, role, is_active, tenant_id, app_permissions').eq('guard_id', guardId).maybeSingle(),
-      getGuardExtendedProfilesMap(supabase)
-    ]);
-
-    const guard = guardRes.data;
-    if (!guard) return c.json({ success: false, message: 'Guard record not found' }, 404);
-
-    const ext = extMap[guardId] || {};
-    const rawOverrides = guard.app_permissions ?? ext.app_permissions ?? null;
-
-    // 1. Resolve User Tier Hybrid Permissions
-    const { permissions: userPerms, is_custom_override } = await resolveEffectivePermissions(
-      supabase,
-      guard.role || 'Guard',
-      rawOverrides
-    );
-
-    // 2. Resolve Tenant Tier Licensed Features
-    const tenantFeatures = await getTenantFeatures(supabase, guard.tenant_id);
-
-    // 3. Dual-Layer Final Gating
-    const { active_permissions, visible_modules } = resolveDualLayerPermissions(tenantFeatures, userPerms);
-
-    return c.json({
-      success: true,
-      guard_id: guardId,
-      full_name: guard.full_name,
-      role: guard.role || 'Guard',
-      tenant_id: guard.tenant_id,
-      is_super_admin: ['Admin', 'Chief Security Officer'].includes(guard.role || ''),
-      app_permissions: active_permissions,
-      visible_modules: visible_modules,
-      is_custom_override: is_custom_override,
-    });
-  } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
-  }
-});
+  const a = c.get('auth')
+  return c.json({
+    success: true,
+    guard_id: a.guard_id,
+    role: a.role,
+    tier: a.tier,
+    tenant_id: a.tenant_id,
+    is_super_admin: a.tier !== 'USER',
+    app_permissions: a.access.active_permissions,
+    visible_modules: uiModules(a),
+    incident_form_fields: a.access.incident_form_fields,
+  })
+})
 
 // ==========================================
 // ACCESS CONTROL ADMIN ENDPOINTS (SUPER ADMIN ONLY)
 // ==========================================
 
 // 1. Get All Role Default Templates
-app.get('/api/v1/access-control/roles', requireSuperAdmin, async (c) => {
+app.get('/api/v1/access-control/roles', async (c) => {
   try {
     const supabase = getSupabase(c.env);
     const { data, error } = await supabase.from('app_role_permissions').select('*');
@@ -1429,7 +1335,7 @@ app.get('/api/v1/access-control/roles', requireSuperAdmin, async (c) => {
 });
 
 // 2. Update a Role Baseline Template
-app.put('/api/v1/access-control/roles/:role', requireSuperAdmin, async (c) => {
+app.put('/api/v1/access-control/roles/:role', async (c) => {
   try {
     const roleName = decodeURIComponent(c.req.param('role'));
     const body = await c.req.json();
@@ -1457,87 +1363,137 @@ app.put('/api/v1/access-control/roles/:role', requireSuperAdmin, async (c) => {
   }
 });
 
-// 3. Super Admin updates individual guard permissions (or resets to role default)
-app.patch('/api/v1/access-control/guards/:id', requireSuperAdmin, async (c) => {
+// 3. Industry Admin allocates features to ONE user (clamped to what the tenant bought)
+app.patch('/api/v1/access-control/guards/:id', async (c) => {
   try {
-    const targetGuardId = c.req.param('id');
-    const body = await c.req.json();
-    const overrides = body.overrides !== undefined ? body.overrides : body.app_permissions;
-
-    const supabase = getSupabase(c.env);
-
-    await saveGuardExtendedProfile(supabase, targetGuardId, { app_permissions: overrides });
-
-    let { data: updatedGuard, error } = await supabase
-      .from('guards')
-      .update({ app_permissions: overrides })
-      .eq('guard_id', targetGuardId)
-      .select('*')
-      .maybeSingle();
-
-    if (error) {
-      const { data: existing } = await supabase.from('guards').select('*').eq('guard_id', targetGuardId).maybeSingle();
-      updatedGuard = existing;
+    const a = c.get('auth')
+    const supabase = getSupabase(c.env)
+    const { data: target } = await supabase.from('guards').select('guard_id, full_name, role, tier, tenant_id').eq('guard_id', c.req.param('id')).maybeSingle()
+    if (!target || (a.tier !== 'SUPER_ADMIN' && (target.tenant_id !== a.tenant_id || target.tier !== 'USER'))) {
+      return c.json({ success: false, message: 'Not Found' }, 404)
     }
+    const body = await c.req.json()
+    const requested = body.overrides !== undefined ? body.overrides : body.app_permissions
+    const overrides = requested ? clampToTenant(await rawTenantFeatures(supabase, target.tenant_id), requested) : null
 
-    const hybrid = await resolveEffectivePermissions(supabase, updatedGuard.role || 'Guard', overrides);
+    await saveGuardExtendedProfile(supabase, target.guard_id, { app_permissions: overrides })
+    const { error } = await supabase.from('guards').update({ app_permissions: overrides }).eq('guard_id', target.guard_id)
+    if (error) throw error
 
+    const hybrid = await resolveEffectivePermissions(supabase, target.role || 'Guard', overrides)
+    const final = resolveAccess(await rawTenantFeatures(supabase, target.tenant_id), hybrid.permissions)
     return c.json({
       success: true,
-      guard_id: targetGuardId,
-      full_name: updatedGuard.full_name,
-      role: updatedGuard.role,
-      app_permissions: hybrid.permissions,
-      is_custom_override: hybrid.is_custom_override
-    });
+      guard_id: target.guard_id,
+      full_name: target.full_name,
+      role: target.role,
+      app_permissions: final.active_permissions,
+      is_custom_override: hybrid.is_custom_override,
+    })
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: error.message }, 500)
   }
-});
+})
 
 // ==========================================
-// PLATFORM SUPER ADMIN: MULTI-TENANT MANAGEMENT
+// PLATFORM SUPER ADMIN ONLY: tenants + what each industry bought
+// (Industry admins get 404 on every /super-admin route; see gate block.)
 // ==========================================
-app.get('/api/v1/super-admin/tenants', requireSuperAdmin, async (c) => {
+app.get('/api/v1/super-admin/tenants', async (c) => {
   try {
-    const supabase = getSupabase(c.env);
-    const { data: tenants, error } = await supabase.from('tenants').select('*').order('created_at', { ascending: false });
-    if (error) throw error;
-    return c.json({ success: true, tenants: tenants || [] });
+    const supabase = getSupabase(c.env)
+    const { data, error } = await supabase.from('tenants').select('*').order('created_at', { ascending: false })
+    if (error) throw error
+    return c.json({ success: true, tenants: data || [] })
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: error.message }, 500)
   }
-});
+})
 
-app.patch('/api/v1/super-admin/tenants/:id', requireSuperAdmin, async (c) => {
+app.post('/api/v1/super-admin/tenants', async (c) => {
   try {
-    const tenantId = c.req.param('id');
-    const body = await c.req.json();
-    const supabase = getSupabase(c.env);
-
-    const { data: updated, error } = await supabase
+    const body = await c.req.json()
+    const name = String(body.name || '').trim()
+    if (!name) return c.json({ success: false, message: 'Tenant name is required.' }, 400)
+    const supabase = getSupabase(c.env)
+    const { data, error } = await supabase
       .from('tenants')
-      .update({
-        features: body.features,
-        status: body.status || 'ACTIVE',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', tenantId)
-      .select('*')
-      .single();
-
-    if (error) throw error;
-    return c.json({ success: true, tenant: updated });
+      .insert([{ name, status: 'ACTIVE', features: normalizeTenantFeatures(body.features) }])
+      .select().single()
+    if (error) throw error
+    return c.json({ success: true, tenant: data }, 201)
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: error.message }, 500)
   }
-});
+})
+
+app.patch('/api/v1/super-admin/tenants/:id', async (c) => {
+  try {
+    const body = await c.req.json()
+    const supabase = getSupabase(c.env)
+    const patch: Record<string, any> = { updated_at: new Date().toISOString() }
+    if (body.features !== undefined) patch.features = normalizeTenantFeatures(body.features)
+    if (body.status !== undefined) {
+      if (!['ACTIVE', 'SUSPENDED'].includes(body.status)) return c.json({ success: false, message: 'Invalid status.' }, 400)
+      patch.status = body.status
+    }
+    if (body.name !== undefined) patch.name = String(body.name).trim()
+    const { data, error } = await supabase.from('tenants').update(patch).eq('id', c.req.param('id')).select('*').single()
+    if (error) throw error
+
+    // Downgrade cascade: strip revoked features from every guard override in this tenant.
+    if (body.features !== undefined) {
+      const { data: members } = await supabase.from('guards').select('guard_id, app_permissions').eq('tenant_id', c.req.param('id')).not('app_permissions', 'is', null)
+      for (const m of members || []) {
+        await supabase.from('guards').update({ app_permissions: clampToTenant(patch.features, m.app_permissions) }).eq('guard_id', m.guard_id)
+      }
+    }
+    return c.json({ success: true, tenant: data })
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500)
+  }
+})
+
+// Create the Industry Admin (CSO / plant head) for a tenant
+app.post('/api/v1/super-admin/tenants/:id/admins', async (c) => {
+  try {
+    const b = await c.req.json()
+    if (!b.employee_code || !b.full_name || !b.password || String(b.password).length < 8) {
+      return c.json({ success: false, message: 'employee_code, full_name and a password of 8+ characters are required.' }, 400)
+    }
+    const supabase = getSupabase(c.env)
+    const { data: dup } = await supabase.from('guards').select('guard_id').eq('employee_code', String(b.employee_code).trim()).maybeSingle()
+    if (dup) return c.json({ success: false, message: 'Employee code already exists.' }, 400)
+    const { data, error } = await supabase.from('guards').insert([{
+      full_name: String(b.full_name).trim(),
+      employee_code: String(b.employee_code).trim(),
+      password_hash: await hashPassword(String(b.password)),
+      role: b.role || 'Chief Security Officer',
+      tier: 'INDUSTRY_ADMIN',
+      tenant_id: c.req.param('id'),
+      is_active: true,
+    }]).select('guard_id, full_name, employee_code, role, tier, tenant_id').single()
+    if (error) throw error
+    return c.json({ success: true, admin: data }, 201)
+  } catch (error: any) {
+    return c.json({ success: false, message: error.message }, 500)
+  }
+})
 
 app.post('/api/v1/guards', async (c) => {
   try {
     const body = await c.req.json();
     const parsed = createGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
+    const caller = c.get('auth');
+
+    // Tenant comes from the caller, never from the request body (except for the platform owner).
+    const newTenantId = caller.tier === 'SUPER_ADMIN' ? (parsed.tenant_id || null) : caller.tenant_id;
+    if (!newTenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+    // Only the platform owner can mint admins, and only via /super-admin/tenants/:id/admins. Everything here is a USER.
+    const newTier = 'USER';
+    const tenantRaw = await rawTenantFeatures(supabase, newTenantId);
+    const clampedPerms = parsed.app_permissions ? clampToTenant(tenantRaw, parsed.app_permissions) : null;
 
     const { data: existing } = await supabase
       .from('guards')
@@ -1566,7 +1522,8 @@ app.post('/api/v1/guards', async (c) => {
       employee_code: parsed.employee_code.trim(),
       email: cleanEmail,
       phone: cleanPhone,
-      password_hash: parsed.password,
+      password_hash: await hashPassword(parsed.password),
+      tier: newTier,
       role: parsed.role,
       site_location: parsed.site_location,
       shift_timing: parsed.shift_timing,
@@ -1576,8 +1533,8 @@ app.post('/api/v1/guards', async (c) => {
       assigned_round_ids: roundIds,
       reporting_to: parsed.reporting_to,
       is_active: true,
-      tenant_id: parsed.tenant_id || null,
-      app_permissions: parsed.app_permissions ?? null
+      tenant_id: newTenantId,
+      app_permissions: clampedPerms
     };
 
     let { data: newGuard, error } = await supabase
@@ -1590,7 +1547,9 @@ app.post('/api/v1/guards', async (c) => {
       const basePayload: Record<string, any> = {
         full_name: parsed.full_name.trim(),
         employee_code: parsed.employee_code.trim(),
-        password_hash: parsed.password,
+        password_hash: insertPayload.password_hash,
+        tier: newTier,
+        tenant_id: newTenantId,
         role: parsed.role,
         site_location: parsed.site_location,
         shift_timing: parsed.shift_timing,
@@ -1608,11 +1567,11 @@ app.post('/api/v1/guards', async (c) => {
         email: cleanEmail,
         phone: cleanPhone,
         assignment_groups: groupsList,
-        app_permissions: parsed.app_permissions ?? null
+        app_permissions: clampedPerms
       });
     }
 
-    const hybrid = await resolveEffectivePermissions(supabase, newGuard.role || 'Guard', parsed.app_permissions);
+    const hybrid = await resolveEffectivePermissions(supabase, newGuard.role || 'Guard', clampedPerms);
 
     return c.json({
       success: true,
@@ -1622,7 +1581,8 @@ app.post('/api/v1/guards', async (c) => {
         phone: cleanPhone,
         assignment_group: groupsList[0],
         assignment_groups: groupsList,
-        app_permissions: hybrid.permissions,
+        password_hash: undefined,
+        app_permissions: resolveAccess(tenantRaw, hybrid.permissions).active_permissions,
         is_custom_override: hybrid.is_custom_override
       },
     }, 201);
@@ -1640,6 +1600,15 @@ app.patch('/api/v1/guards/:id', async (c) => {
     const body = await c.req.json();
     const parsed = updateGuardSchema.parse(body);
     const supabase = getSupabase(c.env);
+    const caller = c.get('auth');
+
+    const { data: targetRow } = await supabase.from('guards').select('guard_id, tier, tenant_id').eq('guard_id', guardId).maybeSingle();
+    if (!targetRow || (caller.tier !== 'SUPER_ADMIN' && (targetRow.tenant_id !== caller.tenant_id || targetRow.tier !== 'USER'))) {
+      return c.json({ success: false, message: 'Not Found' }, 404);
+    }
+    if (parsed.app_permissions) {
+      parsed.app_permissions = clampToTenant(await rawTenantFeatures(supabase, targetRow.tenant_id), parsed.app_permissions) as any;
+    }
 
     const updates: Record<string, any> = {};
     const extUpdates: Partial<GuardExtendedProfile> = {};
@@ -1655,7 +1624,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
       updates.phone = cleanPhone;
       extUpdates.phone = cleanPhone;
     }
-    if (parsed.password !== undefined && parsed.password.trim() !== '') updates.password_hash = parsed.password;
+    if (parsed.password !== undefined && parsed.password.trim() !== '') updates.password_hash = await hashPassword(parsed.password);
     if (parsed.is_active !== undefined) updates.is_active = parsed.is_active;
     if (parsed.role !== undefined) updates.role = parsed.role;
     if (parsed.site_location !== undefined) updates.site_location = parsed.site_location;
@@ -1733,6 +1702,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
       guard: {
         ...updatedGuard,
         ...extUpdates,
+        password_hash: undefined,
       },
     });
   } catch (error: any) {
@@ -1836,50 +1806,20 @@ app.post('/api/v1/incidents', async (c) => {
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    // GATE 1: Verify Tenant License
-    const tenantFeatures = await getTenantFeatures(supabase, callerTenantId);
-    if (!tenantFeatures.module_incidents?.enabled) {
-      return c.json({
-        success: false,
-        message: 'Endpoint Not Found: Incident Command is not licensed for this organization.'
-      }, 404);
+    // Gates 1 and 2 (tenant licence + user allocation) already ran in middleware.
+    // Here we only scrub fields the caller isn't entitled to set, using the same cascade result.
+    const authCtx = c.get('auth');
+    const tenantFeatures = authCtx.tenant_features;
+    const allowed = authCtx.access.active_permissions;
+    if (authCtx.tier !== 'SUPER_ADMIN') {
+      if (!allowed.incident_option_1_severity) body.priority = 'P3';
+      if (!allowed.incident_option_2_category) body.category = 'Security / Patrol';
+      if (!allowed.incident_option_3_group) body.assignment_group = 'Security Operations L1';
+      if (!allowed.incident_option_4_title) body.title = undefined;
+      if (!allowed.incident_option_5_description) body.description = undefined;
+      if (!allowed.incident_option_6_photo) body.photo_url = undefined;
     }
-
-    // GATE 2: Verify Guard Permission and scrub inputs
-    if (callerTokenGuardId) {
-      const [guardRow, extMap] = await Promise.all([
-        supabase.from('guards').select('role, app_permissions').eq('guard_id', callerTokenGuardId).maybeSingle(),
-        getGuardExtendedProfilesMap(supabase)
-      ]);
-      const ext = extMap[callerTokenGuardId] || {};
-      const override = guardRow.data?.app_permissions ?? ext.app_permissions ?? null;
-
-      const { permissions: userPerms } = await resolveEffectivePermissions(
-        supabase,
-        guardRow.data?.role || callerRole,
-        override
-      );
-
-      const { active_permissions } = resolveDualLayerPermissions(tenantFeatures, userPerms);
-
-      if (!active_permissions.report_incident) {
-        return c.json({
-          success: false,
-          message: 'Access Denied: You do not have permission to report incidents.'
-        }, 403);
-      }
-
-      // Enforce safe defaults if option is not licensed to tenant or enabled for guard
-      if (!active_permissions.incident_option_1_severity) {
-        body.priority = 'P3';
-      }
-      if (!active_permissions.incident_option_2_category) {
-        body.category = 'Security / Patrol';
-      }
-      if (!active_permissions.incident_option_3_group) {
-        body.assignment_group = 'Security Operations L1';
-      }
-    }
+    callerTokenGuardId = authCtx.guard_id;
 
     const {
       client_incident_id,
@@ -1895,7 +1835,7 @@ app.post('/api/v1/incidents', async (c) => {
       assignment_group
     } = body;
 
-    const resolvedGuardId = guard_id || callerTokenGuardId || null;
+    const resolvedGuardId = callerTokenGuardId; // never trust a guard_id from the body
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
@@ -1928,6 +1868,7 @@ app.post('/api/v1/incidents', async (c) => {
       status: 'OPEN',
       assignment_group: targetGroup,
       assigned_to: null,
+      tenant_id: authCtx.tenant_id,
       reported_at: reported_at || new Date().toISOString()
     };
 
@@ -1947,6 +1888,7 @@ app.post('/api/v1/incidents', async (c) => {
         photo_url: finalPhotoUrl,
         status: 'OPEN',
         assignment_group: targetGroup,
+        tenant_id: authCtx.tenant_id,
         reported_at: insertRecord.reported_at
       };
       const retry = await supabase
@@ -1969,6 +1911,7 @@ app.post('/api/v1/incidents', async (c) => {
         assignmentGroup: targetGroup,
         assignedTo: 'Unassigned (Group Queue)',
         status: 'OPEN',
+        tenantId: authCtx.tenant_id,
       });
     }
 
@@ -2000,9 +1943,12 @@ app.post('/api/v1/incidents', async (c) => {
 app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = getSupabase(c.env);
+    const a = c.get('auth');
+    let incQuery: any = applyTenant(supabase.from('incidents').select('*'), scopeTenant(c));
+    if (a.tier === 'USER') incQuery = incQuery.eq('guard_id', a.guard_id); // field users see only their own tickets
     const [incRes, guardsRes] = await Promise.all([
-      supabase.from('incidents').select('*').order('reported_at', { ascending: false }),
-      supabase.from('guards').select('*')
+      incQuery.order('reported_at', { ascending: false }),
+      applyTenant(supabase.from('guards').select('guard_id, full_name, employee_code'), scopeTenant(c))
     ]);
     
     if (incRes.error) throw incRes.error;
@@ -2022,29 +1968,23 @@ app.get('/api/v1/incidents', async (c) => {
   }
 });
 
-async function resolveIncidentRecord(supabase: any, rawParam: string) {
+async function resolveIncidentRecord(supabase: any, rawParam: string, tenant?: string | null) {
   const target = decodeURIComponent(rawParam).trim().toLowerCase();
 
-  let { data: match } = await supabase
-    .from('incidents')
-    .select('*')
-    .eq('client_incident_id', rawParam)
-    .maybeSingle();
+  let { data: match } = await applyTenant(
+    supabase.from('incidents').select('*').eq('client_incident_id', rawParam),
+    tenant
+  ).maybeSingle();
 
   if (match) return match;
 
-  const { data: all } = await supabase
-    .from('incidents')
-    .select('*')
-    .limit(100);
+  const { data: all } = await applyTenant(supabase.from('incidents').select('*'), tenant).limit(100);
 
   if (all && all.length > 0) {
     match = all.find((inc: any) => {
       const cId = (inc.client_incident_id || '').toLowerCase();
       if (cId === target) return true;
-      if (cId && target && (cId.includes(target) || target.includes(cId))) return true;
       if (inc.incident_id && String(inc.incident_id).toLowerCase() === target) return true;
-      
       const formatted = `inc${cId.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`;
       return formatted === target;
     });
@@ -2058,8 +1998,8 @@ app.get('/api/v1/incidents/:id', async (c) => {
     const rawParam = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    const incident = await resolveIncidentRecord(supabase, rawParam);
-    if (!incident) {
+    const incident = await resolveIncidentRecord(supabase, rawParam, scopeTenant(c));
+    if (!incident || (c.get('auth').tier === 'USER' && incident.guard_id !== c.get('auth').guard_id)) {
       return c.json({ success: false, message: 'Incident record not found.' }, 404);
     }
 
@@ -2086,8 +2026,11 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     const { sender_type, sender_name, message, photo_base64 } = body;
     const supabase = getSupabase(c.env);
 
-    const incident = await resolveIncidentRecord(supabase, rawParam);
-    const incidentId = incident?.client_incident_id || rawParam;
+    const incident = await resolveIncidentRecord(supabase, rawParam, scopeTenant(c));
+    if (!incident || (c.get('auth').tier === 'USER' && incident.guard_id !== c.get('auth').guard_id)) {
+      return c.json({ success: false, message: 'Incident record not found.' }, 404);
+    }
+    const incidentId = incident.client_incident_id;
 
     let finalPhotoUrl = null;
     if (photo_base64) {
@@ -2128,7 +2071,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    const current = await resolveIncidentRecord(supabase, rawParam);
+    const current = await resolveIncidentRecord(supabase, rawParam, scopeTenant(c));
     if (!current) {
       return c.json({ success: false, message: 'Incident not found.' }, 404);
     }
@@ -2230,6 +2173,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
         assignedTo: targetAssignee,
         status: body.status || current.status || 'OPEN',
         workNote: body.work_note,
+        tenantId: current.tenant_id,
       });
 
       emailLogLine = emailDispatchResult.ok
@@ -2280,7 +2224,7 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
     const body = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    const current = await resolveIncidentRecord(supabase, rawParam);
+    const current = await resolveIncidentRecord(supabase, rawParam, scopeTenant(c));
     const incidentId = current?.client_incident_id || rawParam;
 
     const resolutionCode = body.resolution_code || 'Solved (Permanently)';
@@ -2346,7 +2290,7 @@ app.delete('/api/v1/incidents/:id', async (c) => {
     const rawParam = c.req.param('id');
     const supabase = getSupabase(c.env);
 
-    const current = await resolveIncidentRecord(supabase, rawParam);
+    const current = await resolveIncidentRecord(supabase, rawParam, scopeTenant(c));
     const incidentId = current?.client_incident_id || rawParam;
 
     const { error } = await supabase
@@ -2366,11 +2310,18 @@ app.delete('/api/v1/incidents/:id', async (c) => {
 // ==========================================
 app.get('/api/v1/admin/configs', async (c) => {
   try {
+    const a = c.get('auth');
+    const tenantId = a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') : a.tenant_id;
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
     const supabase = getSupabase(c.env);
-    const { data, error } = await supabase.from('admin_configurations').select('*');
-    
-    if (error) throw error;
-    return c.json({ success: true, configs: data });
+    const features = await tenantFeaturesFor(supabase, tenantId);
+    const cfg = await loadTenantConfig(supabase, tenantId);
+
+    const configs = Object.entries(cfg)
+      .filter(([k]) => a.tier === 'SUPER_ADMIN' || configKeyAllowed(k, features))
+      // Secrets are write-only from the browser. Show that one is set, never its value.
+      .map(([k, v]) => ({ key_name: k, key_value: SECRET_KEYS.has(k) && v ? MASK : v }));
+    return c.json({ success: true, configs });
   } catch (error) {
     return c.json({ success: false, message: 'Failed to load configs' }, 500);
   }
@@ -2378,13 +2329,28 @@ app.get('/api/v1/admin/configs', async (c) => {
 
 app.post('/api/v1/admin/configs', async (c) => {
   try {
+    const a = c.get('auth');
+    const tenantId = a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') : a.tenant_id;
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
     const body = await c.req.json();
+    const rows: any[] = Array.isArray(body) ? body : [body];
     const supabase = getSupabase(c.env);
-    const { error } = await supabase
-      .from('admin_configurations')
-      .upsert(body, { onConflict: 'key_name' });
-      
-    if (error) throw error;
+    const features = await tenantFeaturesFor(supabase, tenantId);
+
+    const toWrite: { key_name: string; key_value: any }[] = [];
+    for (const r of rows) {
+      const key = String(r?.key_name || '');
+      if (!key) continue;
+      if (a.tier !== 'SUPER_ADMIN' && !configKeyAllowed(key, features)) {
+        return c.json({ success: false, message: 'Not Found' }, 404); // not purchased => does not exist
+      }
+      if (r.key_value === MASK) continue; // unchanged secret echoed back by the form
+      toWrite.push({ key_name: cfgKey(tenantId, key), key_value: r.key_value });
+    }
+    if (toWrite.length > 0) {
+      const { error } = await supabase.from('admin_configurations').upsert(toWrite, { onConflict: 'key_name' });
+      if (error) throw error;
+    }
     return c.json({ success: true, message: 'Configurations updated' });
   } catch (error) {
     return c.json({ success: false, message: 'Failed to save configs' }, 500);
@@ -2401,6 +2367,7 @@ app.post('/api/v1/admin/test-gmail', async (c) => {
     assignedTo: 'System Test',
     status: 'ACTIVE',
     includeManagerFallback: true,
+    tenantId: c.req.query('tenant_id') || c.get('auth').tenant_id,
   });
 
   if (!result.ok) {
@@ -2411,7 +2378,8 @@ app.post('/api/v1/admin/test-gmail', async (c) => {
 
 async function getValidGmailAccessToken(
   supabase: any,
-  configMap: Record<string, string>
+  configMap: Record<string, string>,
+  keyPrefix: string = ''
 ): Promise<{ token: string | null; error?: string }> {
   const clientId = (configMap['GMAIL_CLIENT_ID'] || '').trim();
   const clientSecret = (configMap['GMAIL_CLIENT_SECRET'] || '').trim();
@@ -2438,7 +2406,7 @@ async function getValidGmailAccessToken(
       if (res.ok && data.access_token) {
         await supabase
           .from('admin_configurations')
-          .upsert([{ key_name: 'GMAIL_ACCESS_TOKEN', key_value: data.access_token }], {
+          .upsert([{ key_name: `${keyPrefix}GMAIL_ACCESS_TOKEN`, key_value: data.access_token }], {
             onConflict: 'key_name',
           });
         return { token: data.access_token };
@@ -2476,23 +2444,18 @@ async function sendGroupAssignmentEmail(
     status: string;
     workNote?: string;
     includeManagerFallback?: boolean;
+    tenantId?: string | null;
   }
 ): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
   const supabase = getSupabase(env);
+  if (!params.tenantId) return { ok: false, recipients: [], error: 'No tenant context for email dispatch' };
 
-  const [cfgRes, guardsRes] = await Promise.all([
-    supabase.from('admin_configurations').select('key_name, key_value'),
-    supabase.from('guards').select('*')
+  const [configMap, guardsRes, blobRes] = await Promise.all([
+    loadTenantConfig(supabase, params.tenantId),
+    supabase.from('guards').select('*').eq('tenant_id', params.tenantId), // never email another tenant's staff
+    supabase.from('admin_configurations').select('key_value').eq('key_name', 'GUARD_EXTENDED_PROFILES').maybeSingle()
   ]);
-
-  if (cfgRes.error || !cfgRes.data) {
-    return { ok: false, recipients: [], error: 'Could not load admin_configurations' };
-  }
-
-  const configMap = cfgRes.data.reduce((acc: Record<string, string>, curr: any) => {
-    acc[curr.key_name] = curr.key_value;
-    return acc;
-  }, {});
+  if (blobRes.data?.key_value) configMap['GUARD_EXTENDED_PROFILES'] = blobRes.data.key_value;
 
   if (configMap['ENABLE_GMAIL'] === 'false') {
     return { ok: false, recipients: [], error: 'Gmail integration is disabled' };
@@ -2547,7 +2510,7 @@ async function sendGroupAssignmentEmail(
     };
   }
 
-  const tokenResult = await getValidGmailAccessToken(supabase, configMap);
+  const tokenResult = await getValidGmailAccessToken(supabase, configMap, `t:${params.tenantId}:`);
   if (!tokenResult.token) {
     return { ok: false, recipients, error: tokenResult.error };
   }
@@ -2638,16 +2601,9 @@ async function sendGroupAssignmentEmail(
   }
 }
 
-async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: string, description: string) {
+async function sendWhatsAppAlert(env: Bindings, tenantId: string, incidentId: string, priority: string, description: string) {
   const supabase = getSupabase(env);
-  const { data: configs, error } = await supabase
-    .from('admin_configurations')
-    .select('key_name, key_value')
-    .in('key_name', ['ENABLE_WHATSAPP', 'WHATSAPP_API_TOKEN', 'MANAGER_PHONE', 'WHATSAPP_PHONE_ID']);
-
-  if (error || !configs) return false;
-
-  const configMap = configs.reduce((acc: any, curr) => ({ ...acc, [curr.key_name]: curr.key_value }), {});
+  const configMap = await loadTenantConfig(supabase, tenantId);
   if (configMap['ENABLE_WHATSAPP'] === 'false') return false;
 
   const token = configMap['WHATSAPP_API_TOKEN'];
@@ -2680,7 +2636,7 @@ async function sendWhatsAppAlert(env: Bindings, incidentId: string, priority: st
   }
 }
 
-async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, priority: string, description: string, photoUrl: string | null) {
+async function sendGoogleEmergencyEmail(env: Bindings, tenantId: string, incidentId: string, priority: string, description: string, photoUrl: string | null) {
   const res = await sendGroupAssignmentEmail(env, {
     incidentId,
     priority,
@@ -2690,6 +2646,7 @@ async function sendGoogleEmergencyEmail(env: Bindings, incidentId: string, prior
     assignedTo: 'SLA Escalation',
     status: 'ESCALATED',
     includeManagerFallback: true,
+    tenantId,
   });
   return res.ok;
 }
@@ -2713,11 +2670,24 @@ export default {
 
     if (error || !incidents || incidents.length === 0) return;
 
+    // Each tenant is escalated only through channels THEY bought, with THEIR credentials.
+    const { data: tenantRows } = await supabase.from('tenants').select('id, features, status');
+    const tenants = new Map<string, { f: ReturnType<typeof normalizeTenantFeatures>; active: boolean }>(
+      (tenantRows || []).map((t: any) => [t.id, { f: normalizeTenantFeatures(t.features), active: (t.status || 'ACTIVE') === 'ACTIVE' }])
+    );
+
     for (const incident of incidents) {
-      await Promise.all([
-        sendGoogleEmergencyEmail(env, incident.client_incident_id, incident.priority, incident.description, incident.photo_url),
-        sendWhatsAppAlert(env, incident.client_incident_id, incident.priority, incident.description)
-      ]);
+      const t = incident.tenant_id ? tenants.get(incident.tenant_id) : undefined;
+      if (!t || !t.active || !t.f.module_incidents.enabled) continue; // no licence => no escalation, no notifications
+
+      const jobs: Promise<any>[] = [];
+      if (t.f.module_integrations.channels.gmail_oauth) {
+        jobs.push(sendGoogleEmergencyEmail(env, incident.tenant_id, incident.client_incident_id, incident.priority, incident.description, incident.photo_url));
+      }
+      if (t.f.module_integrations.channels.whatsapp_api) {
+        jobs.push(sendWhatsAppAlert(env, incident.tenant_id, incident.client_incident_id, incident.priority, incident.description));
+      }
+      await Promise.all(jobs);
 
       await supabase
         .from('incidents')

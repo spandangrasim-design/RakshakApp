@@ -31,6 +31,12 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       const userData = response.data.guard || { full_name: 'Admin', employee_code: adminId };
       const visibleModules = response.data.visible_modules || {};
 
+      // The web console is for the two admin tiers. Field users use the mobile app.
+      if (userData.tier === 'USER') {
+        setError('This console is for administrators. Please use the Rakshak mobile app.');
+        return;
+      }
+
       if (onLoginSuccess) {
         onLoginSuccess(token, userData, visibleModules);
       } else {
@@ -40,7 +46,11 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       }
 
       // Route dynamically: if Patrol is disabled for this tenant, land on /guards
-      const defaultRoute = visibleModules.module_patrol !== false ? '/reports' : '/guards';
+      const defaultRoute =
+        userData.tier === 'SUPER_ADMIN' ? '/platform'
+        : visibleModules.module_patrol === true ? '/reports'
+        : visibleModules.module_incidents === true ? '/incidents'
+        : '/guards';
       navigate(defaultRoute);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Invalid Employee Code or Password');

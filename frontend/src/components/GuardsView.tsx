@@ -119,6 +119,9 @@ export const GuardsView: React.FC = () => {
   // App Permissions Modal State
   const [permissionsGuard, setPermissionsGuard] = useState<Guard | null>(null);
   const [permForm, setPermForm] = useState<AppPermissions>(BASIC_GUARD_PERMISSIONS);
+  // Keys this plant bought. Anything not in here is never rendered (no greyed-out rows, no lock icons).
+  const [licensedKeys, setLicensedKeys] = useState<Set<string>>(new Set());
+  const isLicensed = (k: string) => licensedKeys.has(k);
   const [savingPerms, setSavingPerms] = useState(false);
 
   // Add Form State
@@ -194,6 +197,7 @@ export const GuardsView: React.FC = () => {
 
       const loadedGuards: Guard[] = guardsData.guards || [];
       setGuards(loadedGuards);
+      setLicensedKeys(new Set<string>(guardsData.licensed_permission_keys || []));
       if (roundsData.success) setRounds(roundsData.rounds || []);
 
       let customGroups: string[] = [...DEFAULT_GROUPS];
@@ -278,6 +282,15 @@ export const GuardsView: React.FC = () => {
     await persistCustomGroups(updated);
   };
 
+  // Force every key the plant did NOT buy to false so it can never be sent to the server as true.
+  const maskToLicensed = (p: AppPermissions, keepLicensedOnly = false): AppPermissions => {
+    const out: any = { ...p };
+    Object.keys(out).forEach((k) => {
+      if (!isLicensed(k)) out[k] = false;
+    });
+    return keepLicensedOnly ? out : out;
+  };
+
   const openPermissionsModal = (guard: Guard) => {
     setPermissionsGuard(guard);
     setPermForm(getGuardPermissions(guard));
@@ -289,7 +302,7 @@ export const GuardsView: React.FC = () => {
     try {
       const token = localStorage.getItem('token') || '';
       const payload = {
-        overrides: overridesToSave !== undefined ? overridesToSave : permForm,
+        overrides: overridesToSave !== undefined ? overridesToSave : maskToLicensed(permForm),
       };
 
       const res = await fetch(`${API_BASE_URL}/access-control/guards/${permissionsGuard.guard_id}`, {
@@ -768,10 +781,14 @@ export const GuardsView: React.FC = () => {
 
                     const memberGroups = getGuardGroups(guard);
                     const perms = getGuardPermissions(guard);
+                    const formFieldCount = [
+                      'incident_option_1_severity','incident_option_2_category','incident_option_3_group',
+                      'incident_option_4_title','incident_option_5_description','incident_option_6_photo',
+                    ].filter((k) => isLicensed(k) && (perms as any)[k]).length;
                     const isRestrictedForm =
-                      !perms.incident_option_1_severity &&
-                      !perms.incident_option_2_category &&
-                      !perms.incident_option_3_group;
+                      !(isLicensed('incident_option_1_severity') && perms.incident_option_1_severity) &&
+                      !(isLicensed('incident_option_2_category') && perms.incident_option_2_category) &&
+                      !(isLicensed('incident_option_3_group') && perms.incident_option_3_group);
 
                     return (
                       <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
@@ -812,8 +829,12 @@ export const GuardsView: React.FC = () => {
                             <span className="font-bold text-slate-800">
                               {guard.is_custom_override ? 'Custom Override' : 'Role Default'}
                             </span>
-                            {' • '}
-                            <span>{isRestrictedForm ? 'Options 4-6' : 'Options 1-6'}</span>
+                            {formFieldCount > 0 && (
+                              <>
+                                {' • '}
+                                <span>{formFieldCount} form field{formFieldCount === 1 ? '' : 's'}</span>
+                              </>
+                            )}
                           </div>
                         </td>
 
@@ -965,17 +986,17 @@ export const GuardsView: React.FC = () => {
               </span>
               <button
                 type="button"
-                onClick={() => setPermForm({ ...BASIC_GUARD_PERMISSIONS })}
+                onClick={() => setPermForm((prev) => maskToLicensed({ ...prev, ...BASIC_GUARD_PERMISSIONS }, true))}
                 className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition"
               >
-                Standard Guard (Options 4, 5, 6 Only)
+                Standard Guard
               </button>
               <button
                 type="button"
-                onClick={() => setPermForm({ ...FULL_ACCESS_PERMISSIONS })}
+                onClick={() => setPermForm((prev) => maskToLicensed({ ...prev, ...FULL_ACCESS_PERMISSIONS }, true))}
                 className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold transition"
               >
-                Supervisor / Admin (Options 1–6)
+                Supervisor (everything available)
               </button>
               <button
                 type="button"
@@ -999,7 +1020,7 @@ export const GuardsView: React.FC = () => {
                   { key: 'incident_tickets', label: 'Incident Tickets (Active & Resolved)' },
                   { key: 'activity_log', label: 'Activity Log (Recent Scans)' },
                   { key: 'sync_queue', label: 'Sync Queue (Force Upload)' },
-                ].map((mod) => {
+                ].filter((mod) => isLicensed(mod.key)).map((mod) => {
                   const checked = permForm[mod.key as keyof AppPermissions];
                   return (
                     <div
@@ -1028,11 +1049,12 @@ export const GuardsView: React.FC = () => {
               </div>
             </div>
 
-            {/* Section 2: Report Incident Form Options */}
+            {/* Section 2: Report Incident Form Options (only the ones this plant bought) */}
+            {['incident_option_1_severity','incident_option_2_category','incident_option_3_group','incident_option_4_title','incident_option_5_description','incident_option_6_photo'].some(isLicensed) && (
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
-                  2. Incident Reporting Form Fields (Options 1–6)
+                  2. Incident Reporting Form Fields
                 </h4>
                 <span className="text-[11px] text-slate-500">
                   Unchecked fields are completely hidden from user
@@ -1042,35 +1064,35 @@ export const GuardsView: React.FC = () => {
                 {[
                   {
                     key: 'incident_option_1_severity',
-                    label: 'Option 1: Select Severity Level (P1 - P4)',
+                    label: 'Select Severity Level (P1 - P4)',
                     note: 'If hidden, server automatically sets default P3 - Moderate',
                   },
                   {
                     key: 'incident_option_2_category',
-                    label: 'Option 2: Category Selector',
+                    label: 'Category Selector',
                     note: 'If hidden, server automatically sets Security / Patrol',
                   },
                   {
                     key: 'incident_option_3_group',
-                    label: 'Option 3: Dispatch Assignment Group',
+                    label: 'Dispatch Assignment Group',
                     note: 'If hidden, routes automatically to Security Operations L1',
                   },
                   {
                     key: 'incident_option_4_title',
-                    label: 'Option 4: Incident Title / Summary & Quick Chips',
+                    label: 'Incident Title / Summary & Quick Chips',
                     note: '1-tap template chips and custom title input',
                   },
                   {
                     key: 'incident_option_5_description',
-                    label: 'Option 5: Detailed Observations & Location',
+                    label: 'Detailed Observations & Location',
                     note: 'Field description textarea',
                   },
                   {
                     key: 'incident_option_6_photo',
-                    label: 'Option 6: Field Photo Evidence (Camera)',
+                    label: 'Field Photo Evidence (Camera)',
                     note: 'Live camera capture attachment',
                   },
-                ].map((opt) => {
+                ].filter((opt) => isLicensed(opt.key)).map((opt, idx) => {
                   const checked = permForm[opt.key as keyof AppPermissions];
                   return (
                     <div
@@ -1094,7 +1116,7 @@ export const GuardsView: React.FC = () => {
                           <Square className="w-4 h-4 text-slate-400 shrink-0" />
                         )}
                         <div>
-                          <div className="font-bold">{opt.label}</div>
+                          <div className="font-bold">Option {idx + 1}: {opt.label}</div>
                           <div className="text-[11px] opacity-75">{opt.note}</div>
                         </div>
                       </div>
@@ -1112,6 +1134,7 @@ export const GuardsView: React.FC = () => {
                 })}
               </div>
             </div>
+            )}
 
             <div className="flex justify-end gap-2 pt-3 border-t">
               <button

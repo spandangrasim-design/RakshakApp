@@ -30,6 +30,25 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   List<String> _availableGroups = IncidentService.defaultGroups;
   bool _isSubmitting = false;
 
+  // Ordered list of form fields this user is entitled to (server-resolved: plant licence AND admin allocation).
+  // A field not in this list is not built at all, and the numbers below are 1..n with no gaps.
+  List<String> _fields = [];
+  bool _has(String id) => _fields.contains(id);
+  int _n(String id) => _fields.indexOf(id) + 1;
+
+  Future<void> _loadFields() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('incident_form_fields');
+    var list = <String>[];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        list = (jsonDecode(raw) as List).map((e) => e.toString()).toList();
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(() => _fields = list);
+  }
+
   String? _photoBase64;
   Uint8List? _photoBytes;
   final ImagePicker _picker = ImagePicker();
@@ -87,6 +106,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   @override
   void initState() {
     super.initState();
+    _loadFields();
     _loadGroups();
   }
 
@@ -138,7 +158,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     final titleText = _titleController.text.trim();
     final descText = _descriptionController.text.trim();
 
-    if (titleText.isEmpty && descText.isEmpty) {
+    final hasTextField = _has('title') || _has('description');
+    if (hasTextField && titleText.isEmpty && descText.isEmpty) {
       _showSnack('Please enter a title or description for the incident.',
           Colors.black87);
       return;
@@ -331,9 +352,10 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (_has('severity')) ...[
             // 1. Severity Level Grid
-            const Text(
-              '1. Select Severity Level',
+            Text(
+              '${_n('severity')}. Select Severity Level',
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 14,
@@ -418,6 +440,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 20),
 
+            ],
+            if (_has('category')) ...[
             // 2. Category & Response Group Routing
             Row(
               children: [
@@ -425,8 +449,8 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        '2. Category',
+                      Text(
+              '${_n('category')}. Category',
                         style: TextStyle(
                           fontWeight: FontWeight.w800,
                           fontSize: 13,
@@ -472,8 +496,10 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 14),
 
-            const Text(
-              '3. Dispatch Assignment Group (Auto-Emails Unit)',
+            ],
+            if (_has('group')) ...[
+            Text(
+              '${_n('group')}. Dispatch Assignment Group (Auto-Emails Unit)',
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 13,
@@ -511,9 +537,11 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 20),
 
+            ],
+            if (_has('title')) ...[
             // 4. Quick Incident Title + Templates
-            const Text(
-              '4. Incident Title / Summary',
+            Text(
+              '${_n('title')}. Incident Title / Summary',
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 14,
@@ -578,8 +606,10 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 16),
 
-            const Text(
-              '5. Detailed Observations & Location',
+            ],
+            if (_has('description')) ...[
+            Text(
+              '${_n('description')}. Detailed Observations & Location',
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 14,
@@ -607,9 +637,11 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
             ),
             const SizedBox(height: 20),
 
+            ],
+            if (_has('photo')) ...[
             // 6. Camera Evidence Preview
-            const Text(
-              '6. Field Photo Evidence',
+            Text(
+              '${_n('photo')}. Field Photo Evidence',
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 14,
@@ -698,6 +730,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
                   ),
                 ),
               ),
+            ],
             const SizedBox(height: 28),
 
             ElevatedButton.icon(

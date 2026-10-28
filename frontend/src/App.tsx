@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import Login from './pages/Login';
 import { ReportsPage } from './pages/ReportsPage';
@@ -7,7 +7,9 @@ import AdminConfigsPage from './pages/AdminConfigsPage';
 import IncidentsDashboard from './pages/IncidentsDashboard';
 import IncidentDetails from './pages/IncidentDetails';
 import { GuardsView } from './components/GuardsView';
-import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users } from 'lucide-react';
+import TenantsPage from './pages/TenantsPage';
+import { apiFetch } from './services/api';
+import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users, Building2 } from 'lucide-react';
 
 interface VisibleModules {
   module_patrol?: boolean;
@@ -33,10 +35,10 @@ const AdminLayout = ({
     const location = useLocation();
 
     // Features only render if explicitly true
-    const showPatrol = modules.module_patrol !== false;
-    const showIncidents = modules.module_incidents !== false;
-    const showQR = modules.module_qr_generator !== false;
-    const showIntegrations = modules.module_integrations !== false;
+    const showPatrol = modules.module_patrol === true;
+    const showIncidents = modules.module_incidents === true;
+    const showQR = modules.module_qr_generator === true;
+    const showIntegrations = modules.module_integrations === true;
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -58,6 +60,19 @@ const AdminLayout = ({
 
                         {/* Dynamic Navigation Tabs (Disabled modules are not rendered) */}
                         <nav className="hidden md:flex items-center gap-2">
+                            {user?.tier === 'SUPER_ADMIN' && (
+                                <Link
+                                    to="/platform"
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
+                                        location.pathname === '/platform'
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                                    }`}
+                                >
+                                    <Building2 className="h-4 w-4" />
+                                    Industries
+                                </Link>
+                            )}
                             {showPatrol && (
                                 <Link
                                     to="/reports"
@@ -132,7 +147,7 @@ const AdminLayout = ({
                     <div className="flex items-center gap-4">
                         <div className="hidden text-right sm:block">
                             <div className="text-xs font-semibold text-slate-900">{user?.full_name || 'Admin'}</div>
-                            <div className="text-[11px] text-slate-400">{user?.role || user?.employee_code || 'Site Manager'}</div>
+                            <div className="text-[11px] text-slate-400">{user?.tier === 'SUPER_ADMIN' ? 'Platform Super Admin' : user?.tier === 'INDUSTRY_ADMIN' ? `Industry Admin${user?.role ? ' · ' + user.role : ''}` : (user?.role || user?.employee_code)}</div>
                         </div>
 
                         <button
@@ -160,17 +175,47 @@ export const App: React.FC = () => {
         return saved ? JSON.parse(saved) : null;
     });
 
+    // Fail-closed: nothing is visible until the server confirms it. Cached value is only a first-paint hint.
     const [visibleModules, setVisibleModules] = useState<VisibleModules>(() => {
-        const saved = localStorage.getItem('visible_modules');
-        return saved ? JSON.parse(saved) : {
-            module_patrol: true,
-            module_incidents: true,
-            module_qr_generator: true,
-            module_integrations: true,
-            module_activity_logs: true,
-            module_sync_queue: true
-        };
+        try {
+            const saved = localStorage.getItem('visible_modules');
+            return saved ? JSON.parse(saved) : {};
+        } catch {
+            return {};
+        }
     });
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('visible_modules');
+        setToken(null);
+        setUser(null);
+        setVisibleModules({});
+    };
+
+    // Re-verify entitlements with the server on every load. localStorage can be edited by the user; the server cannot.
+    useEffect(() => {
+        if (!token) return;
+        apiFetch('/api/v1/guards/my-permissions')
+            .then((r) => {
+                if (r?.visible_modules) {
+                    setVisibleModules(r.visible_modules);
+                    localStorage.setItem('visible_modules', JSON.stringify(r.visible_modules));
+                }
+                if (r?.tier) {
+                    setUser((u: any) => {
+                        const next = { ...(u || {}), tier: r.tier, role: r.role, tenant_id: r.tenant_id };
+                        localStorage.setItem('user', JSON.stringify(next));
+                        return next;
+                    });
+                }
+            })
+            .catch((e) => {
+                if (/ 40[13] /.test(String(e?.message))) handleLogout();
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [token]);
 
     const handleLoginSuccess = (newToken: string, userData: any, modules?: VisibleModules) => {
         setToken(newToken);
@@ -185,15 +230,14 @@ export const App: React.FC = () => {
         }
     };
 
-    const handleLogout = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        localStorage.removeItem('visible_modules');
-        setToken(null);
-        setUser(null);
-    };
-
-    const defaultRedirect = visibleModules.module_patrol !== false ? '/reports' : '/guards';
+    const isSuper = user?.tier === 'SUPER_ADMIN';
+    const defaultRedirect = isSuper
+        ? '/platform'
+        : visibleModules.module_patrol === true
+        ? '/reports'
+        : visibleModules.module_incidents === true
+        ? '/incidents'
+        : '/guards';
 
     return (
         <Router>
@@ -215,7 +259,7 @@ export const App: React.FC = () => {
                     path="/reports"
                     element={
                         token ? (
-                            visibleModules.module_patrol !== false ? (
+                            visibleModules.module_patrol === true ? (
                                 <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                     <ReportsPage />
                                 </AdminLayout>
@@ -233,7 +277,7 @@ export const App: React.FC = () => {
                     path="/incidents"
                     element={
                         token ? (
-                            visibleModules.module_incidents !== false ? (
+                            visibleModules.module_incidents === true ? (
                                 <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                     <IncidentsDashboard />
                                 </AdminLayout>
@@ -251,7 +295,7 @@ export const App: React.FC = () => {
                     path="/incidents/:id"
                     element={
                         token ? (
-                            visibleModules.module_incidents !== false ? (
+                            visibleModules.module_incidents === true ? (
                                 <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                     <IncidentDetails user={user} />
                                 </AdminLayout>
@@ -283,7 +327,7 @@ export const App: React.FC = () => {
                     path="/qr-generator"
                     element={
                         token ? (
-                            visibleModules.module_qr_generator !== false ? (
+                            visibleModules.module_qr_generator === true ? (
                                 <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                     <QRGenerator />
                                 </AdminLayout>
@@ -301,7 +345,7 @@ export const App: React.FC = () => {
                     path="/admin/configs"
                     element={
                         token ? (
-                            visibleModules.module_integrations !== false ? (
+                            visibleModules.module_integrations === true ? (
                                 <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                     <AdminConfigsPage />
                                 </AdminLayout>
@@ -310,6 +354,20 @@ export const App: React.FC = () => {
                             )
                         ) : (
                             <Navigate to="/login" replace />
+                        )
+                    }
+                />
+
+                {/* Platform: tenants + what each industry bought. Super Admin only; others fall through to the 404-style redirect. */}
+                <Route
+                    path="/platform"
+                    element={
+                        token && isSuper ? (
+                            <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                <TenantsPage />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to={token ? defaultRedirect : '/login'} replace />
                         )
                     }
                 />

@@ -52,6 +52,12 @@ class AuthService {
           );
         }
 
+        await prefs.setString(
+          'incident_form_fields',
+          jsonEncode(data['incident_form_fields'] ?? []),
+        );
+        await prefs.setString('tier', (guard['tier'] ?? 'USER').toString());
+
         // 4. Tenant licensed module visibility
         if (data['visible_modules'] != null) {
           await prefs.setString(

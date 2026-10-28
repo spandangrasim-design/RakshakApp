@@ -38,18 +38,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isSuperAdmin = false;
   int _incidentsRefreshTick = 0;
 
+  // Fail-closed: every feature is off until the server says otherwise.
   Map<String, bool> _perms = {
-    'patrol_route': true,
-    'report_incident': true,
-    'incident_tickets': true,
-    'activity_log': true,
-    'sync_queue': true,
+    'patrol_route': false,
+    'report_incident': false,
+    'incident_tickets': false,
+    'activity_log': false,
+    'sync_queue': false,
     'incident_option_1_severity': false,
     'incident_option_2_category': false,
     'incident_option_3_group': false,
-    'incident_option_4_title': true,
-    'incident_option_5_description': true,
-    'incident_option_6_photo': true,
+    'incident_option_4_title': false,
+    'incident_option_5_description': false,
+    'incident_option_6_photo': false,
   };
 
   @override
@@ -71,7 +72,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       try {
         final decoded = jsonDecode(cachedPermsJson) as Map<String, dynamic>;
         decoded.forEach((k, v) {
-          if (v is bool) _perms[k] = v;
+          if (v is bool && _perms.containsKey(k)) _perms[k] = v;
         });
       } catch (_) {}
     }
@@ -105,18 +106,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
         },
       ).timeout(const Duration(seconds: 8));
 
+      // Account disabled or organization suspended: sign out instead of showing stale features.
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        await _handleLogout();
+        return;
+      }
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true && data['app_permissions'] is Map) {
+          // REPLACE, never merge: a key the server omits must become false, not keep an old true.
           final serverPerms = Map<String, dynamic>.from(data['app_permissions']);
-          final updated = Map<String, bool>.from(_perms);
-          serverPerms.forEach((k, v) {
-            if (v is bool) updated[k] = v;
-          });
+          final updated = <String, bool>{
+            for (final k in _perms.keys) k: serverPerms[k] == true,
+          };
 
           final isSuper = data['is_super_admin'] == true;
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('app_permissions', jsonEncode(updated));
+          await prefs.setString(
+              'incident_form_fields', jsonEncode(data['incident_form_fields'] ?? []));
           await prefs.setBool('is_super_admin', isSuper);
 
           if (mounted) {
