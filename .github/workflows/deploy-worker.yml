@@ -5,13 +5,17 @@ on:
     branches:
       - main
     paths:
-      - 'backend/**' # Adjust to your backend subfolder or remove path filter if root
-      - 'wrangler.toml'
+      - 'backend/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy to Cloudflare Workers
+    defaults:
+      run:
+        working-directory: ./backend   # package.json, wrangler.toml and src/ live here, not in the repo root
     steps:
       - uses: actions/checkout@v4
 
@@ -20,12 +24,18 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install Dependencies
         run: npm ci
 
+      - name: Type check
+        run: npx tsc --noEmit
+        continue-on-error: true   # report problems without blocking deploys; remove once it passes cleanly
+
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
+          workingDirectory: backend
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
