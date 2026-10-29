@@ -1,14 +1,7 @@
 name: Deploy API to Cloudflare
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'wrangler.toml'
-      - '.github/workflows/deploy.yml'
+  workflow_dispatch:   # legacy workflow: superseded by deploy-worker.yml (the code lives in backend/)
 
 jobs:
   deploy:

@@ -72,6 +72,21 @@ jobs:
             sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle.kts
           fi
 
+      - name: Configure release signing (only if keystore secrets exist)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > android/app/release.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$KS_PASS" "$KEY_PASS" "$KEY_ALIAS" > android/key.properties
+            echo "Release keystore configured."
+          else
+            echo "No keystore secrets found: building with the debug key."
+          fi
+
       - name: Install Dependencies
         run: flutter pub get
 
