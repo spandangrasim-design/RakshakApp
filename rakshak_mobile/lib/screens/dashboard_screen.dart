@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/token_store.dart';
 
 import '../config/api_config.dart';
 import '../services/api_client.dart';
@@ -63,7 +64,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedGuardName = prefs.getString('guard_name') ?? 'Security Guard';
     final savedGuardId = prefs.getString('guard_id') ?? '';
-    final savedToken = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+    final savedToken = await TokenStore.read();
     final localShiftState = prefs.getBool('is_shift_active') ?? false;
     final cachedPermsJson = prefs.getString('app_permissions');
     final isSuper = prefs.getBool('is_super_admin') ?? false;
@@ -236,6 +237,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _handleLogout() async {
     final prefs = await SharedPreferences.getInstance();
+    await TokenStore.clear();
     await prefs.clear();
 
     if (!mounted) return;

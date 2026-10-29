@@ -5,6 +5,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/token_store.dart';
 import 'package:uuid/uuid.dart';
 
 import '../config/api_config.dart';
@@ -170,7 +171,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
     final clientIncidentId = const Uuid().v4();
     final prefs = await SharedPreferences.getInstance();
     final token =
-        prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+        await TokenStore.read();
     final guardId = prefs.getString('guard_id') ?? '';
 
     final selectedMeta = _priorityOptions.firstWhere(

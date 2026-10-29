@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/token_store.dart';
 
 import '../config/api_config.dart';
 import 'locked_camera_screen.dart';
@@ -70,7 +71,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     setState(() => _isLoading = true);
 
     final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+    _token = await TokenStore.read();
 
     // Restore today's verified stops from local storage
     final savedIds = prefs.getStringList(_getTodayStorageKey()) ?? [];

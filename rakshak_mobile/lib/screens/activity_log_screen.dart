@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/token_store.dart';
 
 import '../config/api_config.dart';
 import '../services/local_db_service.dart';
@@ -36,7 +37,7 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
     List<dynamic> online = [];
     try {
       final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+      final token = await TokenStore.read();
 
       final response = await http.get(
         Uri.parse(ApiConfig.scansUrl),

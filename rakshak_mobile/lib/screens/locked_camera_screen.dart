@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/token_store.dart';
 import 'package:system_clock/system_clock.dart';
 import 'package:uuid/uuid.dart';
 
@@ -190,7 +191,7 @@ class _LockedCameraScreenState extends State<LockedCameraScreen> {
       final Duration uptime = SystemClock.uptime();
       final prefs = await SharedPreferences.getInstance();
       final token =
-          prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+          await TokenStore.read();
       final clientScanId = const Uuid().v4();
 
       final payload = <String, dynamic>{
