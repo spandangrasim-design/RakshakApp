@@ -16,6 +16,8 @@ type Bindings = {
   JWT_SECRET: string
   QR_SECRET: string 
   R2_BUCKET: R2Bucket
+  ALLOWED_ORIGINS?: string   // comma separated; defaults below
+  GEOFENCE_RADIUS_M?: string // max guard-to-checkpoint distance in metres (default 250)
 }
 
 type Variables = {
@@ -24,7 +26,25 @@ type Variables = {
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-app.use('/*', cors())
+// Only the admin console may call this API from a browser. Native apps send no Origin header, so they are unaffected.
+const DEFAULT_ORIGINS = ['https://rakshakapp.pages.dev', 'http://localhost:3000', 'http://localhost:5173']
+app.use('/*', cors({
+  origin: (origin: string, c: any) => {
+    const allowed = (c.env?.ALLOWED_ORIGINS ? String(c.env.ALLOWED_ORIGINS).split(',').map((x: string) => x.trim()) : DEFAULT_ORIGINS)
+    if (allowed.includes(origin)) return origin
+    if (/^https:\/\/[a-z0-9-]+\.rakshakapp\.pages\.dev$/.test(origin)) return origin // Pages preview deployments
+    return ''
+  },
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  maxAge: 600,
+}))
+
+// Never leak internals (table names, SQL errors) to clients.
+app.onError((err, c) => {
+  console.error('Unhandled error:', err)
+  return c.json({ success: false, message: 'Internal server error.' }, 500)
+})
 
 function utf8ToBase64(str: string): string {
   const bytes = new TextEncoder().encode(str);
@@ -127,7 +147,7 @@ const createGuardSchema = z.object({
   employee_code: z.string().min(1, 'Employee code is required'),
   email: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
-  password: z.string().min(4, 'Password must be at least 4 characters'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
   role: z.string().optional().default('Guard'),
   site_location: z.string().optional().default('Main Plant & Gate 1'),
   shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
@@ -144,7 +164,7 @@ const updateGuardSchema = z.object({
   full_name: z.string().optional(),
   email: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
-  password: z.string().optional(),
+  password: z.string().min(8, 'Password must be at least 8 characters').optional().or(z.literal('')),
   is_active: z.boolean().optional(),
   role: z.string().optional(),
   site_location: z.string().optional(),
@@ -280,6 +300,79 @@ async function rawTenantFeatures(supabase: any, tenantId: string | null | undefi
   if (!tenantId) return null
   const { data } = await supabase.from('tenants').select('features').eq('id', tenantId).maybeSingle()
   return data?.features ?? null
+}
+
+// ---------- output safety ----------
+function esc(v: any): string {
+  return String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as any)[ch])
+}
+function safeEmail(v: any): string | null {
+  const e = String(v ?? '').trim()
+  return /^[^\s@<>,;"'\\]+@[^\s@<>,;"'\\]+\.[^\s@<>,;"'\\]+$/.test(e) ? e : null // also blocks CR/LF header injection
+}
+/** Log the real error server-side, return a generic message to the client. */
+function errMsg(e: any, fallback = 'Request failed. Please try again.'): string {
+  console.error('API error:', e?.message || e)
+  return fallback
+}
+
+// ---------- images: size + type validated, unguessable keys ----------
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+function decodeImage(b64?: string | null): { bytes: Uint8Array; type: string; ext: string } | null {
+  if (!b64 || typeof b64 !== 'string') return null
+  const clean = b64.replace(/^data:image\/\w+;base64,/, '')
+  if (clean.length > Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 8) return null
+  let bytes: Uint8Array
+  try { bytes = Uint8Array.from(atob(clean), (ch) => ch.charCodeAt(0)) } catch { return null }
+  if (bytes.length < 16 || bytes.length > MAX_IMAGE_BYTES) return null
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { bytes, type: 'image/jpeg', ext: 'jpg' }
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return { bytes, type: 'image/png', ext: 'png' }
+  return null // anything that is not really a JPEG/PNG is rejected
+}
+/** Stores an image under a random key (capability URL). Returns null if the payload is not a valid image. */
+async function storeImage(bucket: R2Bucket, origin: string, folder: string, prefix: string, input?: string | null): Promise<string | null> {
+  if (!input) return null
+  if (input.startsWith(`${origin}/api/v1/media/`)) return input // already one of ours
+  const img = decodeImage(input)
+  if (!img) return null
+  const key = `${folder}/${prefix}_${crypto.randomUUID()}.${img.ext}`
+  await bucket.put(key, img.bytes, { httpMetadata: { contentType: img.type } })
+  return `${origin}/api/v1/media/${key}`
+}
+
+// ---------- geofence ----------
+function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000, rad = (d: number) => (d * Math.PI) / 180
+  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1)
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)))
+}
+
+// ---------- login brute-force protection (table: login_attempts, see SQL/003) ----------
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+async function isLoginLocked(supabase: any, key: string): Promise<number> {
+  try {
+    const { data } = await supabase.from('login_attempts').select('locked_until').eq('attempt_key', key).maybeSingle()
+    const until = data?.locked_until ? new Date(data.locked_until).getTime() : 0
+    return until > Date.now() ? Math.ceil((until - Date.now()) / 1000) : 0
+  } catch { return 0 } // if the table is missing, do not block logins
+}
+async function recordLoginFailure(supabase: any, key: string, max: number) {
+  try {
+    const { data } = await supabase.from('login_attempts').select('fail_count, window_start').eq('attempt_key', key).maybeSingle()
+    const now = Date.now()
+    const fresh = !data || now - new Date(data.window_start).getTime() > LOGIN_WINDOW_MS
+    const count = fresh ? 1 : (data.fail_count || 0) + 1
+    await supabase.from('login_attempts').upsert({
+      attempt_key: key,
+      fail_count: count,
+      window_start: fresh ? new Date(now).toISOString() : data.window_start,
+      locked_until: count >= max ? new Date(now + LOGIN_WINDOW_MS).toISOString() : null,
+    }, { onConflict: 'attempt_key' })
+  } catch {}
+}
+async function clearLoginFailures(supabase: any, key: string) {
+  try { await supabase.from('login_attempts').delete().eq('attempt_key', key) } catch {}
 }
 
 // ---------- per-tenant configuration (admin_configurations rows are stored as "t:<tenantId>:<KEY>") ----------
@@ -422,7 +515,7 @@ app.get('/api/v1/media/*', async (c) => {
     const url = new URL(c.req.url);
     const fileKey = decodeURIComponent(url.pathname.replace('/api/v1/media/', ''));
 
-    if (!fileKey || fileKey.includes('..')) {
+    if (!fileKey || fileKey.includes('..') || fileKey.startsWith('/') || !/^[A-Za-z0-9_\-./]+$/.test(fileKey)) {
       return c.json({ error_code: 'BAD_REQUEST', message: 'Invalid file key.' }, 400);
     }
 
@@ -434,14 +527,16 @@ app.get('/api/v1/media/*', async (c) => {
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set('etag', object.httpEtag);
-    headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-    headers.set('Cache-Control', 'public, max-age=86400');
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    const ct = object.httpMetadata?.contentType;
+    headers.set('Content-Type', ct === 'image/png' ? 'image/png' : 'image/jpeg'); // never serve anything as HTML
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    headers.set('Cache-Control', 'private, max-age=86400');
+    headers.set('Cross-Origin-Resource-Policy', 'cross-origin'); // lets the admin console show <img>
 
     return new Response(object.body, { status: 200, headers });
   } catch (error: any) {
-    return c.json({ error_code: 'SERVER_ERROR', message: error.message || 'Failed to stream media.' }, 500);
+    return c.json({ error_code: 'SERVER_ERROR', message: errMsg(error, 'Failed to stream media.') }, 500);
   }
 });
 
@@ -453,12 +548,23 @@ app.post('/api/v1/auth/login', async (c) => {
     const { employee_code, password, device_id } = loginSchema.parse(await c.req.json())
     const supabase = getSupabase(c.env)
 
+    const acctKey = `acct:${employee_code.trim().toLowerCase()}`
+    const ipKey = `ip:${c.req.header('CF-Connecting-IP') || 'unknown'}`
+    const lockedFor = Math.max(await isLoginLocked(supabase, acctKey), await isLoginLocked(supabase, ipKey))
+    if (lockedFor > 0) {
+      c.header('Retry-After', String(lockedFor))
+      return c.json({ error_code: 'TOO_MANY_ATTEMPTS', message: `Too many failed attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).` }, 429)
+    }
+
     const { data: guard } = await supabase.from('guards').select('*').eq('employee_code', employee_code).maybeSingle()
     // Always run a hash so response time doesn't reveal whether the account exists.
     const pw = await verifyPassword(password, guard?.password_hash ?? 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAA')
     if (!guard || guard.is_active === false || !pw.ok) {
+      await recordLoginFailure(supabase, acctKey, 5)
+      await recordLoginFailure(supabase, ipKey, 30)
       return c.json({ error_code: 'INVALID_CREDENTIALS', message: 'Invalid Login.' }, 401)
     }
+    await clearLoginFailures(supabase, acctKey)
     if (pw.needsUpgrade) {
       await supabase.from('guards').update({ password_hash: await hashPassword(password) }).eq('guard_id', guard.guard_id)
     }
@@ -510,123 +616,91 @@ app.post('/api/v1/auth/login', async (c) => {
 // ==========================================
 // 2. PATROL SCANS API
 // ==========================================
-async function isValidCheckpointSignature(
-  supabase: any,
-  qrSecret: string,
-  checkpointId: string,
-  qrLat: string,
-  qrLng: string,
-  signature: string
-): Promise<boolean> {
-  const directData = `${checkpointId}|${qrLat}|${qrLng}`;
-  const directExpected = CryptoJS.HmacSHA256(directData, qrSecret).toString(CryptoJS.enc.Hex);
-  if (signature === directExpected) return true;
+interface CheckpointRow { checkpoint_id: string; lat: any; lng: any; qr_payload: string | null; tenant_id: string | null }
 
+/** The checkpoint must exist AND belong to the caller's organization. */
+async function loadCheckpointForScan(supabase: any, auth: AuthContext, checkpointId: string): Promise<CheckpointRow | null> {
   const { data: cp } = await supabase
     .from('checkpoints')
-    .select('checkpoint_id, lat, lng, qr_payload')
+    .select('checkpoint_id, lat, lng, qr_payload, tenant_id')
     .eq('checkpoint_id', checkpointId)
-    .maybeSingle();
+    .maybeSingle()
+  if (!cp) return null
+  if (auth.tier !== 'SUPER_ADMIN' && cp.tenant_id !== auth.tenant_id) return null
+  return cp as CheckpointRow
+}
 
-  if (!cp) return false;
+/**
+ * Strict: the signature must be a real HMAC made with QR_SECRET (or the signature stored when the
+ * checkpoint was created). There is NO coordinate-proximity fallback anymore.
+ */
+function isValidCheckpointSignature(qrSecret: string, cp: CheckpointRow, signature: string, qrLat: string, qrLng: string): boolean {
+  const sig = String(signature || '').trim().toLowerCase()
+  if (!sig) return false
+  const hmac = (data: string) => CryptoJS.HmacSHA256(data, qrSecret).toString(CryptoJS.enc.Hex)
+
+  if (safeEqual(sig, hmac(`${cp.checkpoint_id}|${cp.lat}|${cp.lng}`))) return true
+  if (safeEqual(sig, hmac(`${cp.checkpoint_id}|${qrLat}|${qrLng}`))) return true // legacy QR codes printed with other number formatting
 
   if (cp.qr_payload) {
-    const parts = cp.qr_payload.split('|');
-    if (parts.length >= 4 && parts[3].trim() === signature.trim()) {
-      return true;
-    }
+    const parts = cp.qr_payload.split('|')
+    if (parts.length >= 4 && safeEqual(sig, parts[3].trim().toLowerCase())) return true
   }
+  return false
+}
 
-  const dbData = `${cp.checkpoint_id}|${cp.lat}|${cp.lng}`;
-  const dbExpected = CryptoJS.HmacSHA256(dbData, qrSecret).toString(CryptoJS.enc.Hex);
-  if (signature === dbExpected) return true;
-
-  const latDiff = Math.abs(parseFloat(cp.lat) - parseFloat(qrLat));
-  const lngDiff = Math.abs(parseFloat(cp.lng) - parseFloat(qrLng));
-  if (latDiff < 0.001 && lngDiff < 0.001) return true;
-
-  return false;
+/** Server-side geofence: the guard must be physically near the checkpoint (client GPS is only trusted within a radius). */
+function isGuardNearCheckpoint(env: Bindings, cp: CheckpointRow, guardLat: any, guardLng: any): boolean {
+  const gLat = Number(guardLat), gLng = Number(guardLng), cLat = parseFloat(String(cp.lat)), cLng = parseFloat(String(cp.lng))
+  if (![gLat, gLng, cLat, cLng].every(Number.isFinite)) return false
+  if (Math.abs(gLat) > 90 || Math.abs(gLng) > 180) return false
+  const radius = Number(env.GEOFENCE_RADIUS_M) > 0 ? Number(env.GEOFENCE_RADIUS_M) : 250
+  return distanceMeters(gLat, gLng, cLat, cLng) <= radius
 }
 
 app.post('/api/v1/scans', async (c) => {
   try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ success: false, message: 'Missing or invalid token' }, 401);
-    }
-    
-    let payload;
-    try {
-      const token = authHeader.split(' ')[1];
-      payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-    } catch (e) {
-      return c.json({ success: false, message: 'Invalid or expired token' }, 401);
-    }
-    const guard_id = payload.sub as string;
+    const auth = c.get('auth');
+    const guard_id = auth.guard_id;
 
     const body = await c.req.json();
-    const { 
-      client_scan_id, 
-      checkpoint_id, 
-      qr_lat, 
-      qr_lng, 
-      signature, 
-      guard_lat, 
-      guard_lng, 
-      uptime_seconds, 
-      selfie_url,
-      location_photo_url,
-      photo_url 
+    const {
+      client_scan_id, checkpoint_id, qr_lat, qr_lng, signature,
+      guard_lat, guard_lng, uptime_seconds, selfie_url, location_photo_url, photo_url
     } = scanSchema.parse(body);
 
     const supabase = getSupabase(c.env);
 
-    const isSignatureValid = await isValidCheckpointSignature(
-      supabase,
-      c.env.QR_SECRET,
-      checkpoint_id,
-      qr_lat,
-      qr_lng,
-      signature
-    );
+    const cp = await loadCheckpointForScan(supabase, auth, checkpoint_id);
+    if (!cp) return c.json({ success: false, message: 'Checkpoint not found.' }, 404);
 
-    if (!isSignatureValid) {
+    if (!isValidCheckpointSignature(c.env.QR_SECRET, cp, signature, qr_lat, qr_lng)) {
       return c.json({ success: false, message: 'Invalid or forged QR Code detected.' }, 403);
     }
+    if (!isGuardNearCheckpoint(c.env, cp, guard_lat, guard_lng)) {
+      return c.json({ success: false, message: 'You are too far from this checkpoint to record a scan.' }, 403);
+    }
 
-    const url = new URL(c.req.url);
+    const origin = new URL(c.req.url).origin;
+    const finalSelfieUrl = await storeImage(c.env.R2_BUCKET, origin, 'scans', 'selfie', selfie_url || photo_url);
+    const finalLocationUrl = (await storeImage(c.env.R2_BUCKET, origin, 'scans', 'location', location_photo_url)) || finalSelfieUrl;
 
-    const uploadToR2 = async (base64Str?: string, prefix: string = 'scan') => {
-      if (!base64Str) return null;
-      try {
-        const cleanData = base64Str.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(cleanData), char => char.charCodeAt(0));
-        const fileName = `scans/${prefix}_${client_scan_id}_${Date.now()}.jpg`;
-        
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        return `${url.origin}/api/v1/media/${fileName}`;
-      } catch (err) {
-        return null;
-      }
-    };
-
-    const finalSelfieUrl = await uploadToR2(selfie_url || photo_url, 'selfie');
-    const finalLocationUrl = await uploadToR2(location_photo_url, 'location') || finalSelfieUrl;
-
+    // Expected coordinates come from OUR database, never from the client.
     const { data, error } = await supabase.rpc('log_patrol_scan', {
       p_client_scan_id: client_scan_id,
-      p_checkpoint_id: checkpoint_id,
+      p_checkpoint_id: cp.checkpoint_id,
       p_guard_id: guard_id,
       p_guard_lat: guard_lat,
       p_guard_lng: guard_lng,
-      p_expected_lat: parseFloat(qr_lat),
-      p_expected_lng: parseFloat(qr_lng),
+      p_expected_lat: parseFloat(String(cp.lat)),
+      p_expected_lng: parseFloat(String(cp.lng)),
       p_uptime_seconds: uptime_seconds || 0,
       p_photo_url: finalLocationUrl || ''
     });
 
     if (error) {
-      return c.json({ success: false, message: 'Database error', error }, 500);
+      console.error('log_patrol_scan failed:', error);
+      return c.json({ success: false, message: 'Could not record scan.' }, 500);
     }
 
     await supabase
@@ -635,17 +709,19 @@ app.post('/api/v1/scans', async (c) => {
         selfie_url: finalSelfieUrl,
         location_photo_url: finalLocationUrl,
         guard_lat: guard_lat,
-        guard_lng: guard_lng
+        guard_lng: guard_lng,
+        tenant_id: cp.tenant_id
       })
-      .eq('client_scan_id', client_scan_id);
+      .eq('client_scan_id', client_scan_id)
+      .eq('guard_id', guard_id); // can only touch your own scan
 
     return c.json({ success: true, verification: data });
 
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return c.json({ success: false, message: 'Invalid data format', errors: error.errors }, 400);
+      return c.json({ success: false, message: 'Invalid data format' }, 400);
     }
-    return c.json({ success: false, message: 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -675,12 +751,12 @@ app.get('/api/v1/scans', async (c) => {
       .limit(50);
 
     if (error) {
-      return c.json({ success: false, message: error.message }, 500);
+      return c.json({ success: false, message: errMsg(error) }, 500);
     }
 
     return c.json({ success: true, scans: data || [] });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -691,7 +767,7 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 
     const [cpRes, guardsRes] = await Promise.all([
       supabase.from('checkpoints').select('checkpoint_id, name, lat, lng').eq('round_id', roundId),
-      supabase.from('guards').select('guard_id, full_name, employee_code')
+      applyTenant(supabase.from('guards').select('guard_id, full_name, employee_code'), scopeTenant(c))
     ]);
 
     if (cpRes.error) throw cpRes.error;
@@ -730,7 +806,7 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 
     return c.json({ success: true, scans, checkpoints });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to fetch round scans' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to fetch round scans') }, 500);
   }
 });
 
@@ -760,6 +836,7 @@ app.post('/api/v1/patrols/session/start', async (c) => {
       .insert([{
         round_id,
         guard_id,
+        tenant_id: c.get('auth').tenant_id,
         status: 'ACTIVE',
         start_time: new Date().toISOString(),
         last_lat: lat,
@@ -783,7 +860,7 @@ app.post('/api/v1/patrols/session/start', async (c) => {
 
     return c.json({ success: true, session });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to start session' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to start session') }, 500);
   }
 });
 
@@ -828,7 +905,7 @@ app.post('/api/v1/patrols/session/ping', async (c) => {
 
     return c.json({ success: true, session });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Ping failed' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Ping failed') }, 500);
   }
 });
 
@@ -872,95 +949,80 @@ app.get('/api/v1/rounds/:id/live-trail', async (c) => {
       breadcrumbs: breadcrumbs || []
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: errMsg(error) }, 500);
   }
 });
 
 app.post('/api/v1/patrols/sync', async (c) => {
   try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ success: false, message: 'Unauthorized' }, 401);
-    
-    const token = authHeader.split(' ')[1];
-    const payload = await verify(token, c.env.JWT_SECRET, 'HS256');
-    const guard_id = payload.sub as string;
-
-    const url = new URL(c.req.url);
+    const auth = c.get('auth');
+    const guard_id = auth.guard_id;
+    const origin = new URL(c.req.url).origin;
     const body = await c.req.json();
-    const scans = body.scans;
-    const results = [];
 
+    if (!Array.isArray(body.scans) || body.scans.length > 50) {
+      return c.json({ success: false, message: 'Send between 1 and 50 scans per sync.' }, 400);
+    }
+    const results: any[] = [];
     const supabase = getSupabase(c.env);
 
-    for (const scan of scans) {
-      const isValid = await isValidCheckpointSignature(
-        supabase,
-        c.env.QR_SECRET,
-        scan.checkpoint_id,
-        String(scan.qr_lat),
-        String(scan.qr_lng),
-        scan.signature
-      );
-
-      if (!isValid) {
-        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'Invalid Signature' });
+    for (const scan of body.scans) {
+      const clientScanId = String(scan?.client_scan_id || '');
+      if (!clientScanId || !scan?.checkpoint_id) {
+        results.push({ client_scan_id: clientScanId, status: 'failed', reason: 'Malformed scan' });
         continue;
       }
 
-      let selfieUrl = '';
-      let locationUrl = '';
-
-      if (scan.selfie_url) {
-        const base64Data = scan.selfie_url.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `scans/selfie_${scan.client_scan_id}.jpg`;
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        selfieUrl = `${url.origin}/api/v1/media/${fileName}`;
+      const cp = await loadCheckpointForScan(supabase, auth, String(scan.checkpoint_id));
+      if (!cp || !isValidCheckpointSignature(c.env.QR_SECRET, cp, String(scan.signature || ''), String(scan.qr_lat), String(scan.qr_lng))) {
+        results.push({ client_scan_id: clientScanId, status: 'failed', reason: 'Invalid Signature' });
+        continue;
+      }
+      if (!isGuardNearCheckpoint(c.env, cp, scan.guard_lat, scan.guard_lng)) {
+        results.push({ client_scan_id: clientScanId, status: 'failed', reason: 'Outside checkpoint range' });
+        continue;
       }
 
-      if (scan.location_photo_url) {
-        const base64Data = scan.location_photo_url.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `scans/location_${scan.client_scan_id}.jpg`;
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        locationUrl = `${url.origin}/api/v1/media/${fileName}`;
-      }
+      const selfieUrl = (await storeImage(c.env.R2_BUCKET, origin, 'scans', 'selfie', scan.selfie_url)) || '';
+      const locationUrl = (await storeImage(c.env.R2_BUCKET, origin, 'scans', 'location', scan.location_photo_url)) || '';
 
       const { data, error } = await supabase.rpc('log_patrol_scan', {
-        p_client_scan_id: scan.client_scan_id,
-        p_checkpoint_id: scan.checkpoint_id,
+        p_client_scan_id: clientScanId,
+        p_checkpoint_id: cp.checkpoint_id,
         p_guard_id: guard_id,
         p_guard_lat: scan.guard_lat,
         p_guard_lng: scan.guard_lng,
-        p_expected_lat: parseFloat(scan.qr_lat),
-        p_expected_lng: parseFloat(scan.qr_lng),
+        p_expected_lat: parseFloat(String(cp.lat)),
+        p_expected_lng: parseFloat(String(cp.lng)),
         p_uptime_seconds: scan.uptime_seconds || 0,
         p_photo_url: locationUrl || selfieUrl
       });
 
-      if (!error) {
-        await supabase
-          .from('scans')
-          .update({
-            selfie_url: selfieUrl,
-            location_photo_url: locationUrl,
-            guard_lat: scan.guard_lat,
-            guard_lng: scan.guard_lng
-          })
-          .eq('client_scan_id', scan.client_scan_id);
+      if (error) {
+        console.error('log_patrol_scan failed:', error);
+        results.push({ client_scan_id: clientScanId, status: 'failed', reason: 'DB Error' });
+        continue;
       }
 
-      if (error) {
-        results.push({ client_scan_id: scan.client_scan_id, status: 'failed', reason: 'DB Error' });
-      } else {
-        results.push({ client_scan_id: scan.client_scan_id, status: data.status, verification: data });
-      }
+      await supabase
+        .from('scans')
+        .update({
+          selfie_url: selfieUrl,
+          location_photo_url: locationUrl,
+          guard_lat: scan.guard_lat,
+          guard_lng: scan.guard_lng,
+          tenant_id: cp.tenant_id
+        })
+        .eq('client_scan_id', clientScanId)
+        .eq('guard_id', guard_id);
+
+      results.push({ client_scan_id: clientScanId, status: data.status, verification: data });
     }
 
     return c.json({ success: true, synced_items: results });
 
   } catch (error) {
-    return c.json({ success: false, message: 'Sync failed', error }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Sync failed') }, 500);
   }
 });
 
@@ -989,7 +1051,7 @@ app.get('/api/v1/shifts/active', async (c) => {
       .limit(1)
       .maybeSingle();
 
-    if (error) return c.json({ success: false, message: error.message }, 500);
+    if (error) return c.json({ success: false, message: errMsg(error) }, 500);
 
     return c.json({
       success: true,
@@ -997,7 +1059,7 @@ app.get('/api/v1/shifts/active', async (c) => {
       shift: activeShift || null
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1029,17 +1091,18 @@ app.post('/api/v1/shifts/start', async (c) => {
       .from('shifts')
       .insert([{
         guard_id,
+        tenant_id: c.get('auth').tenant_id,
         status: 'ACTIVE',
         start_time: new Date().toISOString()
       }])
       .select()
       .single();
 
-    if (error) return c.json({ success: false, message: error.message }, 500);
+    if (error) return c.json({ success: false, message: errMsg(error) }, 500);
 
     return c.json({ success: true, message: 'Shift started', shift: newShift }, 201);
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1066,7 +1129,7 @@ app.post('/api/v1/shifts/end', async (c) => {
       .eq('status', 'ACTIVE')
       .select();
 
-    if (error) return c.json({ success: false, message: error.message }, 500);
+    if (error) return c.json({ success: false, message: errMsg(error) }, 500);
 
     return c.json({
       success: true,
@@ -1074,7 +1137,7 @@ app.post('/api/v1/shifts/end', async (c) => {
       shifts_closed: updatedShifts?.length || 0
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1091,8 +1154,8 @@ app.get('/api/v1/rounds', async (c) => {
       applyTenant(supabase.from('guards').select('*'), scopeTenant(c))
     ]);
 
-    if (roundsRes.error) return c.json({ success: false, message: roundsRes.error.message }, 500);
-    if (cpRes.error) return c.json({ success: false, message: cpRes.error.message }, 500);
+    if (roundsRes.error) return c.json({ success: false, message: errMsg(roundsRes.error) }, 500);
+    if (cpRes.error) return c.json({ success: false, message: errMsg(cpRes.error) }, 500);
 
     const rounds = roundsRes.data || [];
     const checkpoints = cpRes.data || [];
@@ -1125,7 +1188,7 @@ app.get('/api/v1/rounds', async (c) => {
 
     return c.json({ success: true, rounds: roundsWithCheckpoints });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1150,7 +1213,7 @@ app.post('/api/v1/rounds', async (c) => {
         .update({ name })
         .eq('id', activeRoundId);
 
-      if (updateError) return c.json({ success: false, message: updateError.message }, 500);
+      if (updateError) return c.json({ success: false, message: errMsg(updateError) }, 500);
 
       await supabase.from('checkpoints').delete().eq('round_id', activeRoundId);
     } else {
@@ -1160,7 +1223,7 @@ app.post('/api/v1/rounds', async (c) => {
         .select()
         .single();
 
-      if (insertError) return c.json({ success: false, message: insertError.message }, 500);
+      if (insertError) return c.json({ success: false, message: errMsg(insertError) }, 500);
       activeRoundId = newRound.id;
     }
 
@@ -1187,7 +1250,7 @@ app.post('/api/v1/rounds', async (c) => {
 
       const { error: cpInsertError } = await supabase.from('checkpoints').insert(rows);
       if (cpInsertError) {
-        return c.json({ success: false, message: cpInsertError.message }, 500);
+        return c.json({ success: false, message: errMsg(cpInsertError) }, 500);
       }
     }
 
@@ -1196,7 +1259,7 @@ app.post('/api/v1/rounds', async (c) => {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: 'Invalid payload', errors: error.errors }, 400);
     }
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1206,11 +1269,11 @@ app.delete('/api/v1/rounds/:id', async (c) => {
     const supabase = getSupabase(c.env);
 
     const { error } = await supabase.from('rounds').delete().eq('id', roundId);
-    if (error) return c.json({ success: false, message: error.message }, 500);
+    if (error) return c.json({ success: false, message: errMsg(error) }, 500);
 
     return c.json({ success: true, message: 'Round deleted' });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1297,7 +1360,7 @@ app.get('/api/v1/guards', async (c) => {
 
     return c.json({ success: true, guards: guardsWithRounds, licensed_permission_keys: ceiling, incident_form_fields_all: INCIDENT_FORM_FIELDS.map((f) => f.id) });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to fetch guards' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to fetch guards') }, 500);
   }
 });
 
@@ -1329,7 +1392,7 @@ app.get('/api/v1/access-control/roles', async (c) => {
     if (error) throw error;
     return c.json({ success: true, roles: data || [] });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: errMsg(error) }, 500);
   }
 });
 
@@ -1358,7 +1421,7 @@ app.put('/api/v1/access-control/roles/:role', async (c) => {
     if (error) throw error;
     return c.json({ success: true, role: data });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500);
+    return c.json({ success: false, message: errMsg(error) }, 500);
   }
 });
 
@@ -1390,7 +1453,7 @@ app.patch('/api/v1/access-control/guards/:id', async (c) => {
       is_custom_override: hybrid.is_custom_override,
     })
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500)
+    return c.json({ success: false, message: errMsg(error) }, 500)
   }
 })
 
@@ -1398,6 +1461,50 @@ app.patch('/api/v1/access-control/guards/:id', async (c) => {
 // PLATFORM SUPER ADMIN ONLY: tenants + what each industry bought
 // (Industry admins get 404 on every /super-admin route; see gate block.)
 // ==========================================
+// Reports WHAT KIND of database key the Worker is using. Never returns the key or any part of it.
+app.get('/api/v1/super-admin/diagnostics', async (c) => {
+  const key = String(c.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  let kind = 'unknown';
+  if (key.startsWith('sb_secret_')) kind = 'sb_secret';
+  else if (key.startsWith('sb_publishable_')) kind = 'sb_publishable';
+  else if (key.split('.').length === 3) {
+    try {
+      const payload = JSON.parse(atob(key.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      kind = payload.role === 'service_role' ? 'service_role' : payload.role === 'anon' ? 'anon' : 'unknown';
+    } catch {}
+  }
+  const bypassesRls = kind === 'service_role' || kind === 'sb_secret';
+  return c.json({
+    success: true,
+    key_kind: kind,
+    bypasses_rls: bypassesRls,
+    message: bypassesRls
+      ? 'OK: the server uses a key that bypasses row-level security.'
+      : 'The server is using a PUBLIC database key. Replace SUPABASE_SERVICE_ROLE_KEY with the service_role key.',
+  });
+});
+
+// Converts any remaining plain-text passwords to PBKDF2 hashes, a few per call (hashing is CPU heavy).
+app.get('/api/v1/super-admin/password-hashing', async (c) => {
+  const supabase = getSupabase(c.env);
+  const { count } = await supabase.from('guards').select('guard_id', { count: 'exact', head: true }).not('password_hash', 'like', 'pbkdf2$%');
+  return c.json({ success: true, plaintext_remaining: count ?? 0 });
+});
+app.post('/api/v1/super-admin/password-hashing', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data: rows } = await supabase.from('guards').select('guard_id, password_hash').not('password_hash', 'like', 'pbkdf2$%').limit(5);
+    for (const r of rows || []) {
+      if (!r.password_hash) continue;
+      await supabase.from('guards').update({ password_hash: await hashPassword(String(r.password_hash)) }).eq('guard_id', r.guard_id);
+    }
+    const { count } = await supabase.from('guards').select('guard_id', { count: 'exact', head: true }).not('password_hash', 'like', 'pbkdf2$%');
+    return c.json({ success: true, hashed: (rows || []).length, plaintext_remaining: count ?? 0 });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
 app.get('/api/v1/super-admin/tenants', async (c) => {
   try {
     const supabase = getSupabase(c.env)
@@ -1405,7 +1512,7 @@ app.get('/api/v1/super-admin/tenants', async (c) => {
     if (error) throw error
     return c.json({ success: true, tenants: data || [] })
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500)
+    return c.json({ success: false, message: errMsg(error) }, 500)
   }
 })
 
@@ -1428,7 +1535,7 @@ app.post('/api/v1/super-admin/tenants', async (c) => {
     if (error) throw error
     return c.json({ success: true, tenant: data }, 201)
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500)
+    return c.json({ success: false, message: errMsg(error) }, 500)
   }
 })
 
@@ -1455,7 +1562,7 @@ app.patch('/api/v1/super-admin/tenants/:id', async (c) => {
     }
     return c.json({ success: true, tenant: data })
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500)
+    return c.json({ success: false, message: errMsg(error) }, 500)
   }
 })
 
@@ -1481,7 +1588,7 @@ app.post('/api/v1/super-admin/tenants/:id/admins', async (c) => {
     if (error) throw error
     return c.json({ success: true, admin: data }, 201)
   } catch (error: any) {
-    return c.json({ success: false, message: error.message }, 500)
+    return c.json({ success: false, message: errMsg(error) }, 500)
   }
 })
 
@@ -1595,7 +1702,7 @@ app.post('/api/v1/guards', async (c) => {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
     }
-    return c.json({ success: false, message: error.message || 'Failed to create guard' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to create guard') }, 500);
   }
 });
 
@@ -1714,7 +1821,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
     if (error instanceof z.ZodError) {
       return c.json({ success: false, message: error.errors[0]?.message || 'Invalid format' }, 400);
     }
-    return c.json({ success: false, message: error.message || 'Failed to update guard' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to update guard') }, 500);
   }
 });
 
@@ -1783,7 +1890,7 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
       routes            
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Server error' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }
 });
 
@@ -1844,19 +1951,9 @@ app.post('/api/v1/incidents', async (c) => {
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
-    let finalPhotoUrl = null;
-    if (photo_url) {
-      try {
-        const base64Data = photo_url.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `incidents/${incidentUuid}.jpg`;
-        
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`;
-      } catch (e) {
-        finalPhotoUrl = photo_url;
-      }
-    }
+    const finalPhotoUrl = photo_url
+      ? await storeImage(c.env.R2_BUCKET, url.origin, 'incidents', 'photo', photo_url)
+      : null;
 
     const targetGroup = assignment_group || 'Security Operations L1';
 
@@ -2019,7 +2116,7 @@ app.get('/api/v1/incidents/:id', async (c) => {
     if (updatesError) throw updatesError;
     return c.json({ success: true, incident, updates: updates || [] });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to fetch incident details' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to fetch incident details') }, 500);
   }
 });
 
@@ -2037,19 +2134,9 @@ app.post('/api/v1/incidents/:id/updates', async (c) => {
     }
     const incidentId = incident.client_incident_id;
 
-    let finalPhotoUrl = null;
-    if (photo_base64) {
-      try {
-        const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Uint8Array.from(atob(base64Data), char => char.charCodeAt(0));
-        const fileName = `incident_updates/${incidentId}_${Date.now()}.jpg`;
-        
-        await c.env.R2_BUCKET.put(fileName, buffer, { httpMetadata: { contentType: 'image/jpeg' } });
-        finalPhotoUrl = `${url.origin}/api/v1/media/${fileName}`;
-      } catch (e) {
-        finalPhotoUrl = photo_base64;
-      }
-    }
+    const finalPhotoUrl = photo_base64
+      ? await storeImage(c.env.R2_BUCKET, url.origin, 'incident_updates', 'photo', photo_base64)
+      : null;
 
     const { data, error } = await supabase
       .from('incident_updates')
@@ -2219,7 +2306,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       email_error: emailDispatchResult.error
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to update incident' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to update incident') }, 500);
   }
 });
 
@@ -2286,7 +2373,7 @@ app.patch('/api/v1/incidents/:id/resolve', async (c) => {
       activity: newUpdate 
     });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to resolve incident' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to resolve incident') }, 500);
   }
 });
 
@@ -2303,10 +2390,10 @@ app.delete('/api/v1/incidents/:id', async (c) => {
       .delete()
       .eq('client_incident_id', incidentId);
 
-    if (error) return c.json({ success: false, message: error.message }, 500);
+    if (error) return c.json({ success: false, message: errMsg(error) }, 500);
     return c.json({ success: true, message: 'Incident deleted successfully' });
   } catch (error: any) {
-    return c.json({ success: false, message: error.message || 'Failed to delete incident' }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Failed to delete incident') }, 500);
   }
 });
 
@@ -2493,15 +2580,15 @@ async function sendGroupAssignmentEmail(
       (grp) => (grp || '').trim().toLowerCase() === targetGroupClean
     );
 
-    const memberEmail = (g.email || ext.email || '').trim();
-    if (belongsToTargetGroup && memberEmail && memberEmail.includes('@')) {
+    const memberEmail = safeEmail(g.email || ext.email || '');
+    if (belongsToTargetGroup && memberEmail) {
       recipientSet.add(memberEmail);
     }
   });
 
   if (params.includeManagerFallback) {
-    const managerEmail = (configMap['MANAGER_EMAIL'] || '').trim();
-    if (managerEmail && managerEmail.includes('@')) {
+    const managerEmail = safeEmail(configMap['MANAGER_EMAIL'] || '');
+    if (managerEmail) {
       recipientSet.add(managerEmail);
     }
   }
@@ -2524,16 +2611,17 @@ async function sendGroupAssignmentEmail(
   const subjectText = `[Rakshak Dispatch - ${params.assignmentGroup}] ${params.priority} Case ${caseNumber}`;
   const encodedSubject = `=?utf-8?B?${utf8ToBase64(subjectText)}?=`;
 
+  const safePhoto = /^https:\/\//.test(String(params.photoUrl || '')) ? String(params.photoUrl) : '';
   const htmlBody = `
     <div style="font-family: Arial, sans-serif; max-width: 620px; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
       <div style="background: #0f172a; color: #ffffff; padding: 16px 20px;">
         <h2 style="margin: 0; font-size: 17px;">Rakshak Security Dispatch Alert</h2>
         <p style="margin: 4px 0 0; font-size: 12px; color: #94a3b8;">
-          Assignment Group: <strong style="color:#38bdf8;">${params.assignmentGroup}</strong> • Case: ${caseNumber}
+          Assignment Group: <strong style="color:#38bdf8;">${esc(params.assignmentGroup)}</strong> • Case: ${caseNumber}
         </p>
       </div>
       <div style="padding: 20px; color: #1e293b; font-size: 13px; line-height: 1.6; background: #ffffff;">
-        <p style="margin-top:0;">This security incident has been assigned to <strong>${params.assignmentGroup}</strong>.</p>
+        <p style="margin-top:0;">This security incident has been assigned to <strong>${esc(params.assignmentGroup)}</strong>.</p>
         <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold; width: 35%;">Case ID</td>
@@ -2541,27 +2629,27 @@ async function sendGroupAssignmentEmail(
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Severity / Status</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${params.priority}</strong> (${params.status})</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${esc(params.priority)}</strong> (${esc(params.status)})</td>
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assignment Group</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignmentGroup}</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.assignmentGroup)}</td>
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assigned Responder</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.assignedTo || 'Unassigned (Group Queue)'}</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.assignedTo || 'Unassigned (Group Queue)')}</td>
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Description</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${params.description}</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.description)}</td>
           </tr>
           ${params.workNote ? `
           <tr>
             <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a; font-weight: bold;">Instructions</td>
-            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a;">${params.workNote}</td>
+            <td style="padding: 6px 8px; background: #fffbeb; border: 1px solid #fde68a;">${esc(params.workNote)}</td>
           </tr>` : ''}
         </table>
-        ${params.photoUrl ? `<div style="margin-top: 14px;"><img src="${params.photoUrl}" alt="Incident Evidence" style="max-width: 100%; max-height: 260px; border-radius: 8px; border: 1px solid #cbd5e1;"/></div>` : ''}
+        ${safePhoto ? `<div style="margin-top: 14px;"><img src="${esc(safePhoto)}" alt="Incident Evidence" style="max-width: 100%; max-height: 260px; border-radius: 8px; border: 1px solid #cbd5e1;"/></div>` : ''}
       </div>
     </div>
   `;
@@ -2700,4 +2788,4 @@ export default {
         .eq('client_incident_id', incident.client_incident_id);
     }
   }
-}
+}
