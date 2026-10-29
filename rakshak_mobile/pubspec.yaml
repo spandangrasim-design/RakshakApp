@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
   http: ^1.2.0
   shared_preferences: ^2.2.2
+  flutter_secure_storage: ^9.2.4
   cupertino_icons: ^1.0.8
   # QR Scanning
   mobile_scanner: ^5.1.1
