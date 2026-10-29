@@ -71,6 +71,9 @@ const TenantsPage: React.FC = () => {
   const [msg, setMsg] = useState('');
   const [newName, setNewName] = useState('');
   const [admin, setAdmin] = useState({ full_name: '', employee_code: '', password: '' });
+  const [keyWarning, setKeyWarning] = useState('');
+  const [pwLeft, setPwLeft] = useState<number | null>(null);
+  const [pwBusy, setPwBusy] = useState(false);
 
   const selected = useMemo(() => tenants.find((t) => t.id === selectedId) || null, [tenants, selectedId]);
   const dirty = selected ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) : false;
@@ -90,6 +93,39 @@ const TenantsPage: React.FC = () => {
     }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  // Warn loudly if the server is running on a public database key.
+  useEffect(() => {
+    fetch(`${API}/super-admin/diagnostics`)
+      .then((r) => r.json())
+      .then((d) => { if (d && d.bypasses_rls === false) setKeyWarning(d.message); })
+      .catch(() => {});
+    fetch(`${API}/super-admin/password-hashing`)
+      .then((r) => r.json())
+      .then((d) => setPwLeft(typeof d.plaintext_remaining === 'number' ? d.plaintext_remaining : null))
+      .catch(() => {});
+  }, []);
+
+  // Converts leftover plain-text passwords to hashes, a few at a time. Logins keep working with the same passwords.
+  const securePasswords = async () => {
+    setPwBusy(true);
+    try {
+      let left = pwLeft ?? 1;
+      for (let i = 0; i < 200 && left > 0; i++) {
+        const r = await fetch(`${API}/super-admin/password-hashing`, { method: 'POST' });
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message);
+        left = d.plaintext_remaining;
+        setPwLeft(left);
+        if (d.hashed === 0) break;
+      }
+      flash(left === 0 ? 'All passwords are now securely hashed.' : `${left} password(s) still need hashing. Run again.`);
+    } catch (e: any) {
+      flash(e.message || 'Could not secure passwords');
+    } finally {
+      setPwBusy(false);
+    }
+  };
 
   const flash = (t: string) => { setMsg(t); setTimeout(() => setMsg(''), 3500); };
 
@@ -167,6 +203,22 @@ const TenantsPage: React.FC = () => {
           </p>
         </div>
       </div>
+
+      {keyWarning && (
+        <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
+          Security warning: {keyWarning}
+        </div>
+      )}
+
+      {pwLeft !== null && pwLeft > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <span><strong>{pwLeft}</strong> account(s) still store a plain-text password.</span>
+          <button onClick={securePasswords} disabled={pwBusy}
+            className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50">
+            {pwBusy ? 'Securing…' : 'Secure passwords now'}
+          </button>
+        </div>
+      )}
 
       {msg && <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800">{msg}</div>}
 
