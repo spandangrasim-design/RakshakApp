@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'token_store.dart';
 
 import '../config/api_config.dart';
 import 'api_client.dart';
@@ -52,7 +53,7 @@ class SyncService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final token =
-          prefs.getString('access_token') ?? prefs.getString('token') ?? '';
+          await TokenStore.read();
       if (token.isEmpty) return; // not logged in yet
 
       await _syncPatrolScans(token);

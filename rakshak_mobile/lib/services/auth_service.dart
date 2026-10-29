@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'token_store.dart';
 
 import '../config/api_config.dart';
 
@@ -33,9 +34,7 @@ class AuthService {
         final bool isSuperAdmin = guard['is_super_admin'] == true;
 
         // 1. Session tokens
-        await prefs.setString('access_token', token);
-        await prefs.setString('token', token);
-        await prefs.setString('jwt_token', token);
+        await TokenStore.write(token); // encrypted storage; never plain-text prefs
 
         // 2. Profile identity
         await prefs.setString('guard_id', guardId);
