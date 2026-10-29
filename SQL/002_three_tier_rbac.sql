@@ -3,6 +3,15 @@
 -- Safe to re-run. Review the BACKFILL section before running in production.
 -- =====================================================================
 
+-- 0. Your DB already had a `tenants` table with a NOT NULL `code` column. Make sure the columns we need exist.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status     TEXT NOT NULL DEFAULT 'ACTIVE';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS features   JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS code       TEXT;
+
+-- New industries start with NOTHING purchased.
+ALTER TABLE tenants ALTER COLUMN features SET DEFAULT '{}'::jsonb;
+
 -- 1. Tenants (one row per industry / plant company)
 CREATE TABLE IF NOT EXISTS tenants (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,8 +56,8 @@ ALTER TABLE admin_configurations ADD COLUMN IF NOT EXISTS tenant_id UUID REFEREN
 -- BACKFILL  (EDIT THE NAME / CODES BELOW BEFORE RUNNING)
 -- =====================================================================
 -- 5. Put every existing guard into one "Legacy" tenant so nothing is orphaned.
-INSERT INTO tenants (name, status, features)
-SELECT 'Legacy Plant', 'ACTIVE', jsonb_build_object(
+INSERT INTO tenants (name, code, status, features)
+SELECT 'Legacy Plant', 'LEGACY', 'ACTIVE', jsonb_build_object(
   'module_patrol',        jsonb_build_object('enabled', true, 'allow_route_assignment', true, 'allow_live_gps_trail', true, 'allow_geofence_audit', true),
   'module_incidents',     jsonb_build_object('enabled', true, 'allow_web_ticket_queue', true, 'allow_mobile_incident_creation', true,
                             'allowed_creation_options', jsonb_build_object('option_1_severity', true,'option_2_category', true,'option_3_group_routing', true,'option_4_title', true,'option_5_description', true,'option_6_camera_photo', true)),
