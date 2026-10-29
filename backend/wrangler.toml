@@ -7,6 +7,7 @@ workers_dev = true
 
 [vars]
 ENVIRONMENT = "production"
+GEOFENCE_RADIUS_M = "250"
 SUPABASE_URL = "https://subydhacosoarzfsusxz.supabase.co"
 
 # Bind Cloudflare R2 bucket for photo proofs
