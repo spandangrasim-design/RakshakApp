@@ -84,3 +84,7 @@ ehthumbs.db
 Thumbs.db
 *.log
 *.tmp
+# Android signing material: never commit
+rakshak_mobile/android/key.properties
+*.jks
+*.keystore
