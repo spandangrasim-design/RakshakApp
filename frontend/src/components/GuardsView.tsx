@@ -86,6 +86,8 @@ interface Guard {
   is_active: boolean;
   created_at: string;
   tenant_id?: string | null;
+  tenant_name?: string | null;
+  tier?: 'SUPER_ADMIN' | 'INDUSTRY_ADMIN' | 'USER' | string;
   assignment_group?: string | null;
   assignment_groups?: string[];
   assigned_round_id?: string | null;
@@ -124,6 +126,15 @@ export const GuardsView: React.FC = () => {
   const isLicensed = (k: string) => licensedKeys.has(k);
   const [savingPerms, setSavingPerms] = useState(false);
 
+  // Who is looking at this page? Only the platform Super Admin can change access level / industry.
+  const me = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const isSuper = me?.tier === 'SUPER_ADMIN';
+  const [tenants, setTenants] = useState<{ id: string; name: string; code?: string }[]>([]);
+  const [selectedTenantFilter, setSelectedTenantFilter] = useState<string>('ALL');
+  const ADMIN_ROLES = ['Chief Security Officer', 'Admin', 'Security Manager'];
+  const tierLabel = (t?: string) =>
+    t === 'SUPER_ADMIN' ? 'Super Admin' : t === 'INDUSTRY_ADMIN' ? 'Industry Admin' : 'App user';
+
   // Add Form State
   const [newGuard, setNewGuard] = useState({
     full_name: '',
@@ -136,6 +147,8 @@ export const GuardsView: React.FC = () => {
     shift_timing: 'Morning (06:00 - 14:00)',
     assignment_groups: ['Security Operations L1'] as string[],
     assigned_round_ids: [] as string[],
+    tier: 'USER' as string,
+    tenant_id: '' as string,
   });
 
   // Edit Form State
@@ -148,6 +161,8 @@ export const GuardsView: React.FC = () => {
     shift_timing: 'Morning (06:00 - 14:00)',
     assignment_groups: [] as string[],
     assigned_round_ids: [] as string[],
+    tier: 'USER' as string,
+    tenant_id: '' as string,
   });
 
   const [selectedRoundIds, setSelectedRoundIds] = useState<string[]>([]);
@@ -198,6 +213,7 @@ export const GuardsView: React.FC = () => {
       const loadedGuards: Guard[] = guardsData.guards || [];
       setGuards(loadedGuards);
       setLicensedKeys(new Set<string>(guardsData.licensed_permission_keys || []));
+      setTenants(guardsData.tenants || []);
       if (roundsData.success) setRounds(roundsData.rounds || []);
 
       let customGroups: string[] = [...DEFAULT_GROUPS];
@@ -341,7 +357,11 @@ export const GuardsView: React.FC = () => {
 
     const storedUser = localStorage.getItem('user');
     const parsedUser = storedUser ? JSON.parse(storedUser) : null;
-    const resolvedTenantId = parsedUser?.tenant_id || (guards[0]?.tenant_id ?? null);
+    const resolvedTenantId = isSuper ? newGuard.tenant_id || null : parsedUser?.tenant_id || (guards[0]?.tenant_id ?? null);
+    if (isSuper && !resolvedTenantId) {
+      alert('Please choose the industry this person belongs to.');
+      return;
+    }
 
     try {
       const payload = {
@@ -358,6 +378,7 @@ export const GuardsView: React.FC = () => {
         assigned_round_ids: newGuard.assigned_round_ids,
         assigned_round_id: newGuard.assigned_round_ids[0] || null,
         tenant_id: resolvedTenantId,
+        ...(isSuper ? { tier: newGuard.tier } : {}),
       };
 
       const res = await fetch(`${API_BASE_URL}/guards`, {
@@ -379,6 +400,8 @@ export const GuardsView: React.FC = () => {
           shift_timing: 'Morning (06:00 - 14:00)',
           assignment_groups: [availableGroups[0] || 'Security Operations L1'],
           assigned_round_ids: [],
+          tier: 'USER',
+          tenant_id: newGuard.tenant_id,
         });
         fetchData();
       } else {
@@ -400,6 +423,8 @@ export const GuardsView: React.FC = () => {
       shift_timing: guard.shift_timing || 'Morning (06:00 - 14:00)',
       assignment_groups: getGuardGroups(guard),
       assigned_round_ids: getGuardRoundIds(guard),
+      tier: guard.tier === 'INDUSTRY_ADMIN' ? 'INDUSTRY_ADMIN' : 'USER',
+      tenant_id: guard.tenant_id || '',
     });
   };
 
@@ -424,6 +449,10 @@ export const GuardsView: React.FC = () => {
         assignment_group: groupsToSave[0],
         assigned_round_ids: editForm.assigned_round_ids,
         assigned_round_id: editForm.assigned_round_ids[0] || null,
+        // Only the platform Super Admin sends these; the server also enforces it.
+        ...(isSuper && editingGuard.tier !== 'SUPER_ADMIN'
+          ? { tier: editForm.tier, ...(editForm.tenant_id ? { tenant_id: editForm.tenant_id } : {}) }
+          : {}),
       };
 
       const res = await fetch(`${API_BASE_URL}/guards/${editingGuard.guard_id}`, {
@@ -539,6 +568,7 @@ export const GuardsView: React.FC = () => {
   const activeStaff = guards.filter((g) => g.is_active).length;
 
   const filteredGuards = guards.filter((g) => {
+    if (selectedTenantFilter !== 'ALL' && g.tenant_id !== selectedTenantFilter) return false;
     if (selectedGroupFilter !== 'ALL') {
       const gGroups = getGuardGroups(g);
       if (!gGroups.includes(selectedGroupFilter)) return false;
@@ -551,6 +581,7 @@ export const GuardsView: React.FC = () => {
       g.employee_code.toLowerCase().includes(q) ||
       (g.email || '').toLowerCase().includes(q) ||
       (g.role || '').toLowerCase().includes(q) ||
+      (g.tenant_name || '').toLowerCase().includes(q) ||
       (g.site_location || '').toLowerCase().includes(q) ||
       getGuardGroups(g).some((grp) => grp.toLowerCase().includes(q))
     );
@@ -733,6 +764,21 @@ export const GuardsView: React.FC = () => {
               className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-blue-500"
             />
           </div>
+          {isSuper && tenants.length > 0 && (
+            <select
+              value={selectedTenantFilter}
+              onChange={(e) => setSelectedTenantFilter(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 outline-none focus:border-blue-500"
+              title="Filter by industry"
+            >
+              <option value="ALL">All industries ({guards.length})</option>
+              {tenants.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({guards.filter((g) => g.tenant_id === t.id).length})
+                </option>
+              ))}
+            </select>
+          )}
           <button
             onClick={fetchData}
             title="Refresh"
@@ -824,6 +870,25 @@ export const GuardsView: React.FC = () => {
                             <ShieldCheck className="w-3 h-3" />
                             {guard.role || 'Guard'}
                           </span>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${
+                                guard.tier === 'SUPER_ADMIN'
+                                  ? 'bg-rose-100 text-rose-700'
+                                  : guard.tier === 'INDUSTRY_ADMIN'
+                                  ? 'bg-indigo-100 text-indigo-700'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                              title={guard.tier === 'USER' ? 'Mobile app only' : 'Can sign in to this web console'}
+                            >
+                              {tierLabel(guard.tier)}
+                            </span>
+                            {isSuper && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                {guard.tier === 'SUPER_ADMIN' ? 'Platform' : guard.tenant_name || 'No industry'}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[10px] font-semibold text-slate-500">
                             Mode:{' '}
                             <span className="font-bold text-slate-800">
@@ -1326,12 +1391,52 @@ export const GuardsView: React.FC = () => {
                 </div>
               </div>
 
+              {isSuper && editingGuard?.tier !== 'SUPER_ADMIN' && (
+                <div className="grid grid-cols-2 gap-3 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Access level</label>
+                    <select
+                      value={editForm.tier}
+                      onChange={(e) => setEditForm({ ...editForm, tier: e.target.value })}
+                      className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                    >
+                      <option value="USER">App user (mobile app only)</option>
+                      <option value="INDUSTRY_ADMIN">Industry Admin (web console)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Industry</label>
+                    <select
+                      value={editForm.tenant_id}
+                      onChange={(e) => setEditForm({ ...editForm, tenant_id: e.target.value })}
+                      className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                    >
+                      {tenants.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="col-span-2 text-[11px] text-slate-500">
+                    The role is only a label. <strong>Access level</strong> decides who can sign in to this console. Moving a person to another industry clears their assigned routes and custom access.
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">Role / Rank</label>
                   <select
                     value={editForm.role}
-                    onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                    onChange={(e) => {
+                      const r = e.target.value;
+                      setEditForm({
+                        ...editForm,
+                        role: r,
+                        ...(isSuper && editingGuard?.tier !== 'SUPER_ADMIN'
+                          ? { tier: ADMIN_ROLES.includes(r) ? 'INDUSTRY_ADMIN' : 'USER' }
+                          : {}),
+                      });
+                    }}
                     className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
                   >
                     <option value="Guard">Guard / Patrol Staff</option>
@@ -1520,12 +1625,45 @@ export const GuardsView: React.FC = () => {
                 </div>
               </div>
 
+              {isSuper && (
+                <div className="grid grid-cols-2 gap-3 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Industry *</label>
+                    <select
+                      required
+                      value={newGuard.tenant_id}
+                      onChange={(e) => setNewGuard({ ...newGuard, tenant_id: e.target.value })}
+                      className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                    >
+                      <option value="">Choose industry…</option>
+                      {tenants.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Access level</label>
+                    <select
+                      value={newGuard.tier}
+                      onChange={(e) => setNewGuard({ ...newGuard, tier: e.target.value })}
+                      className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                    >
+                      <option value="USER">App user (mobile app only)</option>
+                      <option value="INDUSTRY_ADMIN">Industry Admin (web console)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">Role / Rank</label>
                   <select
                     value={newGuard.role}
-                    onChange={(e) => setNewGuard({ ...newGuard, role: e.target.value })}
+                    onChange={(e) => {
+                      const r = e.target.value;
+                      setNewGuard({ ...newGuard, role: r, ...(isSuper ? { tier: ADMIN_ROLES.includes(r) ? 'INDUSTRY_ADMIN' : 'USER' } : {}) });
+                    }}
                     className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
                   >
                     <option value="Guard">Guard / Patrol Staff</option>

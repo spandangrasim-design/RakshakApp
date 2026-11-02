@@ -157,7 +157,8 @@ const createGuardSchema = z.object({
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
   app_permissions: z.record(z.boolean()).optional().nullable(),
-  tenant_id: sanitizeUuid
+  tenant_id: sanitizeUuid,
+  tier: z.enum(['INDUSTRY_ADMIN', 'USER']).optional()
 })
 
 const updateGuardSchema = z.object({
@@ -174,7 +175,9 @@ const updateGuardSchema = z.object({
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
   reporting_to: sanitizeUuid,
-  app_permissions: z.record(z.boolean()).optional().nullable()
+  app_permissions: z.record(z.boolean()).optional().nullable(),
+  tier: z.enum(['INDUSTRY_ADMIN', 'USER']).optional(),   // Super Admin only
+  tenant_id: sanitizeUuid                                // Super Admin only
 })
 
 const getSupabase = (env: Bindings) =>
@@ -1296,6 +1299,8 @@ app.get('/api/v1/guards', async (c) => {
       getGuardExtendedProfilesMap(supabase)
     ]);
     const callerAuth = c.get('auth');
+    const { data: tenantRows } = await supabase.from('tenants').select('id, name, code');
+    const tenantNames = new Map<string, string>((tenantRows || []).map((t: any) => [t.id, t.name]));
     const ceiling = callerAuth.tier === 'SUPER_ADMIN'
       ? PERMISSION_KEYS
       : PERMISSION_KEYS.filter((k) => resolveAccess(callerAuth.tenant_features, Object.fromEntries(PERMISSION_KEYS.map((p) => [p, true]))).active_permissions[k]);
@@ -1352,6 +1357,7 @@ app.get('/api/v1/guards', async (c) => {
         rounds: assignedRounds[0] || null,
         assigned_rounds: assignedRounds,
         tier: g.tier,
+        tenant_name: tenantNames.get(g.tenant_id) || null,
         app_permissions: callerAuth.tier === 'SUPER_ADMIN' ? hybrid.permissions : resolveAccess(callerAuth.tenant_features, hybrid.permissions).active_permissions,
         app_permissions_override: rawOverrides,
         is_custom_override: hybrid.is_custom_override,
@@ -1359,7 +1365,7 @@ app.get('/api/v1/guards', async (c) => {
       };
     }));
 
-    return c.json({ success: true, guards: guardsWithRounds, licensed_permission_keys: ceiling, incident_form_fields_all: INCIDENT_FORM_FIELDS.map((f) => f.id) });
+    return c.json({ success: true, guards: guardsWithRounds, tenants: callerAuth.tier === 'SUPER_ADMIN' ? (tenantRows || []) : [], licensed_permission_keys: ceiling, incident_form_fields_all: INCIDENT_FORM_FIELDS.map((f) => f.id) });
   } catch (error: any) {
     return c.json({ success: false, message: errMsg(error, 'Failed to fetch guards') }, 500);
   }
@@ -1639,7 +1645,7 @@ app.post('/api/v1/guards', async (c) => {
     const newTenantId = caller.tier === 'SUPER_ADMIN' ? (parsed.tenant_id || null) : caller.tenant_id;
     if (!newTenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
     // Only the platform owner can mint admins, and only via /super-admin/tenants/:id/admins. Everything here is a USER.
-    const newTier = 'USER';
+    const newTier = caller.tier === 'SUPER_ADMIN' && parsed.tier === 'INDUSTRY_ADMIN' ? 'INDUSTRY_ADMIN' : 'USER'; // only the platform owner can mint admins
     const tenantRaw = await rawTenantFeatures(supabase, newTenantId);
     const clampedPerms = parsed.app_permissions ? clampToTenant(tenantRaw, parsed.app_permissions) : null;
 
@@ -1759,6 +1765,36 @@ app.patch('/api/v1/guards/:id', async (c) => {
     }
 
     const updates: Record<string, any> = {};
+
+    // Access level (tier) and industry can only be changed by the platform Super Admin.
+    let effectiveTenant: string | null = targetRow.tenant_id;
+    if (parsed.tier !== undefined || (parsed.tenant_id && parsed.tenant_id !== targetRow.tenant_id)) {
+      if (caller.tier !== 'SUPER_ADMIN') {
+        return c.json({ success: false, message: 'Only the platform super admin can change access level or industry.' }, 403);
+      }
+      if (targetRow.tier === 'SUPER_ADMIN') {
+        return c.json({ success: false, message: 'The platform super admin account cannot be changed here.' }, 400);
+      }
+    }
+    if (parsed.tier !== undefined) updates.tier = parsed.tier;
+    if (parsed.tenant_id && parsed.tenant_id !== targetRow.tenant_id) {
+      const { data: newTenant } = await supabase.from('tenants').select('id').eq('id', parsed.tenant_id).maybeSingle();
+      if (!newTenant) return c.json({ success: false, message: 'Industry not found.' }, 404);
+      updates.tenant_id = parsed.tenant_id;
+      updates.assigned_round_id = null;     // routes belong to the old industry
+      updates.assigned_round_ids = [];
+      updates.app_permissions = null;       // allocations were made against the old industry's licence
+      effectiveTenant = parsed.tenant_id;
+    }
+
+    // Assigned routes must belong to the person's own industry.
+    const wantedRoundIds = parsed.assigned_round_ids ?? (parsed.assigned_round_id ? [parsed.assigned_round_id] : []);
+    if (wantedRoundIds.length > 0) {
+      const { data: okRounds } = await supabase.from('rounds').select('id').in('id', wantedRoundIds).eq('tenant_id', effectiveTenant);
+      if ((okRounds || []).length !== new Set(wantedRoundIds).size) {
+        return c.json({ success: false, message: 'One or more routes do not belong to this industry.' }, 400);
+      }
+    }
     const extUpdates: Partial<GuardExtendedProfile> = {};
 
     if (parsed.full_name !== undefined) updates.full_name = parsed.full_name.trim();
@@ -2824,4 +2860,4 @@ export default {
         .eq('client_incident_id', incident.client_incident_id);
     }
   }
-}
+}
