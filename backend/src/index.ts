@@ -487,6 +487,7 @@ app.on('GET',    '/api/v1/rounds', requireModule('module_patrol'))
 app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
 app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
 app.on('GET',    '/api/v1/guards/my-assigned-route', requireModule('module_patrol'), requirePermission('patrol_route'), requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
+app.on('GET',    '/api/v1/checkpoints/:id/qr', adminTiers, requireModule('module_qr_generator'), ownedRow('checkpoints', 'checkpoint_id', 'id'))
 app.on('GET',    '/api/v1/guards', adminTiers)
 app.on('POST',   '/api/v1/guards', adminTiers)
 app.on('PATCH',  '/api/v1/guards/:id', adminTiers)
@@ -1500,6 +1501,41 @@ app.post('/api/v1/super-admin/password-hashing', async (c) => {
     }
     const { count } = await supabase.from('guards').select('guard_id', { count: 'exact', head: true }).not('password_hash', 'like', 'pbkdf2$%');
     return c.json({ success: true, hashed: (rows || []).length, plaintext_remaining: count ?? 0 });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+// The QR secret never leaves the server: the console asks us for the signed QR link of a checkpoint.
+app.get('/api/v1/checkpoints/:id/qr', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data: cp } = await supabase.from('checkpoints').select('checkpoint_id, lat, lng').eq('checkpoint_id', c.req.param('id')).maybeSingle();
+    if (!cp) return c.json({ success: false, message: 'Not Found' }, 404);
+    const data = `${cp.checkpoint_id}|${cp.lat}|${cp.lng}`;
+    const signature = CryptoJS.HmacSHA256(data, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+    await supabase.from('checkpoints').update({ qr_payload: `${data}|${signature}` }).eq('checkpoint_id', cp.checkpoint_id);
+    return c.json({ success: true, payload: `rakshak://cp?id=${cp.checkpoint_id}&lat=${cp.lat}&lng=${cp.lng}&s=${signature}` });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+// Run after rotating QR_SECRET: re-signs every checkpoint so QR codes made with the old secret stop working.
+app.post('/api/v1/super-admin/resign-checkpoints', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data: cps, error } = await supabase.from('checkpoints').select('checkpoint_id, lat, lng').range(0, 999);
+    if (error) throw error;
+    const list = cps || [];
+    for (let i = 0; i < list.length; i += 25) {
+      await Promise.all(list.slice(i, i + 25).map((cp: any) => {
+        const data = `${cp.checkpoint_id}|${cp.lat}|${cp.lng}`;
+        const signature = CryptoJS.HmacSHA256(data, c.env.QR_SECRET).toString(CryptoJS.enc.Hex);
+        return supabase.from('checkpoints').update({ qr_payload: `${data}|${signature}` }).eq('checkpoint_id', cp.checkpoint_id);
+      }));
+    }
+    return c.json({ success: true, resigned: list.length, more_may_exist: list.length === 1000 });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error) }, 500);
   }
