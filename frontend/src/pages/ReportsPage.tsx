@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import L from 'leaflet';
 import {
   Calendar,
   Clock,
@@ -275,34 +276,10 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   return runs.reverse();
 }
 
+// Leaflet ships inside our own bundle (no third-party CDN, which the Content-Security-Policy would block).
 function loadLeafletAssets(): Promise<any> {
-  return new Promise((resolve) => {
-    if ((window as any).L) {
-      resolve((window as any).L);
-      return;
-    }
-
-    if (!document.getElementById('leaflet-css-cdn')) {
-      const link = document.createElement('link');
-      link.id = 'leaflet-css-cdn';
-      link.rel = 'stylesheet';
-      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(link);
-    }
-
-    const existingScript = document.getElementById('leaflet-js-cdn');
-    if (existingScript) {
-      existingScript.addEventListener('load', () => resolve((window as any).L));
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.id = 'leaflet-js-cdn';
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.async = true;
-    script.onload = () => resolve((window as any).L);
-    document.body.appendChild(script);
-  });
+  (window as any).L = (window as any).L || L;
+  return Promise.resolve((window as any).L);
 }
 
 export const ReportsPage: React.FC = () => {

@@ -74,6 +74,7 @@ const TenantsPage: React.FC = () => {
   const [keyWarning, setKeyWarning] = useState('');
   const [pwLeft, setPwLeft] = useState<number | null>(null);
   const [pwBusy, setPwBusy] = useState(false);
+  const [resigning, setResigning] = useState(false);
 
   const selected = useMemo(() => tenants.find((t) => t.id === selectedId) || null, [tenants, selectedId]);
   const dirty = selected ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) : false;
@@ -105,6 +106,22 @@ const TenantsPage: React.FC = () => {
       .then((d) => setPwLeft(typeof d.plaintext_remaining === 'number' ? d.plaintext_remaining : null))
       .catch(() => {});
   }, []);
+
+  // Use ONLY after rotating QR_SECRET on the server: every printed QR code made with the old secret stops working.
+  const resignCheckpoints = async () => {
+    if (!confirm('Re-sign ALL checkpoints? Every QR code printed so far becomes invalid and must be re-printed.')) return;
+    setResigning(true);
+    try {
+      const r = await fetch(`${API}/super-admin/resign-checkpoints`, { method: 'POST' });
+      const d = await r.json();
+      if (!d.success) throw new Error(d.message);
+      flash(`Re-signed ${d.resigned} checkpoint(s). Re-print the QR codes from the QR Generator page.`);
+    } catch (e: any) {
+      flash(e.message || 'Re-sign failed');
+    } finally {
+      setResigning(false);
+    }
+  };
 
   // Converts leftover plain-text passwords to hashes, a few at a time. Logins keep working with the same passwords.
   const securePasswords = async () => {
@@ -288,6 +305,15 @@ const TenantsPage: React.FC = () => {
                   </div>
                 );
               })}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="text-sm font-black text-slate-900">QR code security</div>
+              <p className="mt-1 text-xs text-slate-500">After rotating the QR_SECRET on the server, re-sign all checkpoints so older QR codes stop working.</p>
+              <button onClick={resignCheckpoints} disabled={resigning}
+                className="mt-3 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50 disabled:opacity-50">
+                {resigning ? 'Re-signing…' : 'Re-sign all QR codes'}
+              </button>
             </div>
 
             <form onSubmit={createAdmin} className="rounded-xl border border-slate-200 bg-white p-4">

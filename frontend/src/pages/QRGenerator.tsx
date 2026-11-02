@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import L from 'leaflet';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
 import { 
   Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, 
   Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw 
 } from 'lucide-react';
-import { generateSignedQRPayload } from '../utils/crypto';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
 // Point this to your backend domain (leave empty string '' if same origin)
@@ -16,7 +16,21 @@ interface Checkpoint {
   name: string;
   lat: string;
   lng: string;
+  qr_payload?: string | null;
 }
+
+// The signing secret lives ONLY on the server. We reuse the signature the server stored for the checkpoint,
+// or ask the server to sign it. Nothing secret is ever shipped to the browser.
+const buildQrPayload = async (cp: Checkpoint): Promise<string> => {
+  const parts = String(cp.qr_payload || '').split('|');
+  if (parts.length >= 4 && parts[0] === cp.id && parts[3]) {
+    return `rakshak://cp?id=${cp.id}&lat=${cp.lat}&lng=${cp.lng}&s=${parts[3]}`;
+  }
+  const res = await fetch(`${API_BASE}/api/v1/checkpoints/${cp.id}/qr`);
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Could not sign QR code');
+  return data.payload as string;
+};
 
 interface PatrolRound {
   id: string;
@@ -79,31 +93,10 @@ const QRGenerator: React.FC = () => {
     fetchRounds();
   }, []);
 
-  // Dynamically load Leaflet assets
+  // Leaflet is bundled with the app (no CDN), so the map is ready immediately.
   useEffect(() => {
-    if (window.L) {
-      setIsMapLoaded(true);
-      return;
-    }
-
-    if (!document.getElementById('leaflet-css')) {
-      const link = document.createElement('link');
-      link.id = 'leaflet-css';
-      link.rel = 'stylesheet';
-      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(link);
-    }
-
-    if (!document.getElementById('leaflet-js')) {
-      const script = document.createElement('script');
-      script.id = 'leaflet-js';
-      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-      script.async = true;
-      script.onload = () => setIsMapLoaded(true);
-      document.body.appendChild(script);
-    } else {
-      setIsMapLoaded(true);
-    }
+    window.L = window.L || L;
+    setIsMapLoaded(true);
   }, []);
 
   // Initialize Map
@@ -266,7 +259,7 @@ const QRGenerator: React.FC = () => {
     setViewingRound(round);
     const generated: QRData[] = [];
     for (const cp of round.checkpoints || []) {
-      const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
+      const payload = await buildQrPayload(cp);
       const dataUri = await QRCode.toDataURL(payload, {
         width: 600,
         margin: 1,
@@ -286,7 +279,7 @@ const QRGenerator: React.FC = () => {
 
       for (const cp of items) {
         if (specificQR && cp.id !== specificQR.id) continue;
-        const payload = generateSignedQRPayload(cp.id, cp.lat, cp.lng);
+        const payload = await buildQrPayload(cp);
         const dataUri = await QRCode.toDataURL(payload, {
           width: 600,
           margin: 1,
