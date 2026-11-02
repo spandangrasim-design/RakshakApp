@@ -33,7 +33,7 @@ android {
         applicationId = "com.example.rakshak"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = maxOf(24, flutter.minSdkVersion) // flutter_secure_storage needs API 23+
+        minSdk = maxOf(24, flutter.minSdkVersion) // image_picker_android needs API 24+; flutter_secure_storage needs 23+
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
