@@ -65,6 +65,12 @@ jobs:
             if [ -f "$f" ]; then sed -i 's/flutter.minSdkVersion/24/g' "$f"; fi
           done
 
+          # Fail the build (instead of shipping a camera that cannot start) if a permission did not get injected.
+          for perm in CAMERA ACCESS_FINE_LOCATION INTERNET; do
+            grep -q "android.permission.$perm" android/app/src/main/AndroidManifest.xml || { echo "Missing permission: $perm"; exit 1; }
+          done
+          echo "Manifest permissions OK"
+
       - name: Install Dependencies
         run: flutter pub get
 
