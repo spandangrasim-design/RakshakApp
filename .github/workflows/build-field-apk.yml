@@ -1,0 +1,78 @@
+name: Build Rakshak Field APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'rakshak_field/**'
+      - '.github/workflows/build-field-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./rakshak_field
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      # Only lib/ and pubspec.yaml live in git. The Android project is generated in a scratch folder
+      # and copied in, so it never touches our Dart code.
+      - name: Generate Android native project
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android --org com.rakshak.field --project-name rakshak_field ../_scaffold
+            cp -r ../_scaffold/android ./android
+            rm -rf ../_scaffold
+          fi
+
+      - name: Android permissions, name and minSdk
+        run: |
+          python3 -c '
+          import re
+          permissions = """
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+          """
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p).read()
+          s = re.sub(r"(<manifest[^>]*>)", r"\1\n" + permissions, s, count=1)
+          s = s.replace("android:label=\"rakshak_field\"", "android:label=\"Rakshak Field\"")
+          open(p, "w").write(s)
+          '
+          for f in android/app/build.gradle android/app/build.gradle.kts; do
+            if [ -f "$f" ]; then sed -i 's/flutter.minSdkVersion/24/g' "$f"; fi
+          done
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakshak-field-release-apk
+          path: rakshak_field/build/app/outputs/flutter-apk/*.apk
