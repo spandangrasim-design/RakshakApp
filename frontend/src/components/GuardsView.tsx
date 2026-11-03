@@ -87,6 +87,7 @@ interface Guard {
   created_at: string;
   tenant_id?: string | null;
   tenant_name?: string | null;
+  is_guest?: boolean;
   tier?: 'SUPER_ADMIN' | 'INDUSTRY_ADMIN' | 'USER' | string;
   assignment_group?: string | null;
   assignment_groups?: string[];
@@ -883,6 +884,11 @@ export const GuardsView: React.FC = () => {
                             >
                               {tierLabel(guard.tier)}
                             </span>
+                            {guard.is_guest && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-800" title="Joined from the no-login Field app">
+                                Field app
+                              </span>
+                            )}
                             {isSuper && (
                               <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                                 {guard.tier === 'SUPER_ADMIN' ? 'Platform' : guard.tenant_name || 'No industry'}

@@ -17,6 +17,7 @@ type Bindings = {
   QR_SECRET: string 
   R2_BUCKET: R2Bucket
   ALLOWED_ORIGINS?: string   // comma separated; defaults below
+  SITE_TZ_OFFSET_MIN?: string // minutes ahead of UTC for "today" (default 330 = India)
   GEOFENCE_RADIUS_M?: string // max guard-to-checkpoint distance in metres (default 250)
 }
 
@@ -469,7 +470,7 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 // ==========================================
 app.use('/api/v1/*', async (c, next) => {
   const p = new URL(c.req.url).pathname
-  if (p === '/api/v1/auth/login' || p.startsWith('/api/v1/media/')) return next()
+  if (p === '/api/v1/auth/login' || p.startsWith('/api/v1/media/') || p.startsWith('/api/v1/guest/')) return next()
   return requireAuth(c, next)
 })
 
@@ -490,6 +491,9 @@ app.on('GET',    '/api/v1/rounds', requireModule('module_patrol'))
 app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
 app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
 app.on('GET',    '/api/v1/guards/my-assigned-route', requireModule('module_patrol'), requirePermission('patrol_route'), requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
+app.on('GET',    '/api/v1/field/routes', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/field/runs/start', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/field/runs/:id/complete', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('GET',    '/api/v1/checkpoints/:id/qr', adminTiers, requireModule('module_qr_generator'), ownedRow('checkpoints', 'checkpoint_id', 'id'))
 app.on('GET',    '/api/v1/guards', adminTiers)
 app.on('POST',   '/api/v1/guards', adminTiers)
@@ -563,7 +567,7 @@ app.post('/api/v1/auth/login', async (c) => {
     const { data: guard } = await supabase.from('guards').select('*').eq('employee_code', employee_code).maybeSingle()
     // Always run a hash so response time doesn't reveal whether the account exists.
     const pw = await verifyPassword(password, guard?.password_hash ?? 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAA')
-    if (!guard || guard.is_active === false || !pw.ok) {
+    if (!guard || guard.is_active === false || guard.is_guest === true || !pw.ok) {
       await recordLoginFailure(supabase, acctKey, 5)
       await recordLoginFailure(supabase, ipKey, 30)
       return c.json({ error_code: 'INVALID_CREDENTIALS', message: 'Invalid Login.' }, 401)
@@ -1175,9 +1179,12 @@ app.get('/api/v1/rounds', async (c) => {
         employee_code: g.employee_code
       }));
 
+      const viewer = c.get('auth');
       return {
         ...round,
-        assigned_guards: assignedGuards,
+        // Field users never need colleagues' details. No-login guests also never get QR signatures:
+        // they must scan the real QR code (the existing logged-in app still reads qr_payload, so it is kept for them).
+        assigned_guards: viewer.tier === 'USER' ? [] : assignedGuards,
         checkpoints: checkpoints
           .filter((cp) => cp.round_id === round.id)
           .map((cp) => ({
@@ -1185,7 +1192,7 @@ app.get('/api/v1/rounds', async (c) => {
             name: cp.name,
             lat: cp.lat,
             lng: cp.lng,
-            qr_payload: cp.qr_payload
+            ...(viewer.is_guest ? {} : { qr_payload: cp.qr_payload })
           }))
       };
     });
@@ -1357,6 +1364,7 @@ app.get('/api/v1/guards', async (c) => {
         rounds: assignedRounds[0] || null,
         assigned_rounds: assignedRounds,
         tier: g.tier,
+        is_guest: g.is_guest === true,
         tenant_name: tenantNames.get(g.tenant_id) || null,
         app_permissions: callerAuth.tier === 'SUPER_ADMIN' ? hybrid.permissions : resolveAccess(callerAuth.tenant_features, hybrid.permissions).active_permissions,
         app_permissions_override: rawOverrides,
@@ -1468,6 +1476,245 @@ app.patch('/api/v1/access-control/guards/:id', async (c) => {
 // PLATFORM SUPER ADMIN ONLY: tenants + what each industry bought
 // (Industry admins get 404 on every /super-admin route; see gate block.)
 // ==========================================
+// =====================================================================
+// FIELD APP (no password login): guests join an industry with a site code, name, phone and selfie.
+// They receive a normal limited token (tier USER), so every existing licence/permission gate still applies.
+// =====================================================================
+function startOfSiteDayISO(env: Bindings): string {
+  const offsetMin = env.SITE_TZ_OFFSET_MIN && Number.isFinite(Number(env.SITE_TZ_OFFSET_MIN)) ? Number(env.SITE_TZ_OFFSET_MIN) : 330;
+  const local = new Date(Date.now() + offsetMin * 60000);
+  local.setUTCHours(0, 0, 0, 0);
+  return new Date(local.getTime() - offsetMin * 60000).toISOString();
+}
+
+app.get('/api/v1/guest/industries', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { data } = await supabase.from('tenants').select('id, name, features, status, guest_join_code');
+    const list = (data || [])
+      .filter((t: any) => (t.status || 'ACTIVE') === 'ACTIVE' && t.guest_join_code && normalizeTenantFeatures(t.features).module_patrol.allow_guest_enrollment)
+      .map((t: any) => ({ id: t.id, name: t.name }));
+    return c.json({ success: true, industries: list });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+app.post('/api/v1/guest/register', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const ip = c.req.header('CF-Connecting-IP') || 'unknown';
+
+    // Throttle by IP (every attempt counts) so this open door cannot be hammered.
+    const regKey = `reg:${ip}`;
+    const lockedFor = await isLoginLocked(supabase, regKey);
+    if (lockedFor > 0) {
+      c.header('Retry-After', String(lockedFor));
+      return c.json({ success: false, message: 'Too many attempts. Please try again later.' }, 429);
+    }
+    await recordLoginFailure(supabase, regKey, 30);
+
+    const input = z.object({
+      tenant_id: z.string().uuid(),
+      join_code: z.string().min(4).max(32),
+      full_name: z.string().trim().min(2).max(60),
+      phone: z.string().trim().min(8).max(20),
+      device_id: z.string().max(120).optional(),
+      selfie: z.string().min(100),
+    }).parse(await c.req.json());
+
+    const phone = input.phone.replace(/[^\d+]/g, '').replace(/^\+/, '');
+    if (!/^\d{8,15}$/.test(phone)) return c.json({ success: false, message: 'Enter a valid mobile number.' }, 400);
+
+    const { data: tenant } = await supabase.from('tenants').select('id, name, features, status, guest_join_code').eq('id', input.tenant_id).maybeSingle();
+    const open = tenant && (tenant.status || 'ACTIVE') === 'ACTIVE' && tenant.guest_join_code && normalizeTenantFeatures(tenant.features).module_patrol.allow_guest_enrollment;
+    if (!open) return c.json({ success: false, message: 'This industry is not accepting field guards.' }, 404);
+
+    const codeKey = `code:${ip}:${tenant.id}`;
+    if ((await isLoginLocked(supabase, codeKey)) > 0) return c.json({ success: false, message: 'Too many wrong codes. Try again later.' }, 429);
+    if (!safeEqual(input.join_code.trim().toUpperCase(), String(tenant.guest_join_code).trim().toUpperCase())) {
+      await recordLoginFailure(supabase, codeKey, 8);
+      return c.json({ success: false, message: 'Wrong site code.' }, 403);
+    }
+
+    const origin = new URL(c.req.url).origin;
+    const selfieUrl = await storeImage(c.env.R2_BUCKET, origin, 'guests', 'selfie', input.selfie);
+    if (!selfieUrl) return c.json({ success: false, message: 'A clear selfie photo is required.' }, 400);
+
+    const cols = 'guard_id, full_name, employee_code, role, tier, tenant_id, is_active, is_guest';
+    const existing = await supabase.from('guards').select(cols).eq('tenant_id', tenant.id).eq('phone', phone).eq('is_guest', true).maybeSingle();
+    let guard: any = existing.data;
+
+    if (guard) {
+      if (guard.is_active === false) return c.json({ success: false, message: 'This number has been blocked by your administrator.' }, 403);
+      await supabase.from('guards').update({ full_name: input.full_name, selfie_url: selfieUrl, last_device_id: input.device_id || null }).eq('guard_id', guard.guard_id);
+    } else {
+      const base: Record<string, any> = {
+        full_name: input.full_name,
+        employee_code: `GST-${phone.slice(-10)}-${tenant.id.slice(0, 4)}`,
+        password_hash: `!${crypto.randomUUID()}${crypto.randomUUID()}`, // unusable: guests can never password-login
+        role: 'Guard',
+        tier: 'USER',
+        tenant_id: tenant.id,
+        is_active: true,
+        phone,
+        is_guest: true,
+        selfie_url: selfieUrl,
+        last_device_id: input.device_id || null,
+      };
+      let ins: any = await supabase.from('guards')
+        .insert([{ ...base, site_location: 'Main Plant & Gate 1', shift_timing: 'Morning (06:00 - 14:00)', assignment_group: 'Security Operations L1' }])
+        .select(cols).single();
+      if (ins.error) ins = await supabase.from('guards').insert([base]).select(cols).single();
+      if (ins.error) throw ins.error;
+      guard = ins.data;
+    }
+
+    const full = await supabase.from('guards').select('guard_id, employee_code, role, tier, is_active, tenant_id, app_permissions, is_guest').eq('guard_id', guard.guard_id).single();
+    const ctx = await buildAuthContext(supabase, full.data, loadUserPerms);
+
+    const token = await sign({
+      sub: guard.guard_id,
+      tier: 'USER',
+      role: 'Guard',
+      employee_code: guard.employee_code,
+      tenant_id: tenant.id,
+      guest: true,
+      device_id: input.device_id || 'unknown',
+      exp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+    }, c.env.JWT_SECRET, 'HS256');
+
+    return c.json({
+      success: true,
+      access_token: token,
+      guard: { guard_id: guard.guard_id, full_name: input.full_name, phone, tenant_id: tenant.id, tenant_name: tenant.name },
+      app_permissions: ctx.access.active_permissions,
+      incident_form_fields: ctx.access.incident_form_fields,
+    }, 201);
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ success: false, message: 'Please fill name, mobile number, site code and selfie.' }, 400);
+    return c.json({ success: false, message: errMsg(error, 'Could not join. Please try again.') }, 500);
+  }
+});
+
+// All routes of the caller's industry, with today's shared status so every guard sees the same picture.
+app.get('/api/v1/field/routes', async (c) => {
+  try {
+    const a = c.get('auth');
+    if (!a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
+    const supabase = getSupabase(c.env);
+    const dayStart = startOfSiteDayISO(c.env);
+
+    const [roundsRes, cpsRes, sessRes] = await Promise.all([
+      supabase.from('rounds').select('id, name').eq('tenant_id', a.tenant_id).order('name'),
+      supabase.from('checkpoints').select('checkpoint_id, round_id, name').eq('tenant_id', a.tenant_id).order('name'),
+      supabase.from('patrol_sessions').select('id, round_id, guard_id, status, start_time, end_time, completed_route').eq('tenant_id', a.tenant_id).gte('start_time', dayStart),
+    ]);
+    if (roundsRes.error) throw roundsRes.error;
+    const rounds: any[] = roundsRes.data || [], cps: any[] = cpsRes.data || [], sessions: any[] = sessRes.data || [];
+
+    const guardIds = [...new Set(sessions.map((s) => s.guard_id))];
+    const nameOf = new Map<string, string>();
+    if (guardIds.length > 0) {
+      const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', guardIds);
+      for (const g of gs || []) nameOf.set(g.guard_id, g.full_name);
+    }
+
+    // My scans since I started my earliest active run today.
+    const mine = sessions.filter((s) => s.guard_id === a.guard_id && s.status === 'ACTIVE' && !s.completed_route);
+    let myScans: any[] = [];
+    if (mine.length > 0 && cps.length > 0) {
+      const since = mine.map((s) => s.start_time).sort()[0];
+      const { data: sc } = await supabase.from('scans').select('checkpoint_id, scan_time').eq('guard_id', a.guard_id).in('checkpoint_id', cps.map((x) => x.checkpoint_id)).gte('scan_time', since);
+      myScans = sc || [];
+    }
+
+    const out = rounds.map((r) => {
+      const rCps = cps.filter((x) => x.round_id === r.id);
+      const rSess = sessions.filter((s) => s.round_id === r.id);
+      const done = rSess.filter((s) => s.completed_route).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
+      const active = rSess.filter((s) => s.status === 'ACTIVE' && !s.completed_route);
+      const myRun = active.find((s) => s.guard_id === a.guard_id);
+      const scanned = myRun
+        ? [...new Set(myScans.filter((s) => rCps.some((x) => x.checkpoint_id === s.checkpoint_id) && s.scan_time >= myRun.start_time).map((s) => s.checkpoint_id))]
+        : [];
+      return {
+        id: r.id,
+        name: r.name,
+        checkpoints: rCps.map((x) => ({ id: x.checkpoint_id, name: x.name })),
+        status: done ? 'DONE' : active.length > 0 ? 'IN_PROGRESS' : 'PENDING',
+        done_by: done ? nameOf.get(done.guard_id) || 'A guard' : null,
+        done_at: done ? done.end_time : null,
+        in_progress_by: [...new Set(active.map((s) => nameOf.get(s.guard_id) || 'A guard'))],
+        my_run: myRun ? { session_id: myRun.id, scanned_checkpoint_ids: scanned } : null,
+      };
+    });
+
+    return c.json({
+      success: true,
+      routes: out,
+      app_permissions: a.access.active_permissions,
+      incident_form_fields: a.access.incident_form_fields,
+    });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not load routes') }, 500);
+  }
+});
+
+app.post('/api/v1/field/runs/start', async (c) => {
+  try {
+    const a = c.get('auth');
+    const { round_id, lat, lng } = z.object({ round_id: z.string().uuid(), lat: z.number().optional(), lng: z.number().optional() }).parse(await c.req.json());
+    const supabase = getSupabase(c.env);
+    const dayStart = startOfSiteDayISO(c.env);
+
+    const { data: round } = await supabase.from('rounds').select('id, tenant_id').eq('id', round_id).maybeSingle();
+    if (!round || round.tenant_id !== a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
+
+    const { data: doneToday } = await supabase.from('patrol_sessions').select('id').eq('round_id', round_id).eq('tenant_id', a.tenant_id).eq('completed_route', true).gte('start_time', dayStart).limit(1);
+    if (doneToday && doneToday.length > 0) return c.json({ success: false, message: 'This route is already completed today.' }, 409);
+
+    const { data: existing } = await supabase.from('patrol_sessions').select('id, start_time').eq('guard_id', a.guard_id).eq('round_id', round_id).eq('status', 'ACTIVE').gte('start_time', dayStart).order('start_time', { ascending: false }).limit(1).maybeSingle();
+    if (existing) return c.json({ success: true, session_id: existing.id, resumed: true });
+
+    const { data: session, error } = await supabase.from('patrol_sessions').insert([{
+      round_id, guard_id: a.guard_id, tenant_id: a.tenant_id, status: 'ACTIVE', completed_route: false,
+      start_time: new Date().toISOString(), last_lat: lat ?? null, last_lng: lng ?? null, last_ping_at: new Date().toISOString(),
+    }]).select('id').single();
+    if (error) throw error;
+    return c.json({ success: true, session_id: session.id, resumed: false }, 201);
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ success: false, message: 'Invalid request' }, 400);
+    return c.json({ success: false, message: errMsg(error, 'Could not start route') }, 500);
+  }
+});
+
+// The server decides whether a route is complete: every checkpoint must have a verified scan by this guard during the run.
+app.post('/api/v1/field/runs/:id/complete', async (c) => {
+  try {
+    const a = c.get('auth');
+    const supabase = getSupabase(c.env);
+    const { data: session } = await supabase.from('patrol_sessions').select('id, round_id, guard_id, tenant_id, status, start_time, completed_route, end_time').eq('id', c.req.param('id')).maybeSingle();
+    if (!session || session.guard_id !== a.guard_id || session.tenant_id !== a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
+    if (session.completed_route) return c.json({ success: true, done_at: session.end_time });
+
+    const { data: cps } = await supabase.from('checkpoints').select('checkpoint_id, name').eq('round_id', session.round_id).eq('tenant_id', a.tenant_id);
+    const list: any[] = cps || [];
+    if (list.length === 0) return c.json({ success: false, message: 'This route has no checkpoints.' }, 400);
+    const { data: sc } = await supabase.from('scans').select('checkpoint_id').eq('guard_id', a.guard_id).in('checkpoint_id', list.map((x) => x.checkpoint_id)).gte('scan_time', session.start_time);
+    const scanned = new Set((sc || []).map((s: any) => s.checkpoint_id));
+    const missing = list.filter((x) => !scanned.has(x.checkpoint_id)).map((x) => x.name);
+    if (missing.length > 0) return c.json({ success: false, message: `${missing.length} checkpoint(s) still to scan.`, missing }, 400);
+
+    const doneAt = new Date().toISOString();
+    const { error } = await supabase.from('patrol_sessions').update({ status: 'COMPLETED', end_time: doneAt, completed_route: true }).eq('id', session.id);
+    if (error) throw error;
+    return c.json({ success: true, done_at: doneAt });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not complete route') }, 500);
+  }
+});
+
 // Reports WHAT KIND of database key the Worker is using. Never returns the key or any part of it.
 app.get('/api/v1/super-admin/diagnostics', async (c) => {
   const key = String(c.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
@@ -1592,6 +1839,13 @@ app.patch('/api/v1/super-admin/tenants/:id', async (c) => {
       patch.status = body.status
     }
     if (body.name !== undefined) patch.name = String(body.name).trim()
+    if (body.guest_join_code !== undefined) {
+      const code = String(body.guest_join_code || '').trim()
+      if (code && !/^[A-Za-z0-9]{6,12}$/.test(code)) {
+        return c.json({ success: false, message: 'Site code must be 6-12 letters or digits.' }, 400)
+      }
+      patch.guest_join_code = code || null
+    }
     const { data, error } = await supabase.from('tenants').update(patch).eq('id', c.req.param('id')).select('*').single()
     if (error) throw error
 
@@ -2860,4 +3114,4 @@ export default {
         .eq('client_incident_id', incident.client_incident_id);
     }
   }
-}
+}

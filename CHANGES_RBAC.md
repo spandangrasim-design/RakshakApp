@@ -53,3 +53,32 @@ Unbought -> 404 (does not exist). Bought but not allocated -> 403.
 - Admin web token still lives in localStorage (CSP now blocks injected scripts; httpOnly cookies would be the next step).
 - Photos are served from unguessable URLs (anyone holding a URL can view it). Signed, expiring URLs would be the next step.
 - Photos uploaded before this change keep their old predictable URLs.
+
+---
+# Round 3
+- Android minSdk is 24 (image_picker_android requires it).
+- QR codes are no longer signed in the browser. The old web code used VITE_QR_SECRET (public in the JS bundle,
+  or the literal default 'default_rakshak_secret_key'). The console now uses the server-stored signature, or asks
+  GET /api/v1/checkpoints/:id/qr. frontend/src/utils/crypto.ts was deleted.
+- ACTION: in Cloudflare Pages -> Settings -> Environment variables, DELETE VITE_QR_SECRET if it exists.
+  If it existed, your server QR_SECRET was public: set a NEW QR_SECRET on the Worker, deploy, then press
+  "Re-sign all QR codes" on the Industries page and re-print every QR code.
+- ACTION either way: re-print all QR codes from the QR Generator page after deploying (strict verification
+  rejects QR codes that were signed with the wrong secret).
+
+---
+# Round 4: access level + industry on the Guards page
+- Role is only a label. "Access level" (tier) decides who can sign in to the web console.
+- Super Admin can set Access level and Industry in Edit / Add person. PATCH/POST /guards accept `tier` and `tenant_id` from the Super Admin only.
+- Guards page shows an access-level badge and the industry name, plus an industry filter (Super Admin).
+- Assigned routes must belong to the person's industry (server-checked).
+- Moving a person to another industry clears their routes and custom access.
+
+---
+# Round 5: Rakshak Field app (no login)
+New app in rakshak_field/ (Flutter). Build: Actions -> "Build Rakshak Field APK".
+Backend: SQL/004_field_app.sql; public POST /guest/register + GET /guest/industries (site code, rate limited);
+GET /field/routes (shared daily status), POST /field/runs/start, POST /field/runs/:id/complete.
+Guests are normal guard rows (is_guest = true, tier USER) with a limited token, so licences and permissions still apply.
+Per industry (Industries page): switch on "Field app: no-login guest enrolment" and set a Site code.
+Existing logged-in app is unchanged (it still reads qr_payload from /rounds); guests never receive QR signatures.

@@ -17,6 +17,7 @@ const CATALOG: ModuleDef[] = [
       { path: 'module_patrol.allow_route_assignment', label: 'Route assignment to guards' },
       { path: 'module_patrol.allow_live_gps_trail', label: 'Live GPS trail' },
       { path: 'module_patrol.allow_geofence_audit', label: 'Geofence audit' },
+      { path: 'module_patrol.allow_guest_enrollment', label: 'Field app: no-login guest enrolment' },
     ],
   },
   {
@@ -60,12 +61,13 @@ const setPath = (obj: any, path: string, value: boolean) => {
 };
 const isOn = (features: any, modulePath: string) => getPath(features, `${modulePath}.enabled`);
 
-interface Tenant { id: string; name: string; status: string; features: any }
+interface Tenant { id: string; name: string; status: string; features: any; guest_join_code?: string | null }
 
 const TenantsPage: React.FC = () => {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<any>({});
+  const [joinCode, setJoinCode] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -77,7 +79,9 @@ const TenantsPage: React.FC = () => {
   const [resigning, setResigning] = useState(false);
 
   const selected = useMemo(() => tenants.find((t) => t.id === selectedId) || null, [tenants, selectedId]);
-  const dirty = selected ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) : false;
+  const dirty = selected
+    ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) || (selected.guest_join_code || '') !== joinCode.trim()
+    : false;
 
   const load = async (keep?: string | null) => {
     setLoading(true);
@@ -89,6 +93,7 @@ const TenantsPage: React.FC = () => {
       const pick = list.find((t) => t.id === (keep ?? selectedId)) || list[0] || null;
       setSelectedId(pick?.id || null);
       setDraft(pick?.features || {});
+      setJoinCode(pick?.guest_join_code || '');
     } finally {
       setLoading(false);
     }
@@ -146,7 +151,8 @@ const TenantsPage: React.FC = () => {
 
   const flash = (t: string) => { setMsg(t); setTimeout(() => setMsg(''), 3500); };
 
-  const select = (t: Tenant) => { setSelectedId(t.id); setDraft(t.features || {}); };
+  const select = (t: Tenant) => { setSelectedId(t.id); setDraft(t.features || {}); setJoinCode(t.guest_join_code || ''); };
+  const makeCode = () => setJoinCode(Array.from(crypto.getRandomValues(new Uint8Array(8))).map((n) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[n % 31]).join(''));
 
   const toggle = (path: string, isModule: boolean) => {
     let next = setPath(draft, path, !getPath(draft, path));
@@ -163,7 +169,7 @@ const TenantsPage: React.FC = () => {
     setSaving(true);
     try {
       const r = await fetch(`${API}/super-admin/tenants/${selected.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ features: draft }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ features: draft, guest_join_code: joinCode.trim() }),
       });
       const d = await r.json();
       if (!d.success) throw new Error(d.message);
@@ -290,6 +296,17 @@ const TenantsPage: React.FC = () => {
                       <span className="text-sm font-black text-slate-900">{m.label}</span>
                       <input type="checkbox" checked={on} onChange={() => toggle(`${m.path}.enabled`, true)} className="h-4 w-4 accent-blue-600" />
                     </label>
+                    {on && m.path === 'module_patrol' && getPath(draft, 'module_patrol.allow_guest_enrollment') && (
+                      <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                        <label className="text-xs font-bold text-emerald-900">Site code for the Field app (6–12 letters/digits)</label>
+                        <div className="mt-1 flex gap-2">
+                          <input value={joinCode} onChange={(e) => setJoinCode(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
+                            placeholder="e.g. K7QM42XA" className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 font-mono text-sm uppercase outline-none focus:border-emerald-500" />
+                          <button type="button" onClick={makeCode} className="rounded-lg border border-emerald-300 px-3 text-xs font-bold text-emerald-800 hover:bg-emerald-100">Generate</button>
+                        </div>
+                        <p className="mt-1 text-[11px] text-emerald-800">Guards need this code to join. Without a code, nobody can join this industry.</p>
+                      </div>
+                    )}
                     {on && m.children.length > 0 && (
                       <ul className="mt-3 space-y-1.5 border-t pt-3">
                         {m.children.map((c) => (

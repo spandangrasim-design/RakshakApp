@@ -19,6 +19,7 @@ export interface TenantFeatures {
     allow_route_assignment: boolean
     allow_live_gps_trail: boolean
     allow_geofence_audit: boolean
+    allow_guest_enrollment: boolean // lets field guards join from the no-login Field app with a site code
   }
   module_incidents: {
     enabled: boolean
@@ -44,7 +45,7 @@ export interface TenantFeatures {
 
 // Nothing is licensed by default. A new tenant must be explicitly provisioned.
 export const NO_FEATURES: TenantFeatures = {
-  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false },
+  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false, allow_guest_enrollment: false },
   module_incidents: {
     enabled: false,
     allow_web_ticket_queue: false,
@@ -80,6 +81,7 @@ export function normalizeTenantFeatures(raw: any): TenantFeatures {
       allow_route_assignment: t(p.enabled) && t(p.allow_route_assignment),
       allow_live_gps_trail: t(p.enabled) && t(p.allow_live_gps_trail),
       allow_geofence_audit: t(p.enabled) && t(p.allow_geofence_audit),
+      allow_guest_enrollment: t(p.enabled) && t(p.allow_guest_enrollment),
     },
     module_incidents: {
       enabled: t(i.enabled),
@@ -219,6 +221,7 @@ export interface AuthContext {
   employee_code: string
   tenant_id: string | null
   tenant_active: boolean
+  is_guest: boolean
   tenant_features: TenantFeatures
   access: ResolvedAccess
 }
@@ -256,7 +259,7 @@ export async function buildAuthContext(
     // Platform owner bypasses tenant licensing entirely.
     access = resolveAccess(
       {
-        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true },
+        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true, allow_guest_enrollment: true },
         module_incidents: {
           enabled: true, allow_web_ticket_queue: true, allow_mobile_incident_creation: true,
           allowed_creation_options: {
@@ -286,6 +289,7 @@ export async function buildAuthContext(
     employee_code: guard.employee_code,
     tenant_id: guard.tenant_id || null,
     tenant_active: tenantActive,
+    is_guest: guard.is_guest === true,
     tenant_features: normalizeTenantFeatures(tenantRaw),
     access,
   }
@@ -324,7 +328,7 @@ export function makeRequireAuth(
     const supabase = getSupabase(c.env)
     const { data: guard } = await supabase
       .from('guards')
-      .select('guard_id, employee_code, role, tier, is_active, tenant_id, app_permissions')
+      .select('guard_id, employee_code, role, tier, is_active, tenant_id, app_permissions, is_guest')
       .eq('guard_id', payload.sub)
       .maybeSingle()
     if (!guard || guard.is_active === false) return c.json({ success: false, message: 'Account disabled.' }, 401)
