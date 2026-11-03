@@ -2,12 +2,12 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 import '../api.dart';
 import '../session.dart';
 import '../util.dart';
+import 'camera_capture_screen.dart';
 
 /// Shows only the fields this guard is allowed to fill, numbered 1..n with no gaps.
 class IncidentScreen extends StatefulWidget {
@@ -56,21 +56,9 @@ class _IncidentScreenState extends State<IncidentScreen> {
   void _toast(String t) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t)));
 
   Future<void> _takePhoto() async {
-    try {
-      final shot = await ImagePicker().pickImage(
-        source: ImageSource.camera,
-        preferredCameraDevice: CameraDevice.rear,
-        maxWidth: 1280,
-        maxHeight: 1280,
-        imageQuality: 70,
-      );
-      if (shot == null) return;
-      final bytes = await shot.readAsBytes();
-      if (!mounted) return;
-      setState(() => _photo = bytes);
-    } catch (_) {
-      _toast('Could not open the camera.');
-    }
+    final bytes = await captureImage(context, title: 'Photo of the incident', startFront: false);
+    if (bytes == null || !mounted) return;
+    setState(() => _photo = bytes);
   }
 
   Future<void> _submit() async {

@@ -147,6 +147,16 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
               style: const TextStyle(color: Colors.white70, fontSize: 13),
               textAlign: TextAlign.center,
             ),
+            if ((error.errorDetails?.message ?? '').isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                error.errorDetails!.message!,
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+                textAlign: TextAlign.center,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
             const SizedBox(height: 20),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),

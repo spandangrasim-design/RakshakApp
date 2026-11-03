@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../api.dart';
+import 'camera_capture_screen.dart';
 import 'routes_screen.dart';
 
 /// First launch only: pick the industry, enter the site code, name and number, take a selfie.
@@ -65,21 +65,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _takeSelfie() async {
-    try {
-      final shot = await ImagePicker().pickImage(
-        source: ImageSource.camera,
-        preferredCameraDevice: CameraDevice.front,
-        maxWidth: 900,
-        maxHeight: 900,
-        imageQuality: 70,
-      );
-      if (shot == null) return;
-      final bytes = await shot.readAsBytes();
-      if (!mounted) return;
-      setState(() => _selfie = bytes);
-    } catch (_) {
-      _toast('Could not open the camera. Please allow camera access.');
-    }
+    final bytes = await captureImage(context, title: 'Take your selfie', startFront: true);
+    if (bytes == null || !mounted) return;
+    setState(() => _selfie = bytes);
   }
 
   void _toast(String text) {
