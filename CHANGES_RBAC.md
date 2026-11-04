@@ -82,3 +82,12 @@ GET /field/routes (shared daily status), POST /field/runs/start, POST /field/run
 Guests are normal guard rows (is_guest = true, tier USER) with a limited token, so licences and permissions still apply.
 Per industry (Industries page): switch on "Field app: no-login guest enrolment" and set a Site code.
 Existing logged-in app is unchanged (it still reads qr_payload from /rounds); guests never receive QR signatures.
+
+---
+# Round 6: fixes + redesign, step 1
+Fixes: selfie camera retries quietly on first start; Field build refuses a copied main-app android/ folder
+(name must be "Rakshak Field", id com.rakshak.field); deleted routes no longer break route assignment
+(server drops them, deleting a route unassigns it everywhere); incident case numbers are sequential per
+industry (RKS-000001) - run SQL/005_case_numbers.sql; incident create can no longer overwrite another industry's incident.
+Redesign step 1 (web): design tokens + animations, toast notifications (every alert() becomes a toast),
+new sidebar/top-bar shell, new Overview dashboard (GET /api/v1/dashboard/summary).
