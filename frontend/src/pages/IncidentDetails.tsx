@@ -475,7 +475,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     );
   }
 
-  const caseDisplayCode = incident.client_incident_id
+  const caseDisplayCode = (incident as any).case_number
+    ? `RKS-${String((incident as any).case_number).padStart(6, '0')}`
+    : incident.client_incident_id
     ? `RKS-${incident.client_incident_id.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`
     : 'RKS-100210';
 

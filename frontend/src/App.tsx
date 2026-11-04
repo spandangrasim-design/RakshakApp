@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import { ReportsPage } from './pages/ReportsPage';
 import QRGenerator from './pages/QRGenerator';
@@ -9,7 +9,9 @@ import IncidentDetails from './pages/IncidentDetails';
 import { GuardsView } from './components/GuardsView';
 import TenantsPage from './pages/TenantsPage';
 import { apiFetch } from './services/api';
-import { Shield, LogOut, FileText, QrCode, Sliders, AlertTriangle, Users, Building2 } from 'lucide-react';
+import AppShell from './components/AppShell';
+import OverviewPage from './pages/OverviewPage';
+import { ToastHost } from './components/ui/Toast';
 
 interface VisibleModules {
   module_patrol?: boolean;
@@ -20,152 +22,8 @@ interface VisibleModules {
   module_sync_queue?: boolean;
 }
 
-// 1. Layout Wrapper with Strict Dynamic Module Filtering
-const AdminLayout = ({ 
-  user, 
-  modules, 
-  onLogout, 
-  children 
-}: { 
-  user: any; 
-  modules: VisibleModules; 
-  onLogout: () => void; 
-  children: React.ReactNode; 
-}) => {
-    const location = useLocation();
-
-    // Features only render if explicitly true
-    const showPatrol = modules.module_patrol === true;
-    const showIncidents = modules.module_incidents === true;
-    const showQR = modules.module_qr_generator === true;
-    const showIntegrations = modules.module_integrations === true;
-
-    return (
-        <div className="min-h-screen bg-slate-50 text-slate-800">
-            {/* Top Navigation Bar */}
-            <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
-                <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-                    <div className="flex items-center gap-6">
-                        <div className="flex items-center gap-3">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-500/20">
-                                <Shield className="h-5 w-5" />
-                            </div>
-                            <div>
-                                <span className="text-base font-bold tracking-tight text-slate-900">Rakshak</span>
-                                <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-                                    Operations
-                                </span>
-                            </div>
-                        </div>
-
-                        {/* Dynamic Navigation Tabs (Disabled modules are not rendered) */}
-                        <nav className="hidden md:flex items-center gap-2">
-                            {user?.tier === 'SUPER_ADMIN' && (
-                                <Link
-                                    to="/platform"
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                        location.pathname === '/platform'
-                                            ? 'bg-blue-50 text-blue-700'
-                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                    }`}
-                                >
-                                    <Building2 className="h-4 w-4" />
-                                    Industries
-                                </Link>
-                            )}
-                            {showPatrol && (
-                                <Link
-                                    to="/reports"
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                        location.pathname === '/reports'
-                                            ? 'bg-blue-50 text-blue-700'
-                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                    }`}
-                                >
-                                    <FileText className="h-4 w-4" />
-                                    Reports
-                                </Link>
-                            )}
-                            
-                            {showIncidents && (
-                                <Link
-                                    to="/incidents"
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                        location.pathname.startsWith('/incidents')
-                                            ? 'bg-blue-50 text-blue-700'
-                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                    }`}
-                                >
-                                    <AlertTriangle className="h-4 w-4" />
-                                    Incidents
-                                </Link>
-                            )}
-
-                            {/* Guard Workforce Management */}
-                            <Link
-                                to="/guards"
-                                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                    location.pathname === '/guards'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                }`}
-                            >
-                                <Users className="h-4 w-4" />
-                                Guards
-                            </Link>
-
-                            {showQR && (
-                                <Link
-                                    to="/qr-generator"
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                        location.pathname === '/qr-generator'
-                                            ? 'bg-blue-50 text-blue-700'
-                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                    }`}
-                                >
-                                    <QrCode className="h-4 w-4" />
-                                    QR Generator
-                                </Link>
-                            )}
-                            
-                            {showIntegrations && (
-                                <Link
-                                    to="/admin/configs"
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                                        location.pathname === '/admin/configs'
-                                            ? 'bg-blue-50 text-blue-700'
-                                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                                    }`}
-                                >
-                                    <Sliders className="h-4 w-4" />
-                                    API Integrations
-                                </Link>
-                            )}
-                        </nav>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                        <div className="hidden text-right sm:block">
-                            <div className="text-xs font-semibold text-slate-900">{user?.full_name || 'Admin'}</div>
-                            <div className="text-[11px] text-slate-400">{user?.tier === 'SUPER_ADMIN' ? 'Platform Super Admin' : user?.tier === 'INDUSTRY_ADMIN' ? `Industry Admin${user?.role ? ' · ' + user.role : ''}` : (user?.role || user?.employee_code)}</div>
-                        </div>
-
-                        <button
-                            onClick={onLogout}
-                            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-rose-600"
-                        >
-                            <LogOut className="h-3.5 w-3.5" />
-                            <span>Sign Out</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
-
-            {/* Main Content */}
-            <main>{children}</main>
-        </div>
-    );
-};
+// 1. Layout: sidebar + top bar. Menu items only exist for modules the server confirmed (see AppShell).
+const AdminLayout = AppShell;
 
 // 2. Main Router Component with Enforced Route Gates
 export const App: React.FC = () => {
@@ -233,13 +91,11 @@ export const App: React.FC = () => {
     const isSuper = user?.tier === 'SUPER_ADMIN';
     const defaultRedirect = isSuper
         ? '/platform'
-        : visibleModules.module_patrol === true
-        ? '/reports'
-        : visibleModules.module_incidents === true
-        ? '/incidents'
-        : '/guards';
+        : '/overview';
 
     return (
+        <>
+        <ToastHost />
         <Router>
             <Routes>
                 {/* Login */}
@@ -250,6 +106,20 @@ export const App: React.FC = () => {
                             <Login onLoginSuccess={handleLoginSuccess} />
                         ) : (
                             <Navigate to={defaultRedirect} replace />
+                        )
+                    }
+                />
+
+                {/* Overview: live summary for admins */}
+                <Route
+                    path="/overview"
+                    element={
+                        token && !isSuper ? (
+                            <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                <OverviewPage />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to={token ? defaultRedirect : '/login'} replace />
                         )
                     }
                 />
@@ -379,6 +249,7 @@ export const App: React.FC = () => {
                 />
             </Routes>
         </Router>
+        </>
     );
 };
 

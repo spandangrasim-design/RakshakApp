@@ -1,4 +1,4 @@
-package com.example.rakshak
+package com.rakshak.field
 
 import io.flutter.embedding.android.FlutterActivity
 

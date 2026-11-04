@@ -51,21 +51,42 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
   }
 
   Future<void> _init() async {
+    setState(() {
+      _opening = true;
+      _error = null;
+    });
     try {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) throw Exception('No camera found');
-      await _open(_lens);
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
-        _error = 'The camera could not start.';
+        _error = 'No camera was found on this phone.';
         _opening = false;
       });
+      return;
     }
+    await _openWithRetry(_lens);
   }
 
-  Future<void> _open(CameraLensDirection lens) async {
+  /// The very first start shows Android's camera-permission prompt, which can make the first attempt fail.
+  /// So try a few times quietly before ever showing an error.
+  Future<void> _openWithRetry(CameraLensDirection lens) async {
+    for (var attempt = 0; attempt < 4; attempt++) {
+      if (!mounted) return;
+      if (await _open(lens)) return;
+      await Future.delayed(const Duration(milliseconds: 900));
+    }
     if (!mounted) return;
+    setState(() {
+      _error = 'The camera could not start. Allow camera access and close other apps using it.';
+      _opening = false;
+    });
+  }
+
+  /// Returns true when the preview is running.
+  Future<bool> _open(CameraLensDirection lens) async {
+    if (!mounted) return false;
     setState(() {
       _opening = true;
       _error = null;
@@ -73,35 +94,40 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
     final old = _controller;
     _controller = null;
-    await old?.dispose();
+    try {
+      await old?.dispose();
+    } catch (_) {}
 
+    CameraController? controller;
     try {
       final description = _cameras.firstWhere(
         (c) => c.lensDirection == lens,
         orElse: () => _cameras.first,
       );
-      final controller = CameraController(description, ResolutionPreset.medium, enableAudio: false);
+      controller = CameraController(description, ResolutionPreset.medium, enableAudio: false);
       await controller.initialize();
       if (!mounted) {
         await controller.dispose();
-        return;
+        return true;
       }
       setState(() {
         _controller = controller;
         _lens = description.lensDirection;
         _opening = false;
       });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'The camera could not start. Allow camera access and close other apps using it.';
-        _opening = false;
-      });
+      return true;
+    } catch (_) {
+      try {
+        await controller?.dispose();
+      } catch (_) {}
+      return false;
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // While the camera is still opening (e.g. the permission dialog is on screen) do nothing.
+    if (_opening) return;
     final c = _controller;
     if (state == AppLifecycleState.inactive) {
       if (c != null) {
@@ -110,7 +136,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
         if (mounted) setState(() {});
       }
     } else if (state == AppLifecycleState.resumed && _controller == null && _shot == null && _cameras.isNotEmpty) {
-      _open(_lens);
+      _openWithRetry(_lens);
     }
   }
 
@@ -120,7 +146,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
   Future<void> _switch() async {
     if (_opening || _capturing) return;
-    await _open(_lens == CameraLensDirection.front ? CameraLensDirection.back : CameraLensDirection.front);
+    await _openWithRetry(_lens == CameraLensDirection.front ? CameraLensDirection.back : CameraLensDirection.front);
   }
 
   Future<void> _capture() async {
@@ -189,7 +215,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
                     style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
                     onPressed: () {
                       setState(() => _shot = null);
-                      if (_controller == null) _open(_lens);
+                      if (_controller == null) _openWithRetry(_lens);
                     },
                     child: const Text('Retake'),
                   ),

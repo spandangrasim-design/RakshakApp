@@ -31,45 +31,22 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # Only lib/ and pubspec.yaml live in git. The Android project is generated in a scratch folder
-      # and copied in, so it never touches our Dart code.
-      - name: Generate Android native project
+      # The android/ folder is a copy of the main Rakshak app's known-good project
+      # (same Gradle / Android Gradle Plugin / Kotlin), with its own app id com.rakshak.field.
+      - name: Check Android manifest permissions
         run: |
-          if [ ! -d "android" ]; then
-            flutter create --platforms=android --org com.rakshak.field --project-name rakshak_field ../_scaffold
-            cp -r ../_scaffold/android ./android
-            rm -rf ../_scaffold
-          fi
-
-      - name: Android permissions, name and minSdk
-        run: |
-          python3 -c '
-          import re
-          permissions = """
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <uses-permission android:name="android.permission.CAMERA" />
-              <uses-feature android:name="android.hardware.camera" android:required="false" />
-              <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-              <uses-feature android:name="android.hardware.location.gps" android:required="false" />
-          """
-          p = "android/app/src/main/AndroidManifest.xml"
-          s = open(p).read()
-          s = re.sub(r"(<manifest[^>]*>)", r"\1\n" + permissions, s, count=1)
-          s = s.replace("android:label=\"rakshak_field\"", "android:label=\"Rakshak Field\"")
-          open(p, "w").write(s)
-          '
-          for f in android/app/build.gradle android/app/build.gradle.kts; do
-            if [ -f "$f" ]; then sed -i 's/flutter.minSdkVersion/24/g' "$f"; fi
-          done
-
-          # Fail the build (instead of shipping a camera that cannot start) if a permission did not get injected.
           for perm in CAMERA ACCESS_FINE_LOCATION INTERNET; do
             grep -q "android.permission.$perm" android/app/src/main/AndroidManifest.xml || { echo "Missing permission: $perm"; exit 1; }
           done
           echo "Manifest permissions OK"
+
+      - name: Check this is the Field app (not a copy of the main app)
+        run: |
+          if grep -rq "com.example.rakshak" android/app/build.gradle.kts android/app/src/main/AndroidManifest.xml 2>/dev/null; then
+            echo "android/ still has the MAIN app id (com.example.rakshak). Use the android/ folder from the Field app package."; exit 1
+          fi
+          grep -q 'android:label="Rakshak Field"' android/app/src/main/AndroidManifest.xml || { echo 'App label must be "Rakshak Field".'; exit 1; }
+          echo "Field app identity OK"
 
       - name: Install Dependencies
         run: flutter pub get

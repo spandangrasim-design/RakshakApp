@@ -64,6 +64,10 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
   }
 
   String _formatCaseCode(Map<String, dynamic> inc) {
+    final number = inc['case_number'];
+    if (number is int && number > 0) {
+      return 'RKS-${number.toString().padLeft(6, '0')}';
+    }
     final raw = (inc['client_incident_id'] ?? inc['incident_id'] ?? '100001')
         .toString();
     final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');

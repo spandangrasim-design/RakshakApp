@@ -491,6 +491,7 @@ app.on('GET',    '/api/v1/rounds', requireModule('module_patrol'))
 app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
 app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
 app.on('GET',    '/api/v1/guards/my-assigned-route', requireModule('module_patrol'), requirePermission('patrol_route'), requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
+app.on('GET',    '/api/v1/dashboard/summary', adminTiers)
 app.on('GET',    '/api/v1/field/routes', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/field/runs/start', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/field/runs/:id/complete', requireModule('module_patrol'), requirePermission('patrol_route'))
@@ -1279,8 +1280,25 @@ app.delete('/api/v1/rounds/:id', async (c) => {
     const roundId = c.req.param('id');
     const supabase = getSupabase(c.env);
 
+    const { data: doomed } = await supabase.from('rounds').select('tenant_id').eq('id', roundId).maybeSingle();
+
     const { error } = await supabase.from('rounds').delete().eq('id', roundId);
     if (error) return c.json({ success: false, message: errMsg(error) }, 500);
+
+    // Take the deleted route off every guard that still had it assigned.
+    if (doomed?.tenant_id) {
+      const { data: members } = await supabase.from('guards').select('guard_id, assigned_round_id, assigned_round_ids').eq('tenant_id', doomed.tenant_id);
+      for (const g of members || []) {
+        const ids: string[] = Array.isArray(g.assigned_round_ids) ? g.assigned_round_ids : [];
+        if (g.assigned_round_id === roundId || ids.includes(roundId)) {
+          const keep = ids.filter((x) => x !== roundId);
+          await supabase.from('guards').update({
+            assigned_round_ids: keep,
+            assigned_round_id: g.assigned_round_id === roundId ? keep[0] ?? null : g.assigned_round_id,
+          }).eq('guard_id', g.guard_id);
+        }
+      }
+    }
 
     return c.json({ success: true, message: 'Round deleted' });
   } catch (error: any) {
@@ -1360,7 +1378,7 @@ app.get('/api/v1/guards', async (c) => {
         assignment_group: uniqueGroups[0] || 'Security Operations L1',
         assignment_groups: uniqueGroups,
         assigned_round_id: uniqueRoundIds[0] || null,
-        assigned_round_ids: uniqueRoundIds,
+        assigned_round_ids: uniqueRoundIds.filter((id) => roundsMap.has(id)), // never report deleted routes
         rounds: assignedRounds[0] || null,
         assigned_rounds: assignedRounds,
         tier: g.tier,
@@ -1480,8 +1498,11 @@ app.patch('/api/v1/access-control/guards/:id', async (c) => {
 // FIELD APP (no password login): guests join an industry with a site code, name, phone and selfie.
 // They receive a normal limited token (tier USER), so every existing licence/permission gate still applies.
 // =====================================================================
+function siteOffsetMinutes(env: Bindings): number {
+  return env.SITE_TZ_OFFSET_MIN && Number.isFinite(Number(env.SITE_TZ_OFFSET_MIN)) ? Number(env.SITE_TZ_OFFSET_MIN) : 330;
+}
 function startOfSiteDayISO(env: Bindings): string {
-  const offsetMin = env.SITE_TZ_OFFSET_MIN && Number.isFinite(Number(env.SITE_TZ_OFFSET_MIN)) ? Number(env.SITE_TZ_OFFSET_MIN) : 330;
+  const offsetMin = siteOffsetMinutes(env);
   const local = new Date(Date.now() + offsetMin * 60000);
   local.setUTCHours(0, 0, 0, 0);
   return new Date(local.getTime() - offsetMin * 60000).toISOString();
@@ -1712,6 +1733,128 @@ app.post('/api/v1/field/runs/:id/complete', async (c) => {
     return c.json({ success: true, done_at: doneAt });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error, 'Could not complete route') }, 500);
+  }
+});
+
+// =====================================================================
+// DASHBOARD SUMMARY (admins): one call that feeds the Overview page.
+// A block is null when the industry did not buy that module, so the UI never shows it.
+// =====================================================================
+app.get('/api/v1/dashboard/summary', async (c) => {
+  try {
+    const a = c.get('auth');
+    const supabase = getSupabase(c.env);
+    const tenant = scopeTenant(c);
+    const isSuper = a.tier === 'SUPER_ADMIN';
+    const wantPatrol = isSuper || a.access.visible_modules.module_patrol === true;
+    const wantIncidents = isSuper || a.access.visible_modules.module_incidents === true;
+
+    const offsetMin = siteOffsetMinutes(c.env);
+    const dayStart = startOfSiteDayISO(c.env);
+    const dateKey = (ts: number) => new Date(ts + offsetMin * 60000).toISOString().slice(0, 10);
+
+    const out: any = { success: true, generated_at: new Date().toISOString(), guards: null, patrol: null, incidents: null };
+
+    // ---- people ----
+    const { data: people } = await applyTenant(supabase.from('guards').select('guard_id, is_active, is_guest, tier'), tenant);
+    const field = (people || []).filter((g: any) => g.tier === 'USER');
+    out.guards = { total: field.length, active: field.filter((g: any) => g.is_active !== false).length, guests: field.filter((g: any) => g.is_guest === true).length };
+
+    // ---- patrol ----
+    if (wantPatrol) {
+      const [roundsRes, sessRes, scansRes] = await Promise.all([
+        applyTenant(supabase.from('rounds').select('id, name'), tenant).order('name'),
+        applyTenant(supabase.from('patrol_sessions').select('round_id, guard_id, status, completed_route, start_time, end_time'), tenant).gte('start_time', dayStart),
+        applyTenant(supabase.from('scans').select('*', { count: 'exact', head: true }), tenant).gte('scan_time', dayStart),
+      ]);
+      const rounds: any[] = roundsRes.data || [];
+      const sessions: any[] = sessRes.data || [];
+
+      const ids = [...new Set(sessions.map((s) => s.guard_id))];
+      const nameOf = new Map<string, string>();
+      if (ids.length > 0) {
+        const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', ids);
+        for (const g of gs || []) nameOf.set(g.guard_id, g.full_name);
+      }
+
+      const board = rounds.map((r) => {
+        const rs = sessions.filter((s) => s.round_id === r.id);
+        const done = rs.filter((s) => s.completed_route).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
+        const active = rs.filter((s) => s.status === 'ACTIVE' && !s.completed_route);
+        return {
+          id: r.id,
+          name: r.name,
+          status: done ? 'DONE' : active.length > 0 ? 'IN_PROGRESS' : 'PENDING',
+          done_by: done ? nameOf.get(done.guard_id) || null : null,
+          done_at: done ? done.end_time : null,
+          on_it: [...new Set(active.map((s) => nameOf.get(s.guard_id) || 'A guard'))],
+        };
+      });
+      out.patrol = {
+        routes_total: board.length,
+        routes_done: board.filter((r) => r.status === 'DONE').length,
+        routes_in_progress: board.filter((r) => r.status === 'IN_PROGRESS').length,
+        routes_pending: board.filter((r) => r.status === 'PENDING').length,
+        active_guards: new Set(sessions.filter((s) => s.status === 'ACTIVE' && !s.completed_route).map((s) => s.guard_id)).size,
+        scans_today: scansRes.count ?? 0,
+        routes: board.slice(0, 20),
+      };
+    }
+
+    // ---- incidents ----
+    if (wantIncidents) {
+      const sevenDaysAgo = new Date(Date.now() - 8 * 86400000).toISOString();
+      const [totalRes, resolvedRes, openRes, weekRes, recentRes] = await Promise.all([
+        applyTenant(supabase.from('incidents').select('*', { count: 'exact', head: true }), tenant),
+        applyTenant(supabase.from('incidents').select('*', { count: 'exact', head: true }), tenant).in('status', ['RESOLVED', 'CLOSED']),
+        applyTenant(supabase.from('incidents').select('priority'), tenant).not('status', 'in', '(RESOLVED,CLOSED)').limit(2000),
+        applyTenant(supabase.from('incidents').select('reported_at'), tenant).gte('reported_at', sevenDaysAgo).limit(3000),
+        applyTenant(supabase.from('incidents').select('client_incident_id, case_number, title, priority, status, reported_at, guard_id'), tenant).order('reported_at', { ascending: false }).limit(6),
+      ]);
+
+      const byPriority: Record<string, number> = { P1: 0, P2: 0, P3: 0, P4: 0 };
+      for (const r of openRes.data || []) {
+        const p = String(r.priority || 'P3').slice(0, 2);
+        byPriority[p] = (byPriority[p] || 0) + 1;
+      }
+
+      const buckets = new Map<string, number>();
+      for (let i = 6; i >= 0; i--) buckets.set(dateKey(Date.now() - i * 86400000), 0);
+      for (const r of weekRes.data || []) {
+        const k = dateKey(new Date(r.reported_at).getTime());
+        if (buckets.has(k)) buckets.set(k, (buckets.get(k) || 0) + 1);
+      }
+
+      const recent: any[] = recentRes.data || [];
+      const gids = [...new Set(recent.map((r) => r.guard_id).filter(Boolean))];
+      const reporter = new Map<string, string>();
+      if (gids.length > 0) {
+        const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', gids);
+        for (const g of gs || []) reporter.set(g.guard_id, g.full_name);
+      }
+
+      const total = totalRes.count ?? 0, resolved = resolvedRes.count ?? 0;
+      out.incidents = {
+        total,
+        resolved,
+        open: Math.max(0, total - resolved),
+        open_by_priority: byPriority,
+        last7: [...buckets.entries()].map(([date, count]) => ({ date, count })),
+        recent: recent.map((r) => ({
+          id: r.client_incident_id,
+          case_number: r.case_number ?? null,
+          title: r.title,
+          priority: r.priority,
+          status: r.status,
+          reported_at: r.reported_at,
+          reporter: r.guard_id ? reporter.get(r.guard_id) || null : null,
+        })),
+      };
+    }
+
+    return c.json(out);
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not load the overview') }, 500);
   }
 });
 
@@ -2044,10 +2187,14 @@ app.patch('/api/v1/guards/:id', async (c) => {
     // Assigned routes must belong to the person's own industry.
     const wantedRoundIds = parsed.assigned_round_ids ?? (parsed.assigned_round_id ? [parsed.assigned_round_id] : []);
     if (wantedRoundIds.length > 0) {
-      const { data: okRounds } = await supabase.from('rounds').select('id').in('id', wantedRoundIds).eq('tenant_id', effectiveTenant);
-      if ((okRounds || []).length !== new Set(wantedRoundIds).size) {
-        return c.json({ success: false, message: 'One or more routes do not belong to this industry.' }, 400);
+      const { data: found } = await supabase.from('rounds').select('id, tenant_id').in('id', wantedRoundIds);
+      // A route that belongs to ANOTHER industry is refused. A route that no longer exists (deleted) is simply dropped.
+      if ((found || []).some((r: any) => r.tenant_id !== effectiveTenant)) {
+        return c.json({ success: false, message: 'One or more routes belong to another industry.' }, 400);
       }
+      const valid = (found || []).map((r: any) => r.id);
+      if (parsed.assigned_round_ids !== undefined) parsed.assigned_round_ids = valid as any;
+      parsed.assigned_round_id = valid[0] ?? null;
     }
     const extUpdates: Partial<GuardExtendedProfile> = {};
 
@@ -2300,6 +2447,18 @@ app.post('/api/v1/incidents', async (c) => {
       reported_at: reported_at || new Date().toISOString()
     };
 
+    // A retry of the same incident keeps its number; a clash with ANOTHER industry's incident is refused.
+    const { data: already } = await supabase.from('incidents').select('tenant_id, case_number').eq('client_incident_id', incidentUuid).maybeSingle();
+    if (already && already.tenant_id !== authCtx.tenant_id) {
+      return c.json({ success: false, message: 'Incident id already in use.' }, 409);
+    }
+    if (already?.case_number) {
+      insertRecord.case_number = already.case_number;
+    } else if (authCtx.tenant_id) {
+      const { data: nextNo } = await supabase.rpc('next_case_number', { p_tenant: authCtx.tenant_id });
+      if (typeof nextNo === 'number') insertRecord.case_number = nextNo;
+    }
+
     let { data, error } = await supabase
       .from('incidents')
       .upsert(insertRecord, { onConflict: 'client_incident_id' })
@@ -2317,6 +2476,7 @@ app.post('/api/v1/incidents', async (c) => {
         status: 'OPEN',
         assignment_group: targetGroup,
         tenant_id: authCtx.tenant_id,
+        case_number: insertRecord.case_number ?? null,
         reported_at: insertRecord.reported_at
       };
       const retry = await supabase
@@ -2340,6 +2500,7 @@ app.post('/api/v1/incidents', async (c) => {
         assignedTo: 'Unassigned (Group Queue)',
         status: 'OPEN',
         tenantId: authCtx.tenant_id,
+        caseNumber: data?.case_number ?? insertRecord.case_number ?? null,
       });
     }
 
@@ -2592,6 +2753,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
         status: body.status || current.status || 'OPEN',
         workNote: body.work_note,
         tenantId: current.tenant_id,
+        caseNumber: current.case_number ?? null,
       });
 
       emailLogLine = emailDispatchResult.ok
@@ -2863,6 +3025,7 @@ async function sendGroupAssignmentEmail(
     workNote?: string;
     includeManagerFallback?: boolean;
     tenantId?: string | null;
+    caseNumber?: number | null;
   }
 ): Promise<{ ok: boolean; recipients: string[]; error?: string }> {
   const supabase = getSupabase(env);
@@ -2933,7 +3096,9 @@ async function sendGroupAssignmentEmail(
     return { ok: false, recipients, error: tokenResult.error };
   }
 
-  const caseNumber = `RKS-${params.incidentId.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`;
+  const caseNumber = params.caseNumber
+    ? `RKS-${String(params.caseNumber).padStart(6, '0')}`
+    : `RKS-${params.incidentId.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`;
   const subjectText = `[Rakshak Dispatch - ${params.assignmentGroup}] ${params.priority} Case ${caseNumber}`;
   const encodedSubject = `=?utf-8?B?${utf8ToBase64(subjectText)}?=`;
 
@@ -3055,7 +3220,7 @@ async function sendWhatsAppAlert(env: Bindings, tenantId: string, incidentId: st
   }
 }
 
-async function sendGoogleEmergencyEmail(env: Bindings, tenantId: string, incidentId: string, priority: string, description: string, photoUrl: string | null) {
+async function sendGoogleEmergencyEmail(env: Bindings, tenantId: string, incidentId: string, priority: string, description: string, photoUrl: string | null, caseNumber?: number | null) {
   const res = await sendGroupAssignmentEmail(env, {
     incidentId,
     priority,
@@ -3066,6 +3231,7 @@ async function sendGoogleEmergencyEmail(env: Bindings, tenantId: string, inciden
     status: 'ESCALATED',
     includeManagerFallback: true,
     tenantId,
+    caseNumber,
   });
   return res.ok;
 }
@@ -3101,7 +3267,7 @@ export default {
 
       const jobs: Promise<any>[] = [];
       if (t.f.module_integrations.channels.gmail_oauth) {
-        jobs.push(sendGoogleEmergencyEmail(env, incident.tenant_id, incident.client_incident_id, incident.priority, incident.description, incident.photo_url));
+        jobs.push(sendGoogleEmergencyEmail(env, incident.tenant_id, incident.client_incident_id, incident.priority, incident.description, incident.photo_url, incident.case_number));
       }
       if (t.f.module_integrations.channels.whatsapp_api) {
         jobs.push(sendWhatsAppAlert(env, incident.tenant_id, incident.client_incident_id, incident.priority, incident.description));

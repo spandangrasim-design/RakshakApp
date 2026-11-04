@@ -47,10 +47,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
       // Route dynamically: if Patrol is disabled for this tenant, land on /guards
       const defaultRoute =
-        userData.tier === 'SUPER_ADMIN' ? '/platform'
-        : visibleModules.module_patrol === true ? '/reports'
-        : visibleModules.module_incidents === true ? '/incidents'
-        : '/guards';
+        userData.tier === 'SUPER_ADMIN' ? '/platform' : '/overview';
       navigate(defaultRoute);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Invalid Employee Code or Password');

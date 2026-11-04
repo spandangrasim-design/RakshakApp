@@ -36,6 +36,7 @@ interface GuardUser {
 }
 
 interface IncidentRecord {
+  case_number?: number | null;
   incident_id?: string;
   id?: string;
   client_incident_id?: string;
@@ -248,6 +249,7 @@ export const IncidentsDashboard: React.FC = () => {
   };
 
   const getCaseCode = (item: IncidentRecord) => {
+    if (item.case_number) return `RKS-${String(item.case_number).padStart(6, '0')}`;
     const raw = item.client_incident_id || item.incident_id || item.id || '10001';
     const numPart = raw.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6);
     return `RKS-${numPart}`;
