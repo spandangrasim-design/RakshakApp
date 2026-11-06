@@ -1815,56 +1815,62 @@ export const GuardsView: React.FC = () => {
           </div>
         </div>
       )}
-          {/* Verification Photo Modal */}
+          {/* Verification Photo Modal (Auto-adjusting) */}
       {selectedPhoto && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-3 sm:p-5 overflow-hidden animate-in fade-in duration-150"
           onClick={() => setSelectedPhoto(null)}
         >
           <div
-            className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden border border-slate-200"
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-md max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
-            <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
+            {/* Modal Header (Pinned) */}
+            <div className="px-4 py-3 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div>
-                <h3 className="font-bold text-base">Identity Verification</h3>
-                <p className="text-xs text-slate-300">Registration selfie capture</p>
+                <h3 className="font-bold text-sm tracking-wide">Identity Verification</h3>
+                <p className="text-[11px] text-slate-300">Registration selfie capture</p>
               </div>
               <button
                 onClick={() => setSelectedPhoto(null)}
-                className="h-8 w-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition"
+                className="h-7 w-7 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center text-xs font-bold transition"
+                aria-label="Close"
               >
                 ✕
               </button>
             </div>
 
-            {/* Photo Container */}
-            <div className="p-5 flex flex-col items-center bg-slate-50">
-              <div className="w-full max-h-[360px] rounded-xl overflow-hidden border border-slate-300 shadow-inner bg-black flex items-center justify-center">
+            {/* Auto-Adjusting Scrollable Body */}
+            <div className="p-4 flex flex-col items-center bg-slate-50 flex-1 min-h-0 overflow-y-auto">
+              {/* Responsive Photo Box */}
+              <div className="w-full rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-black/95 flex items-center justify-center shrink-0">
                 <img
                   src={selectedPhoto.url}
                   alt={selectedPhoto.name}
-                  className="w-full h-auto max-h-[360px] object-contain"
+                  className="w-full h-auto max-h-[40vh] object-contain"
                 />
               </div>
 
               {/* Guard Profile Details */}
-              <div className="w-full mt-4 bg-white p-3.5 rounded-xl border border-slate-200">
-                <div className="text-sm font-bold text-slate-900">{selectedPhoto.name}</div>
-                <div className="text-xs text-slate-500 font-mono mt-0.5">Code: {selectedPhoto.code}</div>
-                {selectedPhoto.phone && (
-                  <div className="text-xs text-slate-600 mt-1">Phone: {selectedPhoto.phone}</div>
-                )}
-                <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-semibold rounded-md">
-                  ✓ Registered Field User
+              <div className="w-full mt-3 bg-white p-3 rounded-xl border border-slate-200 shadow-xs shrink-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-bold text-slate-900 truncate">{selectedPhoto.name}</div>
+                    <div className="text-xs text-slate-500 font-mono mt-0.5 truncate">Code: {selectedPhoto.code}</div>
+                    {selectedPhoto.phone && (
+                      <div className="text-xs text-slate-600 mt-1 font-medium truncate">Phone: {selectedPhoto.phone}</div>
+                    )}
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-semibold rounded-md shrink-0">
+                    ✓ Verified
+                  </span>
                 </div>
               </div>
 
               {/* Close Button */}
               <button
                 onClick={() => setSelectedPhoto(null)}
-                className="mt-4 w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition"
+                className="mt-3 w-full py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition shrink-0"
               >
                 Close Verification
               </button>
