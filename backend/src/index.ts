@@ -2362,15 +2362,19 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     }
 
     // Record in daily_report_log
-    await supabase.from('daily_report_log').insert({
-      tenant_id: tenantId,
-      guard_id: guards[0].guard_id,
-      shift_name: 'Consolidated Day Digest',
-      report_date: reportDateStr,
-      status: 'SENT',
-      recipients: recipients.join(', '),
-      sent_at: new Date().toISOString()
-    }).catch(() => {});
+    try {
+      await supabase.from('daily_report_log').insert({
+        tenant_id: tenantId,
+        guard_id: guards[0].guard_id,
+        shift_name: 'Consolidated Day Digest',
+        report_date: reportDateStr,
+        status: 'SENT',
+        recipients: recipients.join(', '),
+        sent_at: new Date().toISOString()
+      });
+    } catch (logErr) {
+      console.warn('Could not insert daily_report_log:', logErr);
+    }
 
     return c.json({ success: true, sent: 1, guards: guards.length, message: `Consolidated briefing sent to ${recipients.length} recipient(s).` });
   } catch (error) {
