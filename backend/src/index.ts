@@ -1432,6 +1432,8 @@ app.get('/api/v1/guards', async (c) => {
         assigned_rounds: assignedRounds,
         tier: g.tier,
         is_guest: g.is_guest === true,
+        selfie_url: g.selfie_url || ext.selfie_url || null,
+        selfie_url: g.selfie_url || ext.selfie_url || null,
         tenant_name: tenantNames.get(g.tenant_id) || null,
         app_permissions: callerAuth.tier === 'SUPER_ADMIN' ? hybrid.permissions : resolveAccess(callerAuth.tenant_features, hybrid.permissions).active_permissions,
         app_permissions_override: rawOverrides,

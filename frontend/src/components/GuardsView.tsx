@@ -93,6 +93,7 @@ interface Guard {
   assignment_groups?: string[];
   assigned_round_id?: string | null;
   assigned_round_ids?: string[];
+  selfie_url?: string | null;
   reporting_to?: string | null;
   rounds?: { id: string; name: string } | null;
   assigned_rounds?: { id: string; name: string }[];
@@ -118,6 +119,7 @@ export const GuardsView: React.FC = () => {
   const [assigningGroupsGuard, setAssigningGroupsGuard] = useState<Guard | null>(null);
   const [editingGuard, setEditingGuard] = useState<Guard | null>(null);
   const [resettingGuard, setResettingGuard] = useState<Guard | null>(null);
+  const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; name: string; phone?: string | null; code: string } | null>(null);
 
   // App Permissions Modal State
   const [permissionsGuard, setPermissionsGuard] = useState<Guard | null>(null);
@@ -844,9 +846,26 @@ export const GuardsView: React.FC = () => {
                       <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="h-9 w-9 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold flex items-center justify-center text-xs shrink-0">
-                              {guard.full_name.charAt(0).toUpperCase()}
-                            </div>
+                            {guard.selfie_url ? (
+                              <div
+                                onClick={() => setSelectedPhoto({ url: guard.selfie_url!, name: guard.full_name, phone: guard.phone, code: guard.employee_code })}
+                                className="relative group cursor-pointer shrink-0"
+                                title="Click to verify field registration photo"
+                              >
+                                <img
+                                  src={guard.selfie_url}
+                                  alt={guard.full_name}
+                                  className="h-10 w-10 rounded-full object-cover border-2 border-slate-200 group-hover:border-blue-500 shadow-sm transition"
+                                />
+                                <div className="absolute inset-0 rounded-full bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[9px] font-bold">
+                                  View
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="h-10 w-10 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold flex items-center justify-center text-xs shrink-0">
+                                {guard.full_name.charAt(0).toUpperCase()}
+                              </div>
+                            )}
                             <div>
                               <div className="font-bold text-slate-900">{guard.full_name}</div>
                               <div className="text-[11px] text-slate-400 font-mono">
@@ -1791,6 +1810,63 @@ export const GuardsView: React.FC = () => {
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-50"
               >
                 Save Password
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+          {/* Verification Photo Modal */}
+      {selectedPhoto && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+          onClick={() => setSelectedPhoto(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden border border-slate-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-base">Identity Verification</h3>
+                <p className="text-xs text-slate-300">Registration selfie capture</p>
+              </div>
+              <button
+                onClick={() => setSelectedPhoto(null)}
+                className="h-8 w-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Photo Container */}
+            <div className="p-5 flex flex-col items-center bg-slate-50">
+              <div className="w-full max-h-[360px] rounded-xl overflow-hidden border border-slate-300 shadow-inner bg-black flex items-center justify-center">
+                <img
+                  src={selectedPhoto.url}
+                  alt={selectedPhoto.name}
+                  className="w-full h-auto max-h-[360px] object-contain"
+                />
+              </div>
+
+              {/* Guard Profile Details */}
+              <div className="w-full mt-4 bg-white p-3.5 rounded-xl border border-slate-200">
+                <div className="text-sm font-bold text-slate-900">{selectedPhoto.name}</div>
+                <div className="text-xs text-slate-500 font-mono mt-0.5">Code: {selectedPhoto.code}</div>
+                {selectedPhoto.phone && (
+                  <div className="text-xs text-slate-600 mt-1">Phone: {selectedPhoto.phone}</div>
+                )}
+                <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-semibold rounded-md">
+                  ✓ Registered Field User
+                </div>
+              </div>
+
+              {/* Close Button */}
+              <button
+                onClick={() => setSelectedPhoto(null)}
+                className="mt-4 w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition"
+              >
+                Close Verification
               </button>
             </div>
           </div>
