@@ -26,7 +26,10 @@ const buildQrPayload = async (cp: Checkpoint): Promise<string> => {
   if (parts.length >= 4 && parts[0] === cp.id && parts[3]) {
     return `rakshak://cp?id=${cp.id}&lat=${cp.lat}&lng=${cp.lng}&s=${parts[3]}`;
   }
-  const res = await fetch(`${API_BASE}/api/v1/checkpoints/${cp.id}/qr`);
+  const token = localStorage.getItem('token') || '';
+  const res = await fetch(`${API_BASE}/api/v1/checkpoints/${cp.id}/qr`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
   const data = await res.json();
   if (!data.success) throw new Error(data.message || 'Could not sign QR code');
   return data.payload as string;
@@ -380,7 +383,18 @@ const QRGenerator: React.FC = () => {
         generatedList.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
       }
 
-      const blob = await pdf(<QRSheetPDF checkpoints={generatedList} />).toBlob();
+      // Retrieve dynamic industry branding
+      const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+      const brandLogo = storedUser.tenant_logo_url || null;
+      const brandName = storedUser.tenant_name || round.name || 'Industrial Facility';
+
+      const blob = await pdf(
+        <QRSheetPDF
+          checkpoints={generatedList}
+          industryName={brandName}
+          industryLogoUrl={brandLogo}
+        />
+      ).toBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
