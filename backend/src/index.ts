@@ -2332,15 +2332,30 @@ app.get('/api/v1/dashboard/summary', async (c) => {
 
     // ---- patrol ----
     if (wantPatrol) {
-      const [board, scansRes, activeRes] = await Promise.all([
+      const [board, scansRes, activeRes, completedSessionsRes] = await Promise.all([
         computeRouteBoard(supabase, c.env, tenant, null),
         applyTenant(supabase.from('scans').select('*', { count: 'exact', head: true }), tenant).gte('scan_time', dayStart),
         applyTenant(supabase.from('patrol_sessions').select('guard_id'), tenant).eq('status', 'ACTIVE'),
+        applyTenant(supabase.from('patrol_sessions').select('route_id, status, created_at'), tenant)
+          .in('status', ['COMPLETED', 'DONE'])
+          .gte('created_at', dayStart),
       ]);
+
+      // Collect route IDs that have successfully completed at least one run today
+      const routesDoneTodayIds = new Set(
+        (completedSessionsRes.data || []).map((s: any) => s.route_id).filter(Boolean)
+      );
+
+      // Route is counted completed today if marked DONE on board OR completed earlier today
+      const uniqueDoneRoutes = new Set([
+        ...board.filter((r: any) => r.status === 'DONE').map((r: any) => r.id),
+        ...Array.from(routesDoneTodayIds)
+      ]);
+
       const count = (st: string) => board.filter((r: any) => r.status === st).length;
       out.patrol = {
         routes_total: board.length,
-        routes_done: count('DONE'),
+        routes_done: uniqueDoneRoutes.size,
         routes_in_progress: count('IN_PROGRESS'),
         routes_paused: count('PAUSED'),
         routes_partial: count('PARTIAL'),
