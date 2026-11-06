@@ -177,10 +177,11 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   spandanLogo: {
-    width: 38,
-    height: 38,
+    width: 115,
+    height: 48,
     objectFit: 'contain',
-    marginBottom: 4,
+    objectPosition: 'left',
+    marginBottom: 6,
   },
   footerIndustryLogo: {
     width: 38,
