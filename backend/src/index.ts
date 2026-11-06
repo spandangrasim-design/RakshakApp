@@ -334,6 +334,44 @@ function decodeImage(b64?: string | null): { bytes: Uint8Array; type: string; ex
   return null // anything that is not really a JPEG/PNG is rejected
 }
 /** Stores an image under a random key (capability URL). Returns null if the payload is not a valid image. */
+
+// ---------- Industry Logo: SVG / PNG / JPG up to 5MB ----------
+const MAX_LOGO_BYTES = 5 * 1024 * 1024;
+
+function decodeBrandLogo(input?: string | null): { bytes: Uint8Array; type: string; ext: string } | null {
+  if (!input || typeof input !== 'string') return null;
+  const isSvgData = input.startsWith('data:image/svg+xml;base64,');
+  const clean = input.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+  if (clean.length > Math.ceil((MAX_LOGO_BYTES * 4) / 3) + 16) return null;
+  let bytes: Uint8Array;
+  try { bytes = Uint8Array.from(atob(clean), (ch) => ch.charCodeAt(0)); } catch { return null; }
+  if (bytes.length < 16 || bytes.length > MAX_LOGO_BYTES) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { bytes, type: 'image/jpeg', ext: 'jpg' };
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return { bytes, type: 'image/png', ext: 'png' };
+  const sample = new TextDecoder().decode(bytes.slice(0, 2048));
+  if (isSvgData || sample.includes('<svg')) {
+    const fullSvg = new TextDecoder().decode(bytes);
+    if (/<script[\s>]|onload=|onerror=|javascript:/i.test(fullSvg)) return null;
+    return { bytes, type: 'image/svg+xml', ext: 'svg' };
+  }
+  return null;
+}
+
+async function storeBrandLogo(
+  bucket: R2Bucket,
+  origin: string,
+  tenantId: string,
+  input?: string | null
+): Promise<string | null> {
+  if (!input) return null;
+  if (input.startsWith(`${origin}/api/v1/media/`)) return input;
+  const parsed = decodeBrandLogo(input);
+  if (!parsed) return null;
+  const key = `logos/tenant_${tenantId}_${crypto.randomUUID()}.${parsed.ext}`;
+  await bucket.put(key, parsed.bytes, { httpMetadata: { contentType: parsed.type } });
+  return `${origin}/api/v1/media/${key}`;
+}
+
 async function storeImage(bucket: R2Bucket, origin: string, folder: string, prefix: string, input?: string | null): Promise<string | null> {
   if (!input) return null
   if (input.startsWith(`${origin}/api/v1/media/`)) return input // already one of ours
