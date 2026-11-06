@@ -12,6 +12,7 @@
     "@supabase/supabase-js": "^2.48.1",
     "crypto-js": "^4.2.0",
     "hono": "^4.7.2",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.2"
   },
   "devDependencies": {
