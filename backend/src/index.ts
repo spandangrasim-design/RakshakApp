@@ -3402,18 +3402,35 @@ app.delete('/api/v1/incidents/:id', async (c) => {
 // ==========================================
 // 7. ADMIN CONFIGS & GOOGLE OAUTH2 REFRESH TOKEN DISPATCH
 // ==========================================
+async function resolveAdminTenantId(c: any, supabase: any): Promise<string | null> {
+  const a = c.get('auth') as AuthContext;
+  const queryTenant = c.req.query('tenant_id');
+  if (a.tier === 'SUPER_ADMIN') {
+    if (queryTenant) return queryTenant;
+    if (a.tenant_id) return a.tenant_id;
+    const { data: firstTenant } = await supabase
+      .from('tenants')
+      .select('id')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    return firstTenant?.id || null;
+  }
+  return a.tenant_id || null;
+}
+
 app.get('/api/v1/admin/configs', async (c) => {
   try {
     const a = c.get('auth');
-    const tenantId = a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') : a.tenant_id;
-    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
     const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+
     const features = await tenantFeaturesFor(supabase, tenantId);
     const cfg = await loadTenantConfig(supabase, tenantId);
 
     const configs = Object.entries(cfg)
       .filter(([k]) => a.tier === 'SUPER_ADMIN' || configKeyAllowed(k, features))
-      // Secrets are write-only from the browser. Show that one is set, never its value.
       .map(([k, v]) => ({ key_name: k, key_value: SECRET_KEYS.has(k) && v ? MASK : v }));
     return c.json({ success: true, configs });
   } catch (error) {
@@ -3424,19 +3441,21 @@ app.get('/api/v1/admin/configs', async (c) => {
 app.post('/api/v1/admin/configs', async (c) => {
   try {
     const a = c.get('auth');
-    const tenantId = a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') : a.tenant_id;
+    const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
     if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+
     const body = await c.req.json();
     const rows: any[] = Array.isArray(body) ? body : [body];
-    const supabase = getSupabase(c.env);
     const features = await tenantFeaturesFor(supabase, tenantId);
 
     const toWrite: { key_name: string; key_value: any }[] = [];
     for (const r of rows) {
       const key = String(r?.key_name || '');
       if (!key) continue;
+      // Skip keys for unpurchased channels instead of failing the entire save batch
       if (a.tier !== 'SUPER_ADMIN' && !configKeyAllowed(key, features)) {
-        return c.json({ success: false, message: 'Not Found' }, 404); // not purchased => does not exist
+        continue;
       }
       if (r.key_value === MASK) continue; // unchanged secret echoed back by the form
       toWrite.push({ key_name: cfgKey(tenantId, key), key_value: r.key_value });
@@ -3452,6 +3471,9 @@ app.post('/api/v1/admin/configs', async (c) => {
 });
 
 app.post('/api/v1/admin/test-gmail', async (c) => {
+  const supabase = getSupabase(c.env);
+  const tenantId = await resolveAdminTenantId(c, supabase);
+
   const result = await sendGroupAssignmentEmail(c.env, {
     incidentId: '100999',
     priority: 'P2 - High',
@@ -3461,7 +3483,7 @@ app.post('/api/v1/admin/test-gmail', async (c) => {
     assignedTo: 'System Test',
     status: 'ACTIVE',
     includeManagerFallback: true,
-    tenantId: c.req.query('tenant_id') || c.get('auth').tenant_id,
+    tenantId,
   });
 
   if (!result.ok) {
@@ -3798,4 +3820,4 @@ export default {
         .eq('client_incident_id', incident.client_incident_id);
     }
   }
-}
+}
