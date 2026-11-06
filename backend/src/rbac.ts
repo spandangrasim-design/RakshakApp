@@ -20,6 +20,7 @@ export interface TenantFeatures {
     allow_live_gps_trail: boolean
     allow_geofence_audit: boolean
     allow_guest_enrollment: boolean // lets field guards join from the no-login Field app with a site code
+    allow_daily_reports: boolean    // daily shift report emails to supervisors
   }
   module_incidents: {
     enabled: boolean
@@ -45,7 +46,7 @@ export interface TenantFeatures {
 
 // Nothing is licensed by default. A new tenant must be explicitly provisioned.
 export const NO_FEATURES: TenantFeatures = {
-  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false, allow_guest_enrollment: false },
+  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false, allow_guest_enrollment: false, allow_daily_reports: false },
   module_incidents: {
     enabled: false,
     allow_web_ticket_queue: false,
@@ -82,6 +83,7 @@ export function normalizeTenantFeatures(raw: any): TenantFeatures {
       allow_live_gps_trail: t(p.enabled) && t(p.allow_live_gps_trail),
       allow_geofence_audit: t(p.enabled) && t(p.allow_geofence_audit),
       allow_guest_enrollment: t(p.enabled) && t(p.allow_guest_enrollment),
+      allow_daily_reports: t(p.enabled) && t(p.allow_daily_reports),
     },
     module_incidents: {
       enabled: t(i.enabled),
@@ -196,6 +198,8 @@ export function resolveAccess(tenantRaw: any, user: Partial<AppPermissions> | nu
       integration_gmail: tf.module_integrations.channels.gmail_oauth,
       integration_whatsapp: tf.module_integrations.channels.whatsapp_api,
       integration_telegram: tf.module_integrations.channels.telegram_bot,
+      daily_reports: tf.module_patrol.allow_daily_reports,
+      guest_enrollment: tf.module_patrol.allow_guest_enrollment,
     },
     incident_form_fields: fields,
   }
@@ -259,7 +263,7 @@ export async function buildAuthContext(
     // Platform owner bypasses tenant licensing entirely.
     access = resolveAccess(
       {
-        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true, allow_guest_enrollment: true },
+        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true, allow_guest_enrollment: true, allow_daily_reports: true },
         module_incidents: {
           enabled: true, allow_web_ticket_queue: true, allow_mobile_incident_creation: true,
           allowed_creation_options: {

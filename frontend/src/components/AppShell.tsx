@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, FileText, AlertTriangle, Users, QrCode, Sliders, Building2,
-  LogOut, Menu, X, ChevronsLeft, ChevronsRight, Shield,
+  LogOut, Menu, X, ChevronsLeft, ChevronsRight, Shield, Mail,
 } from 'lucide-react';
 
 interface VisibleModules {
@@ -10,6 +10,7 @@ interface VisibleModules {
   module_incidents?: boolean;
   module_qr_generator?: boolean;
   module_integrations?: boolean;
+  daily_reports?: boolean;
 }
 
 interface NavItem {
@@ -28,6 +29,7 @@ const TITLES: [RegExp, string][] = [
   [/^\/incidents/, 'Incident queue'],
   [/^\/guards/, 'People & access'],
   [/^\/qr-generator/, 'Routes & QR codes'],
+  [/^\/daily-reports/, 'Daily shift reports'],
   [/^\/admin\/configs/, 'Integrations'],
 ];
 
@@ -76,6 +78,7 @@ export const AppShell: React.FC<{
       title: 'Manage',
       items: [
         { to: '/guards', label: 'People & access', icon: <Users className="h-[18px] w-[18px]" />, show: true, match: (p) => p.startsWith('/guards') },
+        { to: '/daily-reports', label: 'Daily reports', icon: <Mail className="h-[18px] w-[18px]" />, show: !isSuper && modules.module_patrol === true && modules.daily_reports === true, match: (p) => p.startsWith('/daily-reports') },
         { to: '/qr-generator', label: 'Routes & QR codes', icon: <QrCode className="h-[18px] w-[18px]" />, show: modules.module_qr_generator === true, match: (p) => p.startsWith('/qr-generator') },
         { to: '/admin/configs', label: 'Integrations', icon: <Sliders className="h-[18px] w-[18px]" />, show: modules.module_integrations === true, match: (p) => p.startsWith('/admin/configs') },
       ],

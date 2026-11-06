@@ -37,7 +37,21 @@ interface PatrolRound {
   name: string;
   created_at: string;
   checkpoints?: Checkpoint[];
+  renew_every_minutes?: number | null;
+  renewed_at?: string | null;
 }
+
+// How often a route starts a fresh round on its own. Anything can also be renewed on demand.
+const REPEAT_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Daily (midnight)' },
+  { value: '60', label: 'Every 1 hour' },
+  { value: '120', label: 'Every 2 hours' },
+  { value: '180', label: 'Every 3 hours' },
+  { value: '240', label: 'Every 4 hours' },
+  { value: '360', label: 'Every 6 hours' },
+  { value: '480', label: 'Every 8 hours' },
+  { value: '720', label: 'Every 12 hours' },
+];
 
 declare global {
   interface Window {
@@ -240,6 +254,84 @@ const QRGenerator: React.FC = () => {
     setRoundName(round.name);
     setCurrentCheckpoints(round.checkpoints || []);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // ---- renewal: automatic repeat + on-demand "renew now" ----
+  const [renewBusy, setRenewBusy] = useState<string | null>(null);
+
+  const changeRepeat = async (roundId: string, value: string) => {
+    setSavedRounds((prev) => prev.map((r) => (r.id === roundId ? { ...r, renew_every_minutes: value ? Number(value) : null } : r)));
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds/${roundId}/renewal`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renew_every_minutes: value ? Number(value) : null }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      alert('Repeat saved.');
+    } catch (e: any) {
+      alert(e.message || 'Could not save the repeat setting.');
+      fetchRounds();
+    }
+  };
+
+  const renewNow = async (round: PatrolRound) => {
+    if (!confirm(`Renew "${round.name}" now? It becomes available again for the next guard, and progress so far is cleared.`)) return;
+    setRenewBusy(round.id);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds/${round.id}/renew`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      alert(`"${round.name}" renewed. It is ready for a new guard.`);
+      fetchRounds();
+    } catch (e: any) {
+      alert(e.message || 'Could not renew the route.');
+    } finally {
+      setRenewBusy(null);
+    }
+  };
+
+  const renewAll = async () => {
+    if (!confirm('Renew ALL routes now? Every route starts a fresh round and progress so far is cleared.')) return;
+    setRenewBusy('ALL');
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/rounds/renew-all`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      alert('All routes renewed. They are ready for new guards.');
+      fetchRounds();
+    } catch (e: any) {
+      alert(e.message || 'Could not renew the routes.');
+    } finally {
+      setRenewBusy(null);
+    }
+  };
+
+  // Auto-renew when a brand-new guard joins from the Field app (only offered if the industry has that feature)
+  const canGuestEnroll = (() => { try { return JSON.parse(localStorage.getItem('visible_modules') || '{}').guest_enrollment === true; } catch { return false; } })();
+  const [renewOnJoin, setRenewOnJoin] = useState(false);
+  useEffect(() => {
+    if (!canGuestEnroll) return;
+    fetch(`${API_BASE}/api/v1/admin/configs`).then((r) => r.json()).then((d) => {
+      const row = (d.configs || []).find((x: any) => x.key_name === 'RENEW_ON_NEW_GUARD');
+      setRenewOnJoin(row?.key_value === 'true');
+    }).catch(() => {});
+  }, [canGuestEnroll]);
+  const toggleRenewOnJoin = async () => {
+    const next = !renewOnJoin;
+    setRenewOnJoin(next);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/configs`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ key_name: 'RENEW_ON_NEW_GUARD', key_value: next ? 'true' : 'false' }]),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      alert(next ? 'Routes will renew automatically when a new guard joins.' : 'Automatic renewal on join is off.');
+    } catch (e: any) {
+      setRenewOnJoin(!next);
+      alert(e.message || 'Could not save the setting.');
+    }
   };
 
   const handleDeleteRound = async (roundId: string) => {
@@ -484,13 +576,30 @@ const QRGenerator: React.FC = () => {
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold text-slate-800">Existing Patrol Rounds ({savedRounds.length})</h2>
-          <button
-            onClick={fetchRounds}
-            className="text-sm text-slate-500 hover:text-blue-600 flex items-center gap-1"
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoadingRounds ? 'animate-spin' : ''}`} /> Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={renewAll}
+              disabled={renewBusy !== null || savedRounds.length === 0}
+              className="text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition"
+              title="Start a fresh round on every route"
+            >
+              <RefreshCw className={`h-4 w-4 ${renewBusy === 'ALL' ? 'animate-spin' : ''}`} /> Renew all routes
+            </button>
+            <button
+              onClick={fetchRounds}
+              className="text-sm text-slate-500 hover:text-blue-600 flex items-center gap-1"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoadingRounds ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+          </div>
         </div>
+
+        {canGuestEnroll && (
+          <label className="mb-4 flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <input type="checkbox" checked={renewOnJoin} onChange={toggleRenewOnJoin} className="h-4 w-4 accent-blue-600" />
+            <span><strong>Renew all routes when a new guard joins</strong> from the Field app, so they can start a fresh round.</span>
+          </label>
+        )}
 
         {savedRounds.length === 0 ? (
           <div className="text-center py-8 text-slate-400">
@@ -503,6 +612,7 @@ const QRGenerator: React.FC = () => {
                 <tr className="border-b border-slate-200 text-slate-500 font-medium">
                   <th className="py-3 px-4">Round Name</th>
                   <th className="py-3 px-4">Checkpoints</th>
+                  <th className="py-3 px-4">Repeats</th>
                   <th className="py-3 px-4">Created Date</th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
@@ -516,10 +626,34 @@ const QRGenerator: React.FC = () => {
                         {round.checkpoints?.length || 0} locations
                       </span>
                     </td>
+                    <td className="py-3 px-4">
+                      <select
+                        value={round.renew_every_minutes ? String(round.renew_every_minutes) : ''}
+                        onChange={(e) => changeRepeat(round.id, e.target.value)}
+                        className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 outline-none focus:border-blue-500"
+                        title="How often this route starts a fresh round by itself"
+                      >
+                        {REPEAT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        {round.renew_every_minutes && !REPEAT_OPTIONS.some((o) => o.value === String(round.renew_every_minutes)) && (
+                          <option value={String(round.renew_every_minutes)}>Every {round.renew_every_minutes} min</option>
+                        )}
+                      </select>
+                      {round.renewed_at && (
+                        <div className="mt-1 text-[10px] text-slate-400">Renewed {new Date(round.renewed_at).toLocaleString()}</div>
+                      )}
+                    </td>
                     <td className="py-3 px-4 text-slate-500 text-xs">
                       {new Date(round.created_at).toLocaleDateString()}
                     </td>
                     <td className="py-3 px-4 text-right space-x-2">
+                      <button
+                        onClick={() => renewNow(round)}
+                        disabled={renewBusy !== null}
+                        className="px-2.5 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md inline-flex items-center gap-1 disabled:opacity-50"
+                        title="Make this route available again for a new guard"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${renewBusy === round.id ? 'animate-spin' : ''}`} /> Renew
+                      </button>
                       <button
                         onClick={() => handleViewRound(round)}
                         className="px-2.5 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md inline-flex items-center gap-1"

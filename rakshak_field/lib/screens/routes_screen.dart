@@ -152,10 +152,12 @@ class _RouteCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = (route['status'] ?? 'PENDING').toString();
-    final total = ((route['checkpoints'] as List?) ?? []).length;
+    final prog = route['progress'] is Map ? Map<String, dynamic>.from(route['progress'] as Map) : <String, dynamic>{};
+    final done = (prog['scanned'] ?? 0) as int;
+    final total = (prog['total'] ?? ((route['checkpoints'] as List?) ?? []).length) as int;
+    final others = ((route['on_it'] as List?) ?? []).map((e) => e.toString()).toList();
+    final pausedBy = ((route['paused_by'] as List?) ?? []).map((e) => e.toString()).toList();
     final myRun = route['my_run'];
-    final mine = myRun is Map ? ((myRun['scanned_checkpoint_ids'] as List?) ?? []).length : null;
-    final others = ((route['in_progress_by'] as List?) ?? []).map((e) => e.toString()).toList();
 
     Color color;
     String label;
@@ -171,6 +173,16 @@ class _RouteCard extends StatelessWidget {
         label = 'In progress';
         icon = Icons.directions_walk;
         break;
+      case 'PAUSED':
+        color = Colors.blue.shade700;
+        label = 'Paused';
+        icon = Icons.pause_circle;
+        break;
+      case 'PARTIAL':
+        color = Colors.deepOrange.shade700;
+        label = 'Partly done';
+        icon = Icons.timelapse;
+        break;
       default:
         color = Colors.blueGrey;
         label = 'Not started';
@@ -181,10 +193,18 @@ class _RouteCard extends StatelessWidget {
     if (status == 'DONE') {
       final at = fmtTime(route['done_at']?.toString());
       detail = 'Completed by ${route['done_by'] ?? 'a guard'}${at.isEmpty ? '' : ' at $at'}';
-    } else if (mine != null) {
-      detail = 'Your progress: $mine of $total checkpoints';
+    } else if (myRun is Map) {
+      detail = myRun['status'] == 'PAUSED'
+          ? 'You paused this route · $done of $total done'
+          : 'Your run · $done of $total checkpoints done';
+    } else if (status == 'PARTIAL') {
+      final last = route['last_ended'];
+      final who = last is Map ? ' (stopped by ${last['by']})' : '';
+      detail = '$done of $total done$who · needs a guard to continue';
+    } else if (status == 'PAUSED') {
+      detail = 'Paused by ${pausedBy.isEmpty ? 'a guard' : pausedBy.join(', ')} · $done of $total done';
     } else if (others.isNotEmpty) {
-      detail = 'On it now: ${others.join(', ')}';
+      detail = 'On it now: ${others.join(', ')} · $done of $total done';
     } else {
       detail = '$total checkpoint${total == 1 ? '' : 's'}';
     }

@@ -387,6 +387,8 @@ const MASK = '********'
 /** Which keys may this tenant even see or write? Unpurchased channel keys do not exist for them. */
 function configKeyAllowed(key: string, f: ReturnType<typeof normalizeTenantFeatures>): boolean {
   if (key === 'GUARD_EXTENDED_PROFILES') return false // legacy global blob, never exposed
+  if (key.startsWith('DAILY_REPORT_')) return f.module_patrol.allow_daily_reports
+  if (key === 'RENEW_ON_NEW_GUARD') return f.module_patrol.allow_guest_enrollment
   const ch = f.module_integrations.channels
   if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
   if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return ch.whatsapp_api
@@ -492,6 +494,14 @@ app.on('POST',   '/api/v1/rounds', adminTiers, requireModule('module_patrol'))
 app.on('DELETE', '/api/v1/rounds/:id', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
 app.on('GET',    '/api/v1/guards/my-assigned-route', requireModule('module_patrol'), requirePermission('patrol_route'), requireTenantFlag((f) => f.module_patrol.allow_route_assignment))
 app.on('GET',    '/api/v1/dashboard/summary', adminTiers)
+app.on('POST',   '/api/v1/field/runs/:id/pause', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/field/runs/:id/resume', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('POST',   '/api/v1/field/runs/:id/end', requireModule('module_patrol'), requirePermission('patrol_route'))
+app.on('PATCH',  '/api/v1/rounds/:id/renewal', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
+app.on('POST',   '/api/v1/rounds/:id/renew', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
+app.on('POST',   '/api/v1/rounds/renew-all', adminTiers, requireModule('module_patrol'))
+app.on('POST',   '/api/v1/daily-reports/send-now', adminTiers, requireModule('module_patrol'), requireTenantFlag((f) => f.module_patrol.allow_daily_reports))
+app.on('GET',    '/api/v1/daily-reports/log', adminTiers, requireModule('module_patrol'), requireTenantFlag((f) => f.module_patrol.allow_daily_reports))
 app.on('GET',    '/api/v1/field/routes', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/field/runs/start', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/field/runs/:id/complete', requireModule('module_patrol'), requirePermission('patrol_route'))
@@ -1589,6 +1599,11 @@ app.post('/api/v1/guest/register', async (c) => {
       if (ins.error) ins = await supabase.from('guards').insert([base]).select(cols).single();
       if (ins.error) throw ins.error;
       guard = ins.data;
+      // Optional per-industry setting: a brand-new guard starts with freshly renewed routes.
+      const joinCfg = await loadTenantConfig(supabase, tenant.id);
+      if (joinCfg['RENEW_ON_NEW_GUARD'] === 'true') {
+        await supabase.from('rounds').update({ renewed_at: new Date().toISOString() }).eq('tenant_id', tenant.id);
+      }
     }
 
     const full = await supabase.from('guards').select('guard_id, employee_code, role, tier, is_active, tenant_id, app_permissions, is_guest').eq('guard_id', guard.guard_id).single();
@@ -1618,62 +1633,182 @@ app.post('/api/v1/guest/register', async (c) => {
   }
 });
 
-// All routes of the caller's industry, with today's shared status so every guard sees the same picture.
+// =====================================================================
+// ROUTE CYCLES, SHARED BOARD, PAUSE / END, RENEWAL
+//
+// A route is worked in "cycles". A cycle starts at the later of:
+//   - the last automatic boundary (midnight, or every N minutes if the route repeats), and
+//   - the moment an admin pressed "Renew now".
+// Checkpoints scanned by ANY guard during the cycle count towards the route, so when a guard
+// has to leave, the next guard simply continues the checkpoints that are still open.
+// =====================================================================
+const MIN_MS = 60000;
+
+function cycleStartMs(env: Bindings, round: { renew_every_minutes?: number | null; renewed_at?: string | null }, nowMs = Date.now()): number {
+  const dayStart = new Date(startOfSiteDayISO(env)).getTime();
+  const every = Number(round.renew_every_minutes) > 0 ? Number(round.renew_every_minutes) : 0;
+  let start = dayStart;
+  if (every > 0) start = dayStart + Math.floor((nowMs - dayStart) / (every * MIN_MS)) * every * MIN_MS;
+  const manual = round.renewed_at ? new Date(round.renewed_at).getTime() : 0;
+  return Math.max(start, manual);
+}
+
+function nextRenewalMs(env: Bindings, round: { renew_every_minutes?: number | null }, nowMs = Date.now()): number {
+  const dayStart = new Date(startOfSiteDayISO(env)).getTime();
+  const every = Number(round.renew_every_minutes) > 0 ? Number(round.renew_every_minutes) : 24 * 60;
+  return dayStart + (Math.floor((nowMs - dayStart) / (every * MIN_MS)) + 1) * every * MIN_MS;
+}
+
+// ---------- shifts (configured per industry on the web) ----------
+interface ShiftDef { name: string; start: string; end: string }
+interface ShiftWindow { name: string; startMs: number; endMs: number }
+
+function parseShifts(raw?: string): ShiftDef[] {
+  try {
+    const v = JSON.parse(raw || '[]');
+    if (!Array.isArray(v)) return [];
+    return v
+      .filter((s: any) => s && typeof s.name === 'string' && s.name.trim() && /^\d{2}:\d{2}$/.test(String(s.start)) && /^\d{2}:\d{2}$/.test(String(s.end)))
+      .slice(0, 6)
+      .map((s: any) => ({ name: String(s.name).trim().slice(0, 30), start: s.start, end: s.end }));
+  } catch { return []; }
+}
+
+function shiftWindows(env: Bindings, shifts: ShiftDef[], _nowMs = Date.now()): ShiftWindow[] {
+  const day0 = new Date(startOfSiteDayISO(env)).getTime();
+  const out: ShiftWindow[] = [];
+  for (const s of shifts) {
+    const [sh, sm] = s.start.split(':').map(Number);
+    const [eh, em] = s.end.split(':').map(Number);
+    for (const d of [-1, 0, 1]) {
+      const startMs = day0 + d * 86400000 + (sh * 60 + sm) * MIN_MS;
+      let endMs = day0 + d * 86400000 + (eh * 60 + em) * MIN_MS;
+      if (endMs <= startMs) endMs += 86400000; // night shift that crosses midnight
+      out.push({ name: s.name, startMs, endMs });
+    }
+  }
+  return out;
+}
+
+function currentShift(env: Bindings, shifts: ShiftDef[], nowMs = Date.now()): ShiftWindow | null {
+  return shiftWindows(env, shifts).find((w) => w.startMs <= nowMs && nowMs < w.endMs) || null;
+}
+
+const SESSION_COLS = 'id, round_id, guard_id, status, completed_route, start_time, end_time, ended_reason, paused_at, pause_reason';
+
+async function computeRouteBoard(supabase: any, env: Bindings, tenant: string | null | undefined, viewerGuardId: string | null, onlyRoundId?: string) {
+  const nowMs = Date.now();
+  const dayStartIso = startOfSiteDayISO(env);
+
+  let roundsQ: any = applyTenant(supabase.from('rounds').select('id, name, renew_every_minutes, renewed_at'), tenant).order('name');
+  if (onlyRoundId) roundsQ = roundsQ.eq('id', onlyRoundId);
+  const roundsRes = await roundsQ;
+  if (roundsRes.error) throw roundsRes.error;
+  const rounds: any[] = roundsRes.data || [];
+  if (rounds.length === 0) return [];
+  const roundIds = rounds.map((r) => r.id);
+
+  const [cpsRes, todayRes, openRes] = await Promise.all([
+    supabase.from('checkpoints').select('checkpoint_id, round_id, name').in('round_id', roundIds).order('name'),
+    supabase.from('patrol_sessions').select(SESSION_COLS).in('round_id', roundIds).gte('start_time', dayStartIso),
+    // Runs that started before midnight (night shift) but are still open must stay on the board.
+    supabase.from('patrol_sessions').select(SESSION_COLS).in('round_id', roundIds).in('status', ['ACTIVE', 'PAUSED']),
+  ]);
+  if (cpsRes.error) throw cpsRes.error;
+  if (todayRes.error) throw todayRes.error;
+  const cps: any[] = cpsRes.data || [];
+  const sessionMap = new Map<string, any>();
+  for (const s of [...(todayRes.data || []), ...(openRes.data || [])]) sessionMap.set(s.id, s);
+  const sessions = [...sessionMap.values()];
+
+  const cycleStarts = new Map<string, number>(rounds.map((r) => [r.id, cycleStartMs(env, r, nowMs)] as [string, number]));
+  const minCycle = Math.min(...cycleStarts.values());
+  let scans: any[] = [];
+  if (cps.length > 0) {
+    const { data } = await supabase.from('scans').select('checkpoint_id, guard_id, scan_time')
+      .in('checkpoint_id', cps.map((x) => x.checkpoint_id)).gte('scan_time', new Date(minCycle).toISOString()).limit(5000);
+    scans = data || [];
+  }
+
+  const guardIds = [...new Set([...sessions.map((s) => s.guard_id), ...scans.map((s) => s.guard_id)].filter(Boolean))];
+  const nameOf = new Map<string, string>();
+  if (guardIds.length > 0) {
+    const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', guardIds);
+    for (const g of gs || []) nameOf.set(g.guard_id, g.full_name);
+  }
+  const nm = (id: string) => nameOf.get(id) || 'A guard';
+  const ms = (iso: any) => (iso ? new Date(iso).getTime() : 0);
+
+  return rounds.map((r) => {
+    const cStart = cycleStarts.get(r.id) as number;
+    const rCps = cps.filter((x) => x.round_id === r.id);
+    const cpIds = new Set(rCps.map((x) => x.checkpoint_id));
+
+    // Latest scan of each checkpoint inside THIS cycle, by anyone.
+    const scanned = new Map<string, { guard_id: string; at: string }>();
+    for (const s of scans) {
+      if (!cpIds.has(s.checkpoint_id) || ms(s.scan_time) < cStart) continue;
+      const prev = scanned.get(s.checkpoint_id);
+      if (!prev || s.scan_time > prev.at) scanned.set(s.checkpoint_id, { guard_id: s.guard_id, at: s.scan_time });
+    }
+    const total = rCps.length;
+    const progress = scanned.size;
+
+    const rSess = sessions.filter((s) => s.round_id === r.id);
+    const doneSession = rSess.filter((s) => s.completed_route && ms(s.end_time) >= cStart).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
+    const active = rSess.filter((s) => s.status === 'ACTIVE' && !s.completed_route);
+    const paused = rSess.filter((s) => s.status === 'PAUSED');
+    const ended = rSess.filter((s) => s.status === 'ENDED_EARLY' && ms(s.end_time) >= cStart).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
+
+    // Every checkpoint scanned in the cycle means the route is done, even if nobody pressed "Finish".
+    const allScanned = total > 0 && progress >= total;
+    const lastScan = [...scanned.values()].sort((x, y) => String(y.at).localeCompare(String(x.at)))[0];
+
+    const status: 'DONE' | 'IN_PROGRESS' | 'PAUSED' | 'PARTIAL' | 'PENDING' =
+      doneSession || allScanned ? 'DONE' : active.length > 0 ? 'IN_PROGRESS' : paused.length > 0 ? 'PAUSED' : progress > 0 ? 'PARTIAL' : 'PENDING';
+
+    const mine = viewerGuardId ? rSess.find((s) => s.guard_id === viewerGuardId && (s.status === 'ACTIVE' || s.status === 'PAUSED') && !s.completed_route) : undefined;
+
+    return {
+      id: r.id,
+      name: r.name,
+      status,
+      checkpoints: rCps.map((x) => {
+        const sc = scanned.get(x.checkpoint_id);
+        return { id: x.checkpoint_id, name: x.name, scanned: !!sc, scanned_by: sc ? nm(sc.guard_id) : null, scanned_at: sc ? sc.at : null };
+      }),
+      progress: { scanned: progress, total },
+      done_by: status === 'DONE' ? (doneSession ? nm(doneSession.guard_id) : lastScan ? nm(lastScan.guard_id) : null) : null,
+      done_at: status === 'DONE' ? (doneSession ? doneSession.end_time : lastScan ? lastScan.at : null) : null,
+      on_it: [...new Set(active.map((s) => nm(s.guard_id)))],
+      paused_by: [...new Set(paused.map((s) => nm(s.guard_id)))],
+      last_ended: ended ? { by: nm(ended.guard_id), reason: ended.ended_reason, at: ended.end_time } : null,
+      my_run: mine ? { session_id: mine.id, status: mine.status, paused_at: mine.paused_at } : null,
+      renew: {
+        every_minutes: r.renew_every_minutes ?? null,
+        renewed_at: r.renewed_at ?? null,
+        cycle_started_at: new Date(cStart).toISOString(),
+        next_renewal_at: new Date(nextRenewalMs(env, r, nowMs)).toISOString(),
+      },
+    };
+  });
+}
+
+// All routes of the caller's industry, with the shared status of the current cycle.
 app.get('/api/v1/field/routes', async (c) => {
   try {
     const a = c.get('auth');
     if (!a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
     const supabase = getSupabase(c.env);
-    const dayStart = startOfSiteDayISO(c.env);
-
-    const [roundsRes, cpsRes, sessRes] = await Promise.all([
-      supabase.from('rounds').select('id, name').eq('tenant_id', a.tenant_id).order('name'),
-      supabase.from('checkpoints').select('checkpoint_id, round_id, name').eq('tenant_id', a.tenant_id).order('name'),
-      supabase.from('patrol_sessions').select('id, round_id, guard_id, status, start_time, end_time, completed_route').eq('tenant_id', a.tenant_id).gte('start_time', dayStart),
+    const [board, cfg] = await Promise.all([
+      computeRouteBoard(supabase, c.env, a.tenant_id, a.guard_id),
+      loadTenantConfig(supabase, a.tenant_id),
     ]);
-    if (roundsRes.error) throw roundsRes.error;
-    const rounds: any[] = roundsRes.data || [], cps: any[] = cpsRes.data || [], sessions: any[] = sessRes.data || [];
-
-    const guardIds = [...new Set(sessions.map((s) => s.guard_id))];
-    const nameOf = new Map<string, string>();
-    if (guardIds.length > 0) {
-      const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', guardIds);
-      for (const g of gs || []) nameOf.set(g.guard_id, g.full_name);
-    }
-
-    // My scans since I started my earliest active run today.
-    const mine = sessions.filter((s) => s.guard_id === a.guard_id && s.status === 'ACTIVE' && !s.completed_route);
-    let myScans: any[] = [];
-    if (mine.length > 0 && cps.length > 0) {
-      const since = mine.map((s) => s.start_time).sort()[0];
-      const { data: sc } = await supabase.from('scans').select('checkpoint_id, scan_time').eq('guard_id', a.guard_id).in('checkpoint_id', cps.map((x) => x.checkpoint_id)).gte('scan_time', since);
-      myScans = sc || [];
-    }
-
-    const out = rounds.map((r) => {
-      const rCps = cps.filter((x) => x.round_id === r.id);
-      const rSess = sessions.filter((s) => s.round_id === r.id);
-      const done = rSess.filter((s) => s.completed_route).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
-      const active = rSess.filter((s) => s.status === 'ACTIVE' && !s.completed_route);
-      const myRun = active.find((s) => s.guard_id === a.guard_id);
-      const scanned = myRun
-        ? [...new Set(myScans.filter((s) => rCps.some((x) => x.checkpoint_id === s.checkpoint_id) && s.scan_time >= myRun.start_time).map((s) => s.checkpoint_id))]
-        : [];
-      return {
-        id: r.id,
-        name: r.name,
-        checkpoints: rCps.map((x) => ({ id: x.checkpoint_id, name: x.name })),
-        status: done ? 'DONE' : active.length > 0 ? 'IN_PROGRESS' : 'PENDING',
-        done_by: done ? nameOf.get(done.guard_id) || 'A guard' : null,
-        done_at: done ? done.end_time : null,
-        in_progress_by: [...new Set(active.map((s) => nameOf.get(s.guard_id) || 'A guard'))],
-        my_run: myRun ? { session_id: myRun.id, scanned_checkpoint_ids: scanned } : null,
-      };
-    });
-
+    const shift = currentShift(c.env, parseShifts(cfg['DAILY_REPORT_SHIFTS']));
     return c.json({
       success: true,
-      routes: out,
+      routes: board,
+      shift: shift ? { name: shift.name, start_at: new Date(shift.startMs).toISOString(), end_at: new Date(shift.endMs).toISOString() } : null,
       app_permissions: a.access.active_permissions,
       incident_form_fields: a.access.incident_form_fields,
     });
@@ -1687,52 +1822,448 @@ app.post('/api/v1/field/runs/start', async (c) => {
     const a = c.get('auth');
     const { round_id, lat, lng } = z.object({ round_id: z.string().uuid(), lat: z.number().optional(), lng: z.number().optional() }).parse(await c.req.json());
     const supabase = getSupabase(c.env);
-    const dayStart = startOfSiteDayISO(c.env);
 
-    const { data: round } = await supabase.from('rounds').select('id, tenant_id').eq('id', round_id).maybeSingle();
-    if (!round || round.tenant_id !== a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
-
-    const { data: doneToday } = await supabase.from('patrol_sessions').select('id').eq('round_id', round_id).eq('tenant_id', a.tenant_id).eq('completed_route', true).gte('start_time', dayStart).limit(1);
-    if (doneToday && doneToday.length > 0) return c.json({ success: false, message: 'This route is already completed today.' }, 409);
-
-    const { data: existing } = await supabase.from('patrol_sessions').select('id, start_time').eq('guard_id', a.guard_id).eq('round_id', round_id).eq('status', 'ACTIVE').gte('start_time', dayStart).order('start_time', { ascending: false }).limit(1).maybeSingle();
-    if (existing) return c.json({ success: true, session_id: existing.id, resumed: true });
+    const board = await computeRouteBoard(supabase, c.env, a.tenant_id, a.guard_id, round_id);
+    const route = board[0];
+    if (!route) return c.json({ success: false, message: 'Not Found' }, 404);
+    if (route.status === 'DONE') {
+      return c.json({ success: false, message: 'This route is already completed for the current round. An admin can renew it.' }, 409);
+    }
+    if (route.my_run) {
+      return c.json({ success: true, session_id: route.my_run.session_id, status: route.my_run.status, resumed: true });
+    }
 
     const { data: session, error } = await supabase.from('patrol_sessions').insert([{
       round_id, guard_id: a.guard_id, tenant_id: a.tenant_id, status: 'ACTIVE', completed_route: false,
       start_time: new Date().toISOString(), last_lat: lat ?? null, last_lng: lng ?? null, last_ping_at: new Date().toISOString(),
     }]).select('id').single();
     if (error) throw error;
-    return c.json({ success: true, session_id: session.id, resumed: false }, 201);
+    return c.json({ success: true, session_id: session.id, status: 'ACTIVE', resumed: false }, 201);
   } catch (error) {
     if (error instanceof z.ZodError) return c.json({ success: false, message: 'Invalid request' }, 400);
     return c.json({ success: false, message: errMsg(error, 'Could not start route') }, 500);
   }
 });
 
-// The server decides whether a route is complete: every checkpoint must have a verified scan by this guard during the run.
+async function loadMySession(supabase: any, a: AuthContext, id: string) {
+  const { data } = await supabase.from('patrol_sessions')
+    .select('id, round_id, guard_id, tenant_id, status, start_time, end_time, paused_at, paused_seconds, completed_route').eq('id', id).maybeSingle();
+  if (!data || data.guard_id !== a.guard_id || data.tenant_id !== a.tenant_id) return null;
+  return data;
+}
+
+const pausedExtraSeconds = (s: any) => (s.paused_at ? Math.max(0, Math.round((Date.now() - new Date(s.paused_at).getTime()) / 1000)) : 0);
+
+app.post('/api/v1/field/runs/:id/pause', async (c) => {
+  try {
+    const a = c.get('auth');
+    const supabase = getSupabase(c.env);
+    const body = await c.req.json().catch(() => ({}));
+    const session = await loadMySession(supabase, a, c.req.param('id'));
+    if (!session) return c.json({ success: false, message: 'Not Found' }, 404);
+    if (session.status === 'PAUSED') return c.json({ success: true, status: 'PAUSED' });
+    if (session.status !== 'ACTIVE') return c.json({ success: false, message: 'This run is not active.' }, 409);
+    const { error } = await supabase.from('patrol_sessions').update({
+      status: 'PAUSED', paused_at: new Date().toISOString(), pause_reason: body?.reason ? String(body.reason).slice(0, 200) : null,
+    }).eq('id', session.id);
+    if (error) throw error;
+    return c.json({ success: true, status: 'PAUSED' });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not pause') }, 500);
+  }
+});
+
+app.post('/api/v1/field/runs/:id/resume', async (c) => {
+  try {
+    const a = c.get('auth');
+    const supabase = getSupabase(c.env);
+    const session = await loadMySession(supabase, a, c.req.param('id'));
+    if (!session) return c.json({ success: false, message: 'Not Found' }, 404);
+    if (session.status === 'ACTIVE') return c.json({ success: true, status: 'ACTIVE' });
+    if (session.status !== 'PAUSED') return c.json({ success: false, message: 'This run has already ended.' }, 409);
+    const { error } = await supabase.from('patrol_sessions').update({
+      status: 'ACTIVE', paused_at: null, paused_seconds: (session.paused_seconds || 0) + pausedExtraSeconds(session),
+    }).eq('id', session.id);
+    if (error) throw error;
+    return c.json({ success: true, status: 'ACTIVE' });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not resume') }, 500);
+  }
+});
+
+const END_REASONS = ['SHIFT_ENDING', 'OTHER_WORK', 'EMERGENCY', 'ROUTE_BLOCKED', 'OTHER'] as const;
+
+// The guard stops before finishing. Progress is kept, so the next guard continues what is left.
+app.post('/api/v1/field/runs/:id/end', async (c) => {
+  try {
+    const a = c.get('auth');
+    const supabase = getSupabase(c.env);
+    const { reason, note } = z.object({ reason: z.enum(END_REASONS), note: z.string().max(300).optional() }).parse(await c.req.json());
+    const session = await loadMySession(supabase, a, c.req.param('id'));
+    if (!session) return c.json({ success: false, message: 'Not Found' }, 404);
+    if (session.status !== 'ACTIVE' && session.status !== 'PAUSED') return c.json({ success: true, completed: !!session.completed_route });
+
+    const board = await computeRouteBoard(supabase, c.env, a.tenant_id, a.guard_id, session.round_id);
+    const route = board[0];
+    const endedAt = new Date().toISOString();
+    const pausedSeconds = (session.paused_seconds || 0) + pausedExtraSeconds(session);
+
+    // Everything was already scanned: this is a normal completion, not an early end.
+    if (route && route.progress.total > 0 && route.progress.scanned >= route.progress.total) {
+      await supabase.from('patrol_sessions').update({ status: 'COMPLETED', completed_route: true, end_time: endedAt, paused_at: null, paused_seconds: pausedSeconds }).eq('id', session.id);
+      return c.json({ success: true, completed: true, done_at: endedAt });
+    }
+
+    const { error } = await supabase.from('patrol_sessions').update({
+      status: 'ENDED_EARLY', end_time: endedAt, ended_reason: reason, ended_note: note || null, paused_at: null, paused_seconds: pausedSeconds,
+    }).eq('id', session.id);
+    if (error) throw error;
+    return c.json({ success: true, completed: false, scanned: route?.progress.scanned ?? 0, total: route?.progress.total ?? 0 });
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ success: false, message: 'Choose a reason.' }, 400);
+    return c.json({ success: false, message: errMsg(error, 'Could not end the route') }, 500);
+  }
+});
+
+// The server decides whether the route is complete: every checkpoint must be scanned in the current cycle.
 app.post('/api/v1/field/runs/:id/complete', async (c) => {
   try {
     const a = c.get('auth');
     const supabase = getSupabase(c.env);
-    const { data: session } = await supabase.from('patrol_sessions').select('id, round_id, guard_id, tenant_id, status, start_time, completed_route, end_time').eq('id', c.req.param('id')).maybeSingle();
-    if (!session || session.guard_id !== a.guard_id || session.tenant_id !== a.tenant_id) return c.json({ success: false, message: 'Not Found' }, 404);
+    const session = await loadMySession(supabase, a, c.req.param('id'));
+    if (!session) return c.json({ success: false, message: 'Not Found' }, 404);
     if (session.completed_route) return c.json({ success: true, done_at: session.end_time });
 
-    const { data: cps } = await supabase.from('checkpoints').select('checkpoint_id, name').eq('round_id', session.round_id).eq('tenant_id', a.tenant_id);
-    const list: any[] = cps || [];
-    if (list.length === 0) return c.json({ success: false, message: 'This route has no checkpoints.' }, 400);
-    const { data: sc } = await supabase.from('scans').select('checkpoint_id').eq('guard_id', a.guard_id).in('checkpoint_id', list.map((x) => x.checkpoint_id)).gte('scan_time', session.start_time);
-    const scanned = new Set((sc || []).map((s: any) => s.checkpoint_id));
-    const missing = list.filter((x) => !scanned.has(x.checkpoint_id)).map((x) => x.name);
+    const route = (await computeRouteBoard(supabase, c.env, a.tenant_id, a.guard_id, session.round_id))[0];
+    if (!route || route.progress.total === 0) return c.json({ success: false, message: 'This route has no checkpoints.' }, 400);
+    const missing = route.checkpoints.filter((x: any) => !x.scanned).map((x: any) => x.name);
     if (missing.length > 0) return c.json({ success: false, message: `${missing.length} checkpoint(s) still to scan.`, missing }, 400);
 
     const doneAt = new Date().toISOString();
-    const { error } = await supabase.from('patrol_sessions').update({ status: 'COMPLETED', end_time: doneAt, completed_route: true }).eq('id', session.id);
+    const { error } = await supabase.from('patrol_sessions').update({
+      status: 'COMPLETED', end_time: doneAt, completed_route: true, paused_at: null, paused_seconds: (session.paused_seconds || 0) + pausedExtraSeconds(session),
+    }).eq('id', session.id);
     if (error) throw error;
     return c.json({ success: true, done_at: doneAt });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error, 'Could not complete route') }, 500);
+  }
+});
+
+// ---------- renewal (admins) ----------
+app.patch('/api/v1/rounds/:id/renewal', async (c) => {
+  try {
+    const { renew_every_minutes } = z.object({ renew_every_minutes: z.number().int().min(30).max(1440).nullable() }).parse(await c.req.json());
+    const { error } = await getSupabase(c.env).from('rounds').update({ renew_every_minutes }).eq('id', c.req.param('id'));
+    if (error) throw error;
+    return c.json({ success: true, renew_every_minutes });
+  } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ success: false, message: 'Repeat must be between 30 minutes and 24 hours.' }, 400);
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+// "Renew now": a fresh cycle starts immediately (for example when a new guard joins).
+app.post('/api/v1/rounds/:id/renew', async (c) => {
+  try {
+    const now = new Date().toISOString();
+    const { error } = await getSupabase(c.env).from('rounds').update({ renewed_at: now }).eq('id', c.req.param('id'));
+    if (error) throw error;
+    return c.json({ success: true, renewed_at: now });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+app.post('/api/v1/rounds/renew-all', async (c) => {
+  try {
+    const a = c.get('auth');
+    const tenantId = a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') : a.tenant_id;
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+    const now = new Date().toISOString();
+    const { error } = await getSupabase(c.env).from('rounds').update({ renewed_at: now }).eq('tenant_id', tenantId);
+    if (error) throw error;
+    return c.json({ success: true, renewed_at: now });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+// Runs that were left open for far too long are closed by the scheduler so the board never shows ghosts.
+async function closeStaleRuns(env: Bindings) {
+  const supabase = getSupabase(env);
+  const cutoff = new Date(Date.now() - 16 * 3600000).toISOString();
+  await supabase.from('patrol_sessions')
+    .update({ status: 'ENDED_EARLY', end_time: new Date().toISOString(), ended_reason: 'AUTO_CLOSED', paused_at: null })
+    .in('status', ['ACTIVE', 'PAUSED']).lt('start_time', cutoff);
+}
+
+// =====================================================================
+// DAILY SHIFT REPORTS
+// =====================================================================
+const REASON_LABEL: Record<string, string> = {
+  SHIFT_ENDING: 'Shift ending', OTHER_WORK: 'Other work', EMERGENCY: 'Emergency', ROUTE_BLOCKED: 'Route blocked', OTHER: 'Other', AUTO_CLOSED: 'Closed automatically',
+};
+const localHM = (env: Bindings, ms: number) => new Date(ms + siteOffsetMinutes(env) * MIN_MS).toISOString().slice(11, 16);
+const localDate = (env: Bindings, ms: number) => new Date(ms + siteOffsetMinutes(env) * MIN_MS).toISOString().slice(0, 10);
+const durationText = (sec: number) => {
+  const m = Math.max(0, Math.round(sec / 60));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+};
+
+async function buildShiftReport(supabase: any, env: Bindings, tenantName: string, guard: any, wStartMs: number, wEndMs: number, shiftName: string) {
+  const wStart = new Date(wStartMs).toISOString(), wEnd = new Date(wEndMs).toISOString();
+  const [sessRes, scanRes, incRes] = await Promise.all([
+    supabase.from('patrol_sessions').select('id, round_id, status, completed_route, start_time, end_time, ended_reason, ended_note, pause_reason, paused_seconds')
+      .eq('guard_id', guard.guard_id).lt('start_time', wEnd).or(`end_time.is.null,end_time.gte.${wStart}`).order('start_time'),
+    supabase.from('scans').select('checkpoint_id, scan_time').eq('guard_id', guard.guard_id).gte('scan_time', wStart).lt('scan_time', wEnd).order('scan_time').limit(1000),
+    supabase.from('incidents').select('case_number, title, priority, status, reported_at').eq('guard_id', guard.guard_id).gte('reported_at', wStart).lt('reported_at', wEnd).order('reported_at'),
+  ]);
+  const sessions: any[] = sessRes.data || [], scans: any[] = scanRes.data || [], incidents: any[] = incRes.data || [];
+
+  const roundIds = [...new Set(sessions.map((s) => s.round_id))];
+  const roundName = new Map<string, string>();
+  const cpsByRound = new Map<string, any[]>();
+  if (roundIds.length > 0) {
+    const [rr, cc] = await Promise.all([
+      supabase.from('rounds').select('id, name').in('id', roundIds),
+      supabase.from('checkpoints').select('checkpoint_id, round_id, name').in('round_id', roundIds).order('name'),
+    ]);
+    for (const r of rr.data || []) roundName.set(r.id, r.name);
+    for (const x of cc.data || []) cpsByRound.set(x.round_id, [...(cpsByRound.get(x.round_id) || []), x]);
+  }
+
+  const t = (iso: string) => localHM(env, new Date(iso).getTime());
+  let completedRuns = 0, endedEarly = 0;
+  const rows = sessions.map((s) => {
+    const cps = cpsByRound.get(s.round_id) || [];
+    const from = new Date(s.start_time).getTime();
+    const to = s.end_time ? new Date(s.end_time).getTime() : wEndMs;
+    const got = new Set(scans.filter((x) => { const m = new Date(x.scan_time).getTime(); return m >= from && m <= to; }).map((x) => x.checkpoint_id));
+    const done = cps.filter((x) => got.has(x.checkpoint_id));
+    const missed = cps.filter((x) => !got.has(x.checkpoint_id));
+    const active = s.end_time ? new Date(s.end_time).getTime() : wEndMs;
+    const worked = Math.max(0, (active - from) / 1000 - (s.paused_seconds || 0));
+
+    let status = 'Closed';
+    if (s.completed_route) { status = 'Completed'; completedRuns++; }
+    else if (s.status === 'ENDED_EARLY') { status = `Ended early · ${REASON_LABEL[s.ended_reason] || 'Other'}`; endedEarly++; }
+    else if (s.status === 'PAUSED') status = `Paused${s.pause_reason ? ' · ' + s.pause_reason : ''} (not resumed)`;
+    else if (s.status === 'ACTIVE' && !s.end_time) status = 'Still open at shift end';
+    return { name: roundName.get(s.round_id) || 'Route', start: t(s.start_time), end: s.end_time ? t(s.end_time) : '—', worked, status, done, total: cps.length, missed, note: s.ended_note };
+  });
+
+  const cell = 'padding:7px 9px;border:1px solid #e2e8f0;font-size:12px;vertical-align:top;';
+  const head = 'padding:7px 9px;border:1px solid #e2e8f0;background:#f1f5f9;font-size:11px;text-align:left;color:#475569;';
+  const tile = (n: any, l: string) => `<td style="padding:12px;border:1px solid #e2e8f0;text-align:center;"><div style="font-size:22px;font-weight:800;color:#0f172a;">${esc(n)}</div><div style="font-size:11px;color:#64748b;">${esc(l)}</div></td>`;
+
+  const subject = `[Rakshak] Shift report · ${guard.full_name} · ${shiftName} · ${localDate(env, wStartMs)}`;
+  const html = `
+  <div style="font-family:Arial,sans-serif;max-width:680px;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;">
+    <div style="background:#0f172a;color:#fff;padding:16px 20px;">
+      <h2 style="margin:0;font-size:17px;">Daily shift report</h2>
+      <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">${esc(tenantName)} · ${esc(shiftName)} shift (${localHM(env, wStartMs)}–${localHM(env, wEndMs)}) · ${localDate(env, wStartMs)}</p>
+    </div>
+    <div style="padding:18px 20px;color:#1e293b;font-size:13px;">
+      <p style="margin:0 0 12px;"><strong>${esc(guard.full_name)}</strong>${guard.phone ? ' · ' + esc(guard.phone) : ''}</p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px;"><tr>
+        ${tile(completedRuns, 'Routes completed')}${tile(endedEarly, 'Ended early')}${tile(scans.length, 'Checkpoints scanned')}${tile(incidents.length, 'Incidents reported')}
+      </tr></table>
+      <h3 style="margin:0 0 6px;font-size:14px;">Routes</h3>
+      ${rows.length === 0 ? '<p style="color:#64748b;">No route was started in this shift.</p>' : `
+      <table style="width:100%;border-collapse:collapse;"><tr>
+        <th style="${head}">Route</th><th style="${head}">Time</th><th style="${head}">Worked</th><th style="${head}">Checkpoints</th><th style="${head}">Status</th></tr>
+        ${rows.map((r) => `<tr>
+          <td style="${cell}"><strong>${esc(r.name)}</strong></td>
+          <td style="${cell}">${esc(r.start)} – ${esc(r.end)}</td>
+          <td style="${cell}">${esc(durationText(r.worked))}</td>
+          <td style="${cell}">${r.done.length} of ${r.total}${r.missed.length ? `<div style="color:#b91c1c;font-size:11px;margin-top:3px;">Not scanned: ${esc(r.missed.map((m: any) => m.name).join(', '))}</div>` : ''}</td>
+          <td style="${cell}">${esc(r.status)}${r.note ? `<div style="color:#64748b;font-size:11px;margin-top:3px;">“${esc(r.note)}”</div>` : ''}</td></tr>`).join('')}
+      </table>`}
+      <h3 style="margin:18px 0 6px;font-size:14px;">Incidents</h3>
+      ${incidents.length === 0 ? '<p style="color:#64748b;">No incidents reported.</p>' : `
+      <table style="width:100%;border-collapse:collapse;"><tr>
+        <th style="${head}">Case</th><th style="${head}">Time</th><th style="${head}">Severity</th><th style="${head}">Summary</th><th style="${head}">Status</th></tr>
+        ${incidents.map((i) => `<tr>
+          <td style="${cell}">${i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—'}</td>
+          <td style="${cell}">${esc(t(i.reported_at))}</td><td style="${cell}">${esc(i.priority)}</td>
+          <td style="${cell}">${esc(i.title)}</td><td style="${cell}">${esc(i.status)}</td></tr>`).join('')}
+      </table>`}
+      <p style="margin:18px 0 0;color:#94a3b8;font-size:11px;">Sent automatically by Rakshak after the shift ended.</p>
+    </div>
+  </div>`;
+
+  return { subject, html, hasActivity: sessions.length > 0 || scans.length > 0 || incidents.length > 0 };
+}
+
+async function reportRecipients(supabase: any, cfg: Record<string, string>, guard: any): Promise<string[]> {
+  const out = new Set<string>();
+  for (const e of String(cfg['DAILY_REPORT_EMAILS'] || '').split(/[,;\s]+/)) {
+    const ok = safeEmail(e);
+    if (ok) out.add(ok);
+  }
+  if (cfg['DAILY_REPORT_TO_SUPERVISOR'] === 'true' && guard.reporting_to) {
+    const { data: sup } = await supabase.from('guards').select('*').eq('guard_id', guard.reporting_to).maybeSingle();
+    let email = safeEmail(sup?.email);
+    if (!email) {
+      const blob = await getGuardExtendedProfilesMap(supabase);
+      email = safeEmail(blob?.[guard.reporting_to]?.email);
+    }
+    if (email) out.add(email);
+  }
+  return [...out];
+}
+
+async function sendTenantEmail(env: Bindings, tenantId: string, recipients: string[], subject: string, html: string): Promise<{ ok: boolean; error?: string }> {
+  const supabase = getSupabase(env);
+  const cfg = await loadTenantConfig(supabase, tenantId);
+  const tokenResult = await getValidGmailAccessToken(supabase, cfg, `t:${tenantId}:`);
+  if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
+
+  const raw = utf8ToBase64([
+    `To: ${recipients.join(', ')}`,
+    `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    html,
+  ].join('\r\n')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  try {
+    const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenResult.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!res.ok) {
+      const body: any = await res.json().catch(() => ({}));
+      return { ok: false, error: body?.error?.message || `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Network error calling Gmail' };
+  }
+}
+
+async function guardsActiveBetween(supabase: any, tenantId: string, wStart: string, wEnd: string): Promise<any[]> {
+  const [s1, s2, s3] = await Promise.all([
+    supabase.from('patrol_sessions').select('guard_id').eq('tenant_id', tenantId).lt('start_time', wEnd).or(`end_time.is.null,end_time.gte.${wStart}`).limit(500),
+    supabase.from('scans').select('guard_id').eq('tenant_id', tenantId).gte('scan_time', wStart).lt('scan_time', wEnd).limit(2000),
+    supabase.from('incidents').select('guard_id').eq('tenant_id', tenantId).gte('reported_at', wStart).lt('reported_at', wEnd).limit(500),
+  ]);
+  const ids = [...new Set([...(s1.data || []), ...(s2.data || []), ...(s3.data || [])].map((r: any) => r.guard_id).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const { data } = await supabase.from('guards').select('*').in('guard_id', ids);
+  return data || [];
+}
+
+/** Scheduler: after each configured shift ends, send one report per guard who worked it. */
+async function runDailyReports(env: Bindings) {
+  const supabase = getSupabase(env);
+  const { data: tenants } = await supabase.from('tenants').select('id, name, features, status');
+  const nowMs = Date.now();
+  let budget = 40; // reports per run, keeps each scheduled run short
+
+  for (const t of tenants || []) {
+    if (budget <= 0) break;
+    const f = normalizeTenantFeatures(t.features);
+    if ((t.status || 'ACTIVE') !== 'ACTIVE' || !f.module_patrol.allow_daily_reports || !f.module_integrations.channels.gmail_oauth) continue;
+
+    const cfg = await loadTenantConfig(supabase, t.id);
+    if (cfg['DAILY_REPORT_ENABLED'] !== 'true') continue;
+    const shifts = parseShifts(cfg['DAILY_REPORT_SHIFTS']);
+    if (shifts.length === 0) continue;
+    const delayMs = (Number(cfg['DAILY_REPORT_DELAY_MIN']) > 0 ? Number(cfg['DAILY_REPORT_DELAY_MIN']) : 15) * MIN_MS;
+
+    // Only shifts that ended recently (grace of 3 hours covers a delayed scheduler run).
+    const due = shiftWindows(env, shifts).filter((w) => nowMs >= w.endMs + delayMs && nowMs < w.endMs + delayMs + 3 * 3600000);
+    for (const w of due) {
+      const guards = await guardsActiveBetween(supabase, t.id, new Date(w.startMs).toISOString(), new Date(w.endMs).toISOString());
+      for (const g of guards) {
+        if (budget <= 0) break;
+        const key = { tenant_id: t.id, guard_id: String(g.guard_id), shift_name: w.name, report_date: localDate(env, w.startMs) };
+
+        // Claim the slot first so two runs can never send the same report twice.
+        const claim = await supabase.from('daily_report_log').insert([{ ...key, status: 'PENDING' }]);
+        if (claim.error) {
+          const { data: existing } = await supabase.from('daily_report_log').select('status').match(key).maybeSingle();
+          if (!existing || existing.status !== 'FAILED') continue; // already sent / skipped
+        }
+        budget--;
+
+        const recipients = await reportRecipients(supabase, cfg, g);
+        if (recipients.length === 0) {
+          await supabase.from('daily_report_log').update({ status: 'SKIPPED', error: 'No recipient configured' }).match(key);
+          continue;
+        }
+        const report = await buildShiftReport(supabase, env, t.name, g, w.startMs, w.endMs, w.name);
+        const sent = await sendTenantEmail(env, t.id, recipients, report.subject, report.html);
+        await supabase.from('daily_report_log')
+          .update({ status: sent.ok ? 'SENT' : 'FAILED', error: sent.error || null, recipients: recipients.join(', '), sent_at: sent.ok ? new Date().toISOString() : null })
+          .match(key);
+      }
+    }
+  }
+}
+
+function reportTenant(c: any): string | null {
+  const a = c.get('auth') as AuthContext;
+  return a.tier === 'SUPER_ADMIN' ? c.req.query('tenant_id') || null : a.tenant_id;
+}
+
+// Admins: preview or send today's report so far (also the quickest way to test the email setup).
+app.post('/api/v1/daily-reports/send-now', async (c) => {
+  try {
+    const tenantId = reportTenant(c);
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+    const supabase = getSupabase(c.env);
+    const body = await c.req.json().catch(() => ({}));
+    const { data: tenant } = await supabase.from('tenants').select('name').eq('id', tenantId).maybeSingle();
+    const cfg = await loadTenantConfig(supabase, tenantId);
+
+    const wStartMs = new Date(startOfSiteDayISO(c.env)).getTime(), wEndMs = Date.now();
+    let guards = await guardsActiveBetween(supabase, tenantId, new Date(wStartMs).toISOString(), new Date(wEndMs).toISOString());
+    if (body?.guard_id) guards = guards.filter((g) => g.guard_id === body.guard_id);
+    guards = guards.slice(0, 20);
+    if (guards.length === 0) return c.json({ success: true, empty: true, message: 'No guard has any activity today yet.' });
+
+    if (body?.preview) {
+      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', guards[0], wStartMs, wEndMs, 'Today so far');
+      return c.json({ success: true, subject: r.subject, html: r.html, guards: guards.length });
+    }
+
+    let sent = 0, skipped = 0, failed = 0;
+    const errors: string[] = [];
+    for (const g of guards) {
+      const recipients = await reportRecipients(supabase, cfg, g);
+      if (recipients.length === 0) { skipped++; continue; }
+      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', g, wStartMs, wEndMs, 'Today so far');
+      const res = await sendTenantEmail(c.env, tenantId, recipients, r.subject, r.html);
+      if (res.ok) sent++; else { failed++; errors.push(res.error || 'send failed'); }
+    }
+    return c.json({ success: true, sent, skipped, failed, errors: [...new Set(errors)].slice(0, 3) });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Could not build the report') }, 500);
+  }
+});
+
+app.get('/api/v1/daily-reports/log', async (c) => {
+  try {
+    const tenantId = reportTenant(c);
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+    const supabase = getSupabase(c.env);
+    const { data } = await supabase.from('daily_report_log').select('guard_id, shift_name, report_date, status, recipients, error, sent_at, created_at')
+      .eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(40);
+    const rows: any[] = data || [];
+    const names = new Map<string, string>();
+    const ids = [...new Set(rows.map((r) => r.guard_id))];
+    if (ids.length > 0) {
+      const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', ids);
+      for (const g of gs || []) names.set(g.guard_id, g.full_name);
+    }
+    return c.json({ success: true, log: rows.map((r) => ({ ...r, guard_name: names.get(r.guard_id) || 'Unknown' })) });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
   }
 });
 
@@ -1762,42 +2293,25 @@ app.get('/api/v1/dashboard/summary', async (c) => {
 
     // ---- patrol ----
     if (wantPatrol) {
-      const [roundsRes, sessRes, scansRes] = await Promise.all([
-        applyTenant(supabase.from('rounds').select('id, name'), tenant).order('name'),
-        applyTenant(supabase.from('patrol_sessions').select('round_id, guard_id, status, completed_route, start_time, end_time'), tenant).gte('start_time', dayStart),
+      const [board, scansRes, activeRes] = await Promise.all([
+        computeRouteBoard(supabase, c.env, tenant, null),
         applyTenant(supabase.from('scans').select('*', { count: 'exact', head: true }), tenant).gte('scan_time', dayStart),
+        applyTenant(supabase.from('patrol_sessions').select('guard_id'), tenant).eq('status', 'ACTIVE'),
       ]);
-      const rounds: any[] = roundsRes.data || [];
-      const sessions: any[] = sessRes.data || [];
-
-      const ids = [...new Set(sessions.map((s) => s.guard_id))];
-      const nameOf = new Map<string, string>();
-      if (ids.length > 0) {
-        const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', ids);
-        for (const g of gs || []) nameOf.set(g.guard_id, g.full_name);
-      }
-
-      const board = rounds.map((r) => {
-        const rs = sessions.filter((s) => s.round_id === r.id);
-        const done = rs.filter((s) => s.completed_route).sort((x, y) => String(y.end_time).localeCompare(String(x.end_time)))[0];
-        const active = rs.filter((s) => s.status === 'ACTIVE' && !s.completed_route);
-        return {
-          id: r.id,
-          name: r.name,
-          status: done ? 'DONE' : active.length > 0 ? 'IN_PROGRESS' : 'PENDING',
-          done_by: done ? nameOf.get(done.guard_id) || null : null,
-          done_at: done ? done.end_time : null,
-          on_it: [...new Set(active.map((s) => nameOf.get(s.guard_id) || 'A guard'))],
-        };
-      });
+      const count = (st: string) => board.filter((r: any) => r.status === st).length;
       out.patrol = {
         routes_total: board.length,
-        routes_done: board.filter((r) => r.status === 'DONE').length,
-        routes_in_progress: board.filter((r) => r.status === 'IN_PROGRESS').length,
-        routes_pending: board.filter((r) => r.status === 'PENDING').length,
-        active_guards: new Set(sessions.filter((s) => s.status === 'ACTIVE' && !s.completed_route).map((s) => s.guard_id)).size,
+        routes_done: count('DONE'),
+        routes_in_progress: count('IN_PROGRESS'),
+        routes_paused: count('PAUSED'),
+        routes_partial: count('PARTIAL'),
+        routes_pending: count('PENDING'),
+        active_guards: new Set((activeRes.data || []).map((x: any) => x.guard_id)).size,
         scans_today: scansRes.count ?? 0,
-        routes: board.slice(0, 20),
+        routes: board.slice(0, 20).map((r: any) => ({
+          id: r.id, name: r.name, status: r.status, done_by: r.done_by, done_at: r.done_at,
+          on_it: r.on_it, paused_by: r.paused_by, progress: r.progress,
+        })),
       };
     }
 
@@ -3243,6 +3757,10 @@ export default {
   },
   
   scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
+    // Housekeeping first, each guarded so one failure never blocks incident escalation below.
+    try { await closeStaleRuns(env); } catch (e) { console.error('closeStaleRuns failed', e); }
+    try { await runDailyReports(env); } catch (e) { console.error('runDailyReports failed', e); }
+
     const supabase = getSupabase(env);
     const tenMinutesAgo = new Date(Date.now() - 10 * 60000).toISOString();
     

@@ -164,6 +164,7 @@ export const GuardsView: React.FC = () => {
     assigned_round_ids: [] as string[],
     tier: 'USER' as string,
     tenant_id: '' as string,
+    reporting_to: '' as string,
   });
 
   const [selectedRoundIds, setSelectedRoundIds] = useState<string[]>([]);
@@ -426,6 +427,7 @@ export const GuardsView: React.FC = () => {
       assigned_round_ids: getGuardRoundIds(guard),
       tier: guard.tier === 'INDUSTRY_ADMIN' ? 'INDUSTRY_ADMIN' : 'USER',
       tenant_id: guard.tenant_id || '',
+      reporting_to: guard.reporting_to || '',
     });
   };
 
@@ -450,6 +452,7 @@ export const GuardsView: React.FC = () => {
         assignment_group: groupsToSave[0],
         assigned_round_ids: editForm.assigned_round_ids,
         assigned_round_id: editForm.assigned_round_ids[0] || null,
+        reporting_to: editForm.reporting_to || null,
         // Only the platform Super Admin sends these; the server also enforces it.
         ...(isSuper && editingGuard.tier !== 'SUPER_ADMIN'
           ? { tier: editForm.tier, ...(editForm.tenant_id ? { tenant_id: editForm.tenant_id } : {}) }
@@ -1427,6 +1430,23 @@ export const GuardsView: React.FC = () => {
                   </p>
                 </div>
               )}
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Reports to (supervisor)</label>
+                <select
+                  value={editForm.reporting_to}
+                  onChange={(e) => setEditForm({ ...editForm, reporting_to: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 outline-none bg-white text-slate-800"
+                >
+                  <option value="">No supervisor</option>
+                  {guards
+                    .filter((g) => g.guard_id !== editingGuard?.guard_id && (editingGuard?.tenant_id ? g.tenant_id === editingGuard.tenant_id : true))
+                    .map((g) => (
+                      <option key={g.guard_id} value={g.guard_id}>{g.full_name} · {g.role || 'Guard'}</option>
+                    ))}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-500">Daily shift reports for this person are emailed to their supervisor (needs an email on the supervisor's profile).</p>
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

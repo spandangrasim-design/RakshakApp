@@ -6,11 +6,11 @@ import {
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
 
-interface RouteRow { id: string; name: string; status: 'DONE' | 'IN_PROGRESS' | 'PENDING'; done_by: string | null; done_at: string | null; on_it: string[] }
+interface RouteRow { id: string; name: string; status: 'DONE' | 'IN_PROGRESS' | 'PAUSED' | 'PARTIAL' | 'PENDING'; done_by: string | null; done_at: string | null; on_it: string[]; paused_by?: string[]; progress?: { scanned: number; total: number } }
 interface Summary {
   generated_at: string;
   guards: { total: number; active: number; guests: number } | null;
-  patrol: { routes_total: number; routes_done: number; routes_in_progress: number; routes_pending: number; active_guards: number; scans_today: number; routes: RouteRow[] } | null;
+  patrol: { routes_total: number; routes_done: number; routes_in_progress: number; routes_paused?: number; routes_partial?: number; routes_pending: number; active_guards: number; scans_today: number; routes: RouteRow[] } | null;
   incidents: {
     total: number; resolved: number; open: number;
     open_by_priority: Record<string, number>;
@@ -122,6 +122,8 @@ const PRIORITY: { key: string; label: string; bar: string }[] = [
 const STATUS_STYLE: Record<RouteRow['status'], { chip: string; label: string; dot: string }> = {
   DONE: { chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'Done', dot: 'bg-emerald-500' },
   IN_PROGRESS: { chip: 'bg-amber-50 text-amber-700 border-amber-200', label: 'In progress', dot: 'bg-amber-500' },
+  PAUSED: { chip: 'bg-sky-50 text-sky-700 border-sky-200', label: 'Paused', dot: 'bg-sky-500' },
+  PARTIAL: { chip: 'bg-orange-50 text-orange-700 border-orange-200', label: 'Partly done', dot: 'bg-orange-500' },
   PENDING: { chip: 'bg-slate-50 text-slate-600 border-slate-200', label: 'Not started', dot: 'bg-slate-300' },
 };
 
@@ -197,7 +199,7 @@ export const OverviewPage: React.FC = () => {
         <>
           {/* KPIs: only modules the industry bought appear */}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {p && <Stat to="/reports" label="Routes completed today" value={p.routes_done} suffix={`/${p.routes_total}`} hint={`${p.routes_in_progress} in progress`} icon={<CheckCircle2 className="h-5 w-5" />} tone="bg-emerald-50 text-emerald-600" delay={0} />}
+            {p && <Stat to="/reports" label="Routes completed today" value={p.routes_done} suffix={`/${p.routes_total}`} hint={`${p.routes_in_progress} in progress${p.routes_paused ? ', ' + p.routes_paused + ' paused' : ''}`} icon={<CheckCircle2 className="h-5 w-5" />} tone="bg-emerald-50 text-emerald-600" delay={0} />}
             {p && <Stat to="/reports" label="Guards on patrol" value={p.active_guards} hint="Walking a route right now" icon={<Footprints className="h-5 w-5" />} tone="bg-brand-50 text-brand-600" delay={70} />}
             {p && <Stat to="/reports" label="Checkpoints scanned" value={p.scans_today} hint="Since midnight" icon={<ScanLine className="h-5 w-5" />} tone="bg-violet-50 text-violet-600" delay={140} />}
             {inc && <Stat to="/incidents" label="Open incidents" value={inc.open} hint={`${inc.resolved} resolved in total`} icon={<AlertTriangle className="h-5 w-5" />} tone={inc.open > 0 ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500'} delay={210} />}
@@ -225,7 +227,11 @@ export const OverviewPage: React.FC = () => {
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-bold text-slate-900">{r.name}</div>
                           <div className="truncate text-xs text-slate-400">
-                            {r.status === 'DONE' ? `Completed by ${r.done_by || 'a guard'}${r.done_at ? ' at ' + fmtTime(r.done_at) : ''}` : r.status === 'IN_PROGRESS' ? `On it now: ${r.on_it.join(', ')}` : 'Waiting for a guard'}
+                            {r.status === 'DONE' ? `Completed by ${r.done_by || 'a guard'}${r.done_at ? ' at ' + fmtTime(r.done_at) : ''}`
+                              : r.status === 'IN_PROGRESS' ? `On it now: ${r.on_it.join(', ')}`
+                              : r.status === 'PAUSED' ? `Paused by ${(r.paused_by || []).join(', ') || 'a guard'}`
+                              : r.status === 'PARTIAL' ? `${r.progress?.scanned ?? 0} of ${r.progress?.total ?? 0} checkpoints done. Needs a guard to continue`
+                              : 'Waiting for a guard'}
                           </div>
                         </div>
                         <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_STYLE[r.status].chip}`}>{STATUS_STYLE[r.status].label}</span>
@@ -243,7 +249,7 @@ export const OverviewPage: React.FC = () => {
                 <p className="mb-4 text-xs text-slate-400">Routes finished vs. planned</p>
                 <Ring done={p.routes_done} total={p.routes_total} />
                 <div className="mt-5 grid grid-cols-3 gap-2 text-center">
-                  {[['Done', p.routes_done, 'text-emerald-600'], ['Active', p.routes_in_progress, 'text-amber-600'], ['Waiting', p.routes_pending, 'text-slate-500']].map(([l, v, c]) => (
+                  {[['Done', p.routes_done, 'text-emerald-600'], ['Active', p.routes_in_progress, 'text-amber-600'], ['Waiting', p.routes_pending + (p.routes_partial || 0) + (p.routes_paused || 0), 'text-slate-500']].map(([l, v, c]) => (
                     <div key={String(l)} className="rounded-xl bg-slate-50 py-2.5">
                       <div className={`text-lg font-extrabold ${c}`}>{v}</div>
                       <div className="text-[11px] font-semibold text-slate-400">{l}</div>

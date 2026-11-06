@@ -91,3 +91,17 @@ Fixes: selfie camera retries quietly on first start; Field build refuses a copie
 industry (RKS-000001) - run SQL/005_case_numbers.sql; incident create can no longer overwrite another industry's incident.
 Redesign step 1 (web): design tokens + animations, toast notifications (every alert() becomes a toast),
 new sidebar/top-bar shell, new Overview dashboard (GET /api/v1/dashboard/summary).
+
+---
+# Round 7: pause/end route, route renewal, daily shift reports
+Run SQL/006_runs_renewal_reports.sql BEFORE deploying the backend.
+
+Route cycles: a route works in cycles (midnight, or every N hours per route, or "Renew now" by an admin).
+Checkpoints scanned by ANY guard in the cycle count, so a guard who stops hands the rest to the next guard.
+Statuses: Not started / In progress / Paused / Partly done / Done.
+Field app: Pause, Resume, End route (with reason + note), shift-ending banner, shared progress.
+Web: QR page has per-route "Repeats", "Renew", "Renew all", and "Renew when a new guard joins".
+Daily reports: new feature switch "Daily shift reports by email" (Industries page). New "Daily reports" page:
+shifts, delay, recipients, preview, test send, history. Reports go to the guard's "Reports to" supervisor (People page)
+plus any extra addresses. Needs Gmail alerts enabled + connected. Scheduler runs every 10 min (wrangler cron).
+Not yet in the main guard app (rakshak_mobile): pause / end route there is a follow-up.

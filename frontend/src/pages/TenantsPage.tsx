@@ -18,6 +18,7 @@ const CATALOG: ModuleDef[] = [
       { path: 'module_patrol.allow_live_gps_trail', label: 'Live GPS trail' },
       { path: 'module_patrol.allow_geofence_audit', label: 'Geofence audit' },
       { path: 'module_patrol.allow_guest_enrollment', label: 'Field app: no-login guest enrolment' },
+      { path: 'module_patrol.allow_daily_reports', label: 'Daily shift reports by email' },
     ],
   },
   {

@@ -18,6 +18,9 @@ class ApiException implements Exception {
 }
 
 class Api {
+  /// The current shift window from the server (if the industry configured shifts): {name, start_at, end_at}.
+  static Map<String, dynamic>? shift;
+
   /// Set by main.dart: send the guard back to the join screen.
   static void Function()? onUnauthorized;
 
@@ -113,6 +116,7 @@ class Api {
   // ---------- routes ----------
   static Future<List<Map<String, dynamic>>> routes() async {
     final d = await _request('GET', '/field/routes');
+    shift = d['shift'] is Map ? Map<String, dynamic>.from(d['shift'] as Map) : null;
     await Session.updateAccess(
       Map<String, dynamic>.from((d['app_permissions'] as Map?) ?? {}),
       ((d['incident_form_fields'] as List?) ?? []).map((e) => e.toString()).toList(),
@@ -121,9 +125,25 @@ class Api {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
-  static Future<String> startRun(String roundId) async {
-    final d = await _request('POST', '/field/runs/start', body: {'round_id': roundId});
-    return d['session_id'].toString();
+  /// Returns {session_id, status ('ACTIVE' or 'PAUSED'), resumed}.
+  static Future<Map<String, dynamic>> startRun(String roundId) async {
+    return _request('POST', '/field/runs/start', body: {'round_id': roundId});
+  }
+
+  static Future<void> pauseRun(String sessionId, {String? reason}) async {
+    await _request('POST', '/field/runs/$sessionId/pause', body: {if (reason != null) 'reason': reason});
+  }
+
+  static Future<void> resumeRun(String sessionId) async {
+    await _request('POST', '/field/runs/$sessionId/resume');
+  }
+
+  /// Stops the run before the route is finished. Returns {completed, scanned, total}.
+  static Future<Map<String, dynamic>> endRun(String sessionId, {required String reason, String? note}) async {
+    return _request('POST', '/field/runs/$sessionId/end', body: {
+      'reason': reason,
+      if (note != null && note.isNotEmpty) 'note': note,
+    });
   }
 
   static Future<String?> completeRun(String sessionId) async {

@@ -11,6 +11,7 @@ import TenantsPage from './pages/TenantsPage';
 import { apiFetch } from './services/api';
 import AppShell from './components/AppShell';
 import OverviewPage from './pages/OverviewPage';
+import DailyReportsPage from './pages/DailyReportsPage';
 import { ToastHost } from './components/ui/Toast';
 
 interface VisibleModules {
@@ -117,6 +118,20 @@ export const App: React.FC = () => {
                         token && !isSuper ? (
                             <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
                                 <OverviewPage />
+                            </AdminLayout>
+                        ) : (
+                            <Navigate to={token ? defaultRedirect : '/login'} replace />
+                        )
+                    }
+                />
+
+                {/* Daily shift reports (only when the industry bought the feature) */}
+                <Route
+                    path="/daily-reports"
+                    element={
+                        token && !isSuper && visibleModules.module_patrol === true && (visibleModules as any).daily_reports === true ? (
+                            <AdminLayout user={user} modules={visibleModules} onLogout={handleLogout}>
+                                <DailyReportsPage />
                             </AdminLayout>
                         ) : (
                             <Navigate to={token ? defaultRedirect : '/login'} replace />
