@@ -389,7 +389,8 @@ const QRGenerator: React.FC = () => {
       const brandLogo = customBrand?.logo_url || storedUser.tenant_logo_url || null;
       const brandName = customBrand?.name || storedUser.tenant_name || round.name || 'Industrial Facility';
       const brandAddress = customBrand?.address || storedUser.tenant_address || '';
-      const spandanLogo = customBrand?.spandan_logo_url || '/spandan-logo.png';
+      const defaultSpandanLogo = window.location.origin + '/branding/spandan-it-logo.png';
+      const spandanLogo = customBrand?.spandan_logo_url || defaultSpandanLogo;
 
       const blob = await pdf(
         <QRSheetPDF

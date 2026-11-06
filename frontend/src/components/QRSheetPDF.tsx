@@ -225,6 +225,7 @@ export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({
   const resolvedName = industryName || brand.name;
   const resolvedLogo = industryLogoUrl !== undefined ? industryLogoUrl : brand.logoUrl;
   const resolvedAddress = industryAddress || (brand as any).address || '';
+  const resolvedSpandanLogo = spandanLogoUrl || (typeof window !== 'undefined' ? window.location.origin + '/branding/spandan-it-logo.png' : '/branding/spandan-it-logo.png');
 
   return (
     <Document>
@@ -256,7 +257,7 @@ export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({
             <View style={styles.footer}>
               {/* Left: Spandan IT Professionals */}
               <View style={styles.footerColLeft}>
-                {spandanLogoUrl ? <Image src={spandanLogoUrl} style={styles.spandanLogo} /> : null}
+                {resolvedSpandanLogo ? <Image src={resolvedSpandanLogo} style={styles.spandanLogo} /> : null}
                 <Text style={styles.poweredLabel}>POWERED BY</Text>
                 <Text style={styles.spandanTitle}>Spandan IT Professionals</Text>
               </View>
