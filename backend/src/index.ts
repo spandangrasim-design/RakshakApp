@@ -2503,7 +2503,10 @@ app.patch('/api/v1/super-admin/tenants/:id', async (c) => {
         patch.logo_url = null
       } else {
         const origin = new URL(c.req.url).origin
-        const uploaded = await storeBrandLogo(c.env.R2_BUCKET, origin, c.req.param('id'), body.logo_base64)
+        let uploaded = null;
+        if (c.env.R2_BUCKET) {
+          uploaded = await storeBrandLogo(c.env.R2_BUCKET, origin, c.req.param('id'), body.logo_base64);
+        }
         if (!uploaded) return c.json({ success: false, message: 'Invalid logo. Use PNG, JPG, or SVG under 5MB.' }, 400)
         patch.logo_url = uploaded
       }
