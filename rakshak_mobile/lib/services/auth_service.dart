@@ -8,7 +8,7 @@ import '../config/api_config.dart';
 class AuthService {
   static const String apiUrl = ApiConfig.loginUrl;
 
-  Future<Map<String, dynamic>> login(String employeeCode, String password) async {
+  Future> login(String employeeCode, String password) async {
     try {
       final response = await http.post(
         Uri.parse(apiUrl),
@@ -31,19 +31,23 @@ class AuthService {
         final String guardName = guard['full_name'] ?? 'Security Guard';
         final String guardRole = guard['role'] ?? 'Guard';
         final String tenantId = guard['tenant_id'] ?? '';
+        final String tenantName = guard['tenant_name'] ?? 'Rakshak Security';
+        final String tenantLogoUrl = guard['tenant_logo_url'] ?? '';
         final bool isSuperAdmin = guard['is_super_admin'] == true;
 
         // 1. Session tokens
-        await TokenStore.write(token); // encrypted storage; never plain-text prefs
+        await TokenStore.write(token);
 
-        // 2. Profile identity
+        // 2. Profile & Industry Branding identity
         await prefs.setString('guard_id', guardId);
         await prefs.setString('guard_name', guardName);
         await prefs.setString('guard_role', guardRole);
         await prefs.setString('tenant_id', tenantId);
+        await prefs.setString('tenant_name', tenantName);
+        await prefs.setString('tenant_logo_url', tenantLogoUrl);
         await prefs.setBool('is_super_admin', isSuperAdmin);
 
-        // 3. User & Tenant resolved permissions (for instant UI gating)
+        // 3. User & Tenant resolved permissions
         if (data['app_permissions'] != null) {
           await prefs.setString(
             'app_permissions',

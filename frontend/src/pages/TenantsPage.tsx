@@ -1,12 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Building2, Plus, Save, Ban, CheckCircle2, UserPlus, Loader2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Building2, Plus, Save, Ban, CheckCircle2, UserPlus, Loader2,
+  UploadCloud, Trash2, RefreshCw, AlertCircle, MapPin,
+} from 'lucide-react';
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
+const MAX_LOGO_BYTES = 5 * 1024 * 1024; // 5MB
+const VALID_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'];
 
-// ---------------------------------------------------------------------------
-// The catalog below is what the Super Admin sells. Each leaf is a path into tenants.features.
-// Sub-features are only editable while their parent module is on.
-// ---------------------------------------------------------------------------
 interface Leaf { path: string; label: string }
 interface ModuleDef { path: string; label: string; children: Leaf[] }
 
@@ -62,13 +63,29 @@ const setPath = (obj: any, path: string, value: boolean) => {
 };
 const isOn = (features: any, modulePath: string) => getPath(features, `${modulePath}.enabled`);
 
-interface Tenant { id: string; name: string; status: string; features: any; guest_join_code?: string | null }
+interface Tenant {
+  id: string;
+  name: string;
+  code?: string;
+  status: string;
+  features: any;
+  guest_join_code?: string | null;
+  logo_url?: string | null;
+  address?: string | null;
+}
 
 const TenantsPage: React.FC = () => {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<any>({});
   const [joinCode, setJoinCode] = useState('');
+  const [address, setAddress] = useState('');
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoBase64, setLogoBase64] = useState<string | null | undefined>(undefined);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -81,8 +98,20 @@ const TenantsPage: React.FC = () => {
 
   const selected = useMemo(() => tenants.find((t) => t.id === selectedId) || null, [tenants, selectedId]);
   const dirty = selected
-    ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) || (selected.guest_join_code || '') !== joinCode.trim()
+    ? JSON.stringify(selected.features || {}) !== JSON.stringify(draft) ||
+      (selected.guest_join_code || '') !== joinCode.trim() ||
+      (selected.address || '') !== address.trim() ||
+      logoBase64 !== undefined
     : false;
+
+  const syncHeaderPreview = (t: Tenant | null) => {
+    if (!t) return;
+    localStorage.setItem(
+      'active_tenant_branding',
+      JSON.stringify({ id: t.id, name: t.name, logo_url: t.logo_url || null, address: t.address || null })
+    );
+    window.dispatchEvent(new Event('rakshak-brand-updated'));
+  };
 
   const load = async (keep?: string | null) => {
     setLoading(true);
@@ -95,13 +124,16 @@ const TenantsPage: React.FC = () => {
       setSelectedId(pick?.id || null);
       setDraft(pick?.features || {});
       setJoinCode(pick?.guest_join_code || '');
+      setAddress(pick?.address || '');
+      setLogoPreview(pick?.logo_url || null);
+      setLogoBase64(undefined);
+      syncHeaderPreview(pick);
     } finally {
       setLoading(false);
     }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
-  // Warn loudly if the server is running on a public database key.
   useEffect(() => {
     fetch(`${API}/super-admin/diagnostics`)
       .then((r) => r.json())
@@ -113,7 +145,25 @@ const TenantsPage: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  // Use ONLY after rotating QR_SECRET on the server: every printed QR code made with the old secret stops working.
+  const handleLogoFile = (file: File) => {
+    setLogoError(null);
+    if (!VALID_LOGO_TYPES.includes(file.type)) {
+      setLogoError('Unsupported format. Upload PNG, JPG, or SVG.');
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setLogoError(`File is ${(file.size / 1048576).toFixed(2)} MB. Max allowed size is 5 MB.`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = reader.result as string;
+      setLogoPreview(b64);
+      setLogoBase64(b64);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const resignCheckpoints = async () => {
     if (!confirm('Re-sign ALL checkpoints? Every QR code printed so far becomes invalid and must be re-printed.')) return;
     setResigning(true);
@@ -129,7 +179,6 @@ const TenantsPage: React.FC = () => {
     }
   };
 
-  // Converts leftover plain-text passwords to hashes, a few at a time. Logins keep working with the same passwords.
   const securePasswords = async () => {
     setPwBusy(true);
     try {
@@ -152,12 +201,21 @@ const TenantsPage: React.FC = () => {
 
   const flash = (t: string) => { setMsg(t); setTimeout(() => setMsg(''), 3500); };
 
-  const select = (t: Tenant) => { setSelectedId(t.id); setDraft(t.features || {}); setJoinCode(t.guest_join_code || ''); };
+  const select = (t: Tenant) => {
+    setSelectedId(t.id);
+    setDraft(t.features || {});
+    setJoinCode(t.guest_join_code || '');
+    setAddress(t.address || '');
+    setLogoPreview(t.logo_url || null);
+    setLogoBase64(undefined);
+    setLogoError(null);
+    syncHeaderPreview(t);
+  };
+
   const makeCode = () => setJoinCode(Array.from(crypto.getRandomValues(new Uint8Array(8))).map((n) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[n % 31]).join(''));
 
   const toggle = (path: string, isModule: boolean) => {
     let next = setPath(draft, path, !getPath(draft, path));
-    // Turning a module off turns every sub-feature off with it.
     if (isModule && !getPath(next, path)) {
       const mod = CATALOG.find((m) => `${m.path}.enabled` === path);
       mod?.children.forEach((c) => (next = setPath(next, c.path, false)));
@@ -169,14 +227,28 @@ const TenantsPage: React.FC = () => {
     if (!selected) return;
     setSaving(true);
     try {
+      const payload: Record<string, any> = {
+        features: draft,
+        guest_join_code: joinCode.trim(),
+        address: address.trim() || null,
+      };
+      if (logoBase64 !== undefined) {
+        payload.logo_base64 = logoBase64;
+      }
       const r = await fetch(`${API}/super-admin/tenants/${selected.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ features: draft, guest_join_code: joinCode.trim() }),
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
       const d = await r.json();
       if (!d.success) throw new Error(d.message);
-      flash('Entitlements saved. Users lose revoked features on their next request.');
+      flash('Industry branding & entitlements saved.');
       await load(selected.id);
-    } catch (e: any) { flash(e.message || 'Save failed'); } finally { setSaving(false); }
+    } catch (e: any) {
+      flash(e.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const setStatus = async (status: 'ACTIVE' | 'SUSPENDED') => {
@@ -199,7 +271,7 @@ const TenantsPage: React.FC = () => {
     const d = await r.json();
     if (!d.success) return flash(d.message);
     setNewName('');
-    flash('Industry created with NO features. Enable what they purchased below.');
+    flash('Industry created. Upload its branding logo and enable purchased modules below.');
     load(d.tenant.id);
   };
 
@@ -221,9 +293,9 @@ const TenantsPage: React.FC = () => {
       <div className="mb-6 flex items-center gap-3">
         <Building2 className="h-6 w-6 text-blue-600" />
         <div>
-          <h1 className="text-xl font-black text-slate-900">Industries &amp; Entitlements</h1>
+          <h1 className="text-xl font-black text-slate-900">Industries, Branding &amp; Entitlements</h1>
           <p className="text-xs text-slate-500">
-            What you switch on here is the ceiling. Industry admins can only hand out what is enabled; anything off does not exist in their console or API.
+            Configure custom logos and module licences per industry. Logos propagate automatically across headers, reports, mobile apps, and QR A4 PDFs.
           </p>
         </div>
       </div>
@@ -254,13 +326,22 @@ const TenantsPage: React.FC = () => {
               className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500" />
             <button className="rounded-lg bg-blue-600 px-3 text-white hover:bg-blue-700" title="Create"><Plus className="h-4 w-4" /></button>
           </form>
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {tenants.map((t) => (
               <li key={t.id}>
                 <button onClick={() => select(t)}
-                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition ${
+                  className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
                     t.id === selectedId ? 'border-blue-300 bg-blue-50 font-bold text-blue-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>
-                  <span className="truncate">{t.name}</span>
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1">
+                      {t.logo_url ? (
+                        <img src={t.logo_url} alt={t.name} className="h-full w-full object-contain" />
+                      ) : (
+                        <Building2 className="h-4 w-4 text-slate-400" />
+                      )}
+                    </div>
+                    <span className="truncate">{t.name}</span>
+                  </div>
                   {t.status !== 'ACTIVE' && <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">Suspended</span>}
                 </button>
               </li>
@@ -269,13 +350,22 @@ const TenantsPage: React.FC = () => {
           </ul>
         </aside>
 
-        {/* Entitlements editor */}
+        {/* Entitlements & Branding editor */}
         {selected ? (
           <section className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div>
-                <div className="text-base font-black text-slate-900">{selected.name}</div>
-                <div className="font-mono text-[11px] text-slate-400">{selected.id}</div>
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1.5">
+                  {logoPreview ? (
+                    <img src={logoPreview} alt={selected.name} className="h-full w-full object-contain" />
+                  ) : (
+                    <Building2 className="h-6 w-6 text-blue-600" />
+                  )}
+                </div>
+                <div>
+                  <div className="text-base font-black text-slate-900">{selected.name}</div>
+                  <div className="font-mono text-[11px] text-slate-400">{selected.id}</div>
+                </div>
               </div>
               <div className="flex gap-2">
                 {selected.status === 'ACTIVE'
@@ -283,8 +373,104 @@ const TenantsPage: React.FC = () => {
                   : <button onClick={() => setStatus('ACTIVE')} className="flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50"><CheckCircle2 className="h-3.5 w-3.5" />Reactivate</button>}
                 <button onClick={save} disabled={!dirty || saving}
                   className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-40">
-                  <Save className="h-3.5 w-3.5" />{saving ? 'Saving…' : 'Save entitlements'}
+                  <Save className="h-3.5 w-3.5" />{saving ? 'Saving…' : 'Save changes'}
                 </button>
+              </div>
+            </div>
+
+            {/* INDUSTRY LOGO UPLOAD & ADDRESS CARD */}
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
+              <div className="text-sm font-black text-slate-900">Industry Branding &amp; Site Address</div>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleLogoFile(f);
+                  e.target.value = '';
+                }}
+              />
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Industry Logo (PNG, JPG, SVG · Max 5MB)
+                  </label>
+                  {logoPreview ? (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1.5">
+                          <img src={logoPreview} alt="Preview" className="max-h-12 w-auto object-contain" />
+                        </div>
+                        <div className="text-xs">
+                          <div className="font-bold text-emerald-700">Active Logo</div>
+                          <div className="text-[11px] text-slate-500">Shown on Header, PDF &amp; QR Sheets</div>
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" /> Replace
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setLogoPreview(null); setLogoBase64(null); }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                      onDragLeave={() => setDragging(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragging(false);
+                        const f = e.dataTransfer.files?.[0];
+                        if (f) handleLogoFile(f);
+                      }}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`cursor-pointer rounded-xl border-2 border-dashed p-4 text-center transition ${
+                        dragging ? 'border-blue-600 bg-blue-50/50' : 'border-slate-300 bg-slate-50/50 hover:border-blue-500'
+                      }`}
+                    >
+                      <UploadCloud className="mx-auto mb-1 h-7 w-7 text-blue-600" />
+                      <div className="text-xs font-bold text-slate-800">
+                        Drag &amp; drop logo here, or <span className="text-blue-600 underline">browse</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400">PNG, JPG, SVG up to 5MB</div>
+                    </div>
+                  )}
+                  {logoError && (
+                    <div className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-rose-600">
+                      <AlertCircle className="h-3.5 w-3.5" /> {logoError}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Facility / Plant Address
+                  </label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                    <textarea
+                      rows={3}
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      placeholder="e.g. Grasim Chemical Division, Plot 14, GIDC Industrial Estate"
+                      className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 

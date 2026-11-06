@@ -55,6 +55,33 @@ export const AppShell: React.FC<{
   const [menu, setMenu] = useState(false);
   const [now, setNow] = useState(new Date());
 
+  // Dynamic Industry Branding (auto-updates when Super Admin edits a tenant or user logs in)
+  const [brandInfo, setBrandInfo] = useState<{ name: string; logoUrl: string | null; address?: string | null }>({
+    name: user?.tenant_name || 'Rakshak Security',
+    logoUrl: user?.tenant_logo_url || null,
+    address: user?.tenant_address || null,
+  });
+
+  useEffect(() => {
+    const syncBrand = () => {
+      try {
+        const custom = JSON.parse(localStorage.getItem('active_tenant_branding') || 'null');
+        if (custom && custom.name) {
+          setBrandInfo({ name: custom.name, logoUrl: custom.logo_url || null, address: custom.address || null });
+          return;
+        }
+      } catch (_) {}
+      setBrandInfo({
+        name: user?.tenant_name || 'Rakshak Security',
+        logoUrl: user?.tenant_logo_url || null,
+        address: user?.tenant_address || null,
+      });
+    };
+    syncBrand();
+    window.addEventListener('rakshak-brand-updated', syncBrand);
+    return () => window.removeEventListener('rakshak-brand-updated', syncBrand);
+  }, [user]);
+
   useEffect(() => { localStorage.setItem('sidebar_collapsed', collapsed ? '1' : '0'); }, [collapsed]);
   useEffect(() => { setDrawer(false); setMenu(false); }, [path]);
   useEffect(() => {
@@ -64,7 +91,6 @@ export const AppShell: React.FC<{
 
   const isSuper = user?.tier === 'SUPER_ADMIN';
 
-  // Features only exist in the menu when the server says they are available (strict cascade).
   const groups: { title: string; items: NavItem[] }[] = [
     {
       title: 'Monitor',
@@ -126,15 +152,35 @@ export const AppShell: React.FC<{
     </nav>
   );
 
+  // Co-Branded Top-Left Identity: [Industry Logo] Industry Name + Powered By Rakshak Security Operations
   const brand = (compact: boolean) => (
-    <div className={`flex h-16 items-center gap-3 border-b border-slate-100 px-4 ${compact ? 'justify-center' : ''}`}>
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lift">
-        <Shield className="h-5 w-5" />
+    <div
+      title={`${brandInfo.name}${brandInfo.address ? ' · ' + brandInfo.address : ''} — Powered by Rakshak Security Operations`}
+      className={`group relative flex h-16 items-center gap-3 border-b border-slate-100 px-3.5 ${compact ? 'justify-center' : ''}`}
+    >
+      <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
+        {brandInfo.logoUrl ? (
+          <img
+            src={brandInfo.logoUrl}
+            alt={brandInfo.name}
+            loading="lazy"
+            className="h-full w-full object-contain"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-blue-800 text-white">
+            <Shield className="h-5 w-5" />
+          </div>
+        )}
       </div>
       {!compact && (
-        <div className="min-w-0 leading-tight">
-          <div className="text-base font-extrabold tracking-tight text-slate-900">Rakshak</div>
-          <div className="text-[11px] font-medium text-slate-400">Security operations</div>
+        <div className="min-w-0 flex-1 leading-tight">
+          <div className="truncate text-sm font-extrabold tracking-tight text-slate-900">
+            {brandInfo.name}
+          </div>
+          <div className="mt-0.5 flex items-center gap-1 text-[10px] font-bold text-blue-600">
+            <Shield className="h-3 w-3 shrink-0" />
+            <span className="truncate">Powered By Rakshak Security</span>
+          </div>
         </div>
       )}
     </div>
@@ -173,7 +219,7 @@ export const AppShell: React.FC<{
 
       <div className={`transition-[padding] duration-300 ${collapsed ? 'md:pl-[76px]' : 'md:pl-64'}`}>
         {/* Top bar */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md md:px-6">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md md:px-6 print:hidden">
           <div className="flex min-w-0 items-center gap-3">
             <button onClick={() => setDrawer(true)} className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden" aria-label="Open menu">
               <Menu className="h-5 w-5" />

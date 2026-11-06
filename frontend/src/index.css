@@ -28,3 +28,40 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* A4 Portrait Checkpoint Sheet (1 QR per A4 Page) */
+.qr-a4-page {
+  width: 210mm;
+  min-height: 297mm;
+  max-height: 297mm;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0mm;
+  }
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .qr-a4-page {
+    width: 210mm !important;
+    height: 297mm !important;
+    min-height: 297mm !important;
+    max-height: 297mm !important;
+    margin: 0 !important;
+    padding: 10mm !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

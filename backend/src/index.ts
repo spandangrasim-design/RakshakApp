@@ -547,7 +547,8 @@ app.get('/api/v1/media/*', async (c) => {
     object.writeHttpMetadata(headers);
     headers.set('etag', object.httpEtag);
     const ct = object.httpMetadata?.contentType;
-    headers.set('Content-Type', ct === 'image/png' ? 'image/png' : 'image/jpeg'); // never serve anything as HTML
+    headers.set('Content-Type', ct === 'image/png' ? 'image/png' : ct === 'image/svg+xml' ? 'image/svg+xml' : 'image/jpeg');
+    headers.set('Access-Control-Allow-Origin', '*');
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
     headers.set('Cache-Control', 'private, max-age=86400');
@@ -1521,10 +1522,10 @@ function startOfSiteDayISO(env: Bindings): string {
 app.get('/api/v1/guest/industries', async (c) => {
   try {
     const supabase = getSupabase(c.env);
-    const { data } = await supabase.from('tenants').select('id, name, features, status, guest_join_code');
+    const { data } = await supabase.from('tenants').select('id, name, logo_url, address, features, status, guest_join_code');
     const list = (data || [])
       .filter((t: any) => (t.status || 'ACTIVE') === 'ACTIVE' && t.guest_join_code && normalizeTenantFeatures(t.features).module_patrol.allow_guest_enrollment)
-      .map((t: any) => ({ id: t.id, name: t.name }));
+      .map((t: any) => ({ id: t.id, name: t.name, logo_url: t.logo_url || null, address: t.address || null }));
     return c.json({ success: true, industries: list });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error) }, 500);
@@ -1557,7 +1558,7 @@ app.post('/api/v1/guest/register', async (c) => {
     const phone = input.phone.replace(/[^\d+]/g, '').replace(/^\+/, '');
     if (!/^\d{8,15}$/.test(phone)) return c.json({ success: false, message: 'Enter a valid mobile number.' }, 400);
 
-    const { data: tenant } = await supabase.from('tenants').select('id, name, features, status, guest_join_code').eq('id', input.tenant_id).maybeSingle();
+    const { data: tenant } = await supabase.from('tenants').select('id, name, logo_url, address, features, status, guest_join_code').eq('id', input.tenant_id).maybeSingle();
     const open = tenant && (tenant.status || 'ACTIVE') === 'ACTIVE' && tenant.guest_join_code && normalizeTenantFeatures(tenant.features).module_patrol.allow_guest_enrollment;
     if (!open) return c.json({ success: false, message: 'This industry is not accepting field guards.' }, 404);
 
@@ -1623,7 +1624,7 @@ app.post('/api/v1/guest/register', async (c) => {
     return c.json({
       success: true,
       access_token: token,
-      guard: { guard_id: guard.guard_id, full_name: input.full_name, phone, tenant_id: tenant.id, tenant_name: tenant.name },
+      guard: { guard_id: guard.guard_id, full_name: input.full_name, phone, tenant_id: tenant.id, tenant_name: tenant.name, tenant_logo_url: tenant.logo_url || null },
       app_permissions: ctx.access.active_permissions,
       incident_form_fields: ctx.access.incident_form_fields,
     }, 201);
@@ -2496,6 +2497,19 @@ app.patch('/api/v1/super-admin/tenants/:id', async (c) => {
       patch.status = body.status
     }
     if (body.name !== undefined) patch.name = String(body.name).trim()
+    if (body.address !== undefined) patch.address = body.address ? String(body.address).trim() : null
+    if (body.logo_base64 !== undefined) {
+      if (!body.logo_base64) {
+        patch.logo_url = null
+      } else {
+        const origin = new URL(c.req.url).origin
+        const uploaded = await storeBrandLogo(c.env.R2_BUCKET, origin, c.req.param('id'), body.logo_base64)
+        if (!uploaded) return c.json({ success: false, message: 'Invalid logo. Use PNG, JPG, or SVG under 5MB.' }, 400)
+        patch.logo_url = uploaded
+      }
+    } else if (body.logo_url !== undefined) {
+      patch.logo_url = body.logo_url ? String(body.logo_url).trim() : null
+    }
     if (body.guest_join_code !== undefined) {
       const code = String(body.guest_join_code || '').trim()
       if (code && !/^[A-Za-z0-9]{6,12}$/.test(code)) {

@@ -11,113 +11,243 @@ export interface QRData {
 
 interface QRSheetPDFProps {
   checkpoints: QRData[];
+  industryName?: string;
+  industryLogoUrl?: string | null;
+  spandanLogoUrl?: string;
+  rakshakLogoUrl?: string;
 }
+
+const getStoredBranding = () => {
+  try {
+    const custom = JSON.parse(localStorage.getItem('active_tenant_branding') || 'null');
+    if (custom && custom.name) {
+      return { name: custom.name, logoUrl: custom.logo_url || null };
+    }
+    const u = JSON.parse(localStorage.getItem('user') || '{}');
+    return {
+      name: u.tenant_name || 'Rakshak Industrial Security',
+      logoUrl: u.tenant_logo_url || null,
+    };
+  } catch {
+    return { name: 'Rakshak Industrial Security', logoUrl: null };
+  }
+};
 
 const styles = StyleSheet.create({
   page: {
-    padding: 35,
+    padding: 24,
     backgroundColor: '#ffffff',
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
     justifyContent: 'space-between',
     height: '100%',
   },
-  header: {
+  outerFrame: {
+    border: '4pt solid #000000',
+    borderRadius: 12,
+    padding: 20,
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
   },
-  appName: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1e3a8a', // Deep Blue
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  subHeader: {
-    fontSize: 10,
-    color: '#64748b',
-    marginTop: 4,
-  },
-  card: {
-    border: '2px solid #e2e8f0',
-    borderRadius: 16,
-    padding: 24,
+  headerBox: {
+    width: '100%',
+    borderBottom: '2.5pt solid #000000',
+    paddingBottom: 12,
     alignItems: 'center',
-    width: '85%',
-    backgroundColor: '#f8fafc',
   },
-  qrImage: {
-    width: 280,
-    height: 280,
-    marginBottom: 20,
-    backgroundColor: '#ffffff',
-    padding: 10,
-    borderRadius: 8,
-  },
-  cpName: {
-    fontSize: 24,
-    fontWeight: 'heavy',
-    color: '#0f172a',
-    textAlign: 'center',
+  industryLogo: {
+    height: 52,
+    objectFit: 'contain',
     marginBottom: 6,
   },
-  cpIdBadge: {
-    fontSize: 12,
-    color: '#1e40af',
-    backgroundColor: '#dbeafe',
-    paddingVertical: 4,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    marginBottom: 10,
+  industryName: {
+    fontSize: 20,
     fontWeight: 'bold',
+    color: '#000000',
+    textTransform: 'uppercase',
+    textAlign: 'center',
+    letterSpacing: 1,
   },
-  coordsText: {
-    fontSize: 10,
-    color: '#64748b',
+  securityTag: {
+    marginTop: 4,
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#334155',
+    textTransform: 'uppercase',
+    letterSpacing: 2,
+  },
+  checkpointBanner: {
+    width: '100%',
+    backgroundColor: '#f1f5f9',
+    border: '1.5pt solid #000000',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  cpLabel: {
+    fontSize: 9,
+    color: '#475569',
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+  },
+  cpName: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#000000',
+    textAlign: 'center',
+    marginTop: 3,
+  },
+  qrContainer: {
+    border: '3pt solid #000000',
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 10,
+  },
+  // 340pt is ~62% of A4 Portrait width (595pt)
+  qrImage: {
+    width: 330,
+    height: 330,
+  },
+  idBox: {
+    border: '1.5pt solid #000000',
+    borderRadius: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 16,
+    backgroundColor: '#ffffff',
+    marginTop: 4,
+  },
+  idText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#000000',
     fontFamily: 'Courier',
   },
-  footer: {
-    alignItems: 'center',
-    borderTop: '1px dashed #cbd5e1',
-    paddingTop: 12,
-    width: '100%',
+  scanPrompt: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#000000',
+    textTransform: 'uppercase',
+    letterSpacing: 2,
+    marginTop: 6,
   },
-  instructionText: {
-    fontSize: 9,
-    color: '#94a3b8',
-    textAlign: 'center',
+  coordsText: {
+    fontSize: 8.5,
+    color: '#475569',
+    fontFamily: 'Courier',
+    marginTop: 2,
+  },
+  footer: {
+    width: '100%',
+    borderTop: '2.5pt solid #000000',
+    paddingTop: 10,
+    display: 'flex',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  footerColLeft: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  footerColRight: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+  },
+  poweredLabel: {
+    fontSize: 7.5,
+    color: '#475569',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  rakshakTitle: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#000000',
+    textTransform: 'uppercase',
+    marginTop: 1,
+  },
+  spandanTitle: {
+    fontSize: 9.5,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginTop: 1,
+  },
+  partnerLogo: {
+    height: 26,
+    objectFit: 'contain',
+    marginBottom: 2,
   },
 });
 
-export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({ checkpoints }) => (
-  <Document>
-    {checkpoints.map((cp) => (
-      // A separate <Page> for EVERY checkpoint -> 1 QR per page!
-      <Page key={cp.id} size="A4" style={styles.page}>
-        <View style={styles.header}>
-          <Text style={styles.appName}>Rakshak Security Patrol</Text>
-          <Text style={styles.subHeader}>Official Guard Tour Verification Checkpoint</Text>
-        </View>
+export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({
+  checkpoints,
+  industryName,
+  industryLogoUrl,
+  spandanLogoUrl,
+}) => {
+  const brand = getStoredBranding();
+  const resolvedName = industryName || brand.name;
+  const resolvedLogo = industryLogoUrl !== undefined ? industryLogoUrl : brand.logoUrl;
 
-        <View style={styles.card}>
-          <Image src={cp.qrDataUri} style={styles.qrImage} />
-          <Text style={styles.cpName}>{cp.name}</Text>
-          <Text style={styles.cpIdBadge}>ID: {cp.id}</Text>
-          <Text style={styles.coordsText}>
-            Lat: {cp.lat} | Lng: {cp.lng}
-          </Text>
-        </View>
+  return (
+    <Document>
+      {checkpoints.map((cp) => (
+        <Page key={cp.id} size="A4" orientation="portrait" style={styles.page}>
+          <View style={styles.outerFrame}>
+            {/* Top: Industry Logo & Industry Name */}
+            <View style={styles.headerBox}>
+              {resolvedLogo ? <Image src={resolvedLogo} style={styles.industryLogo} /> : null}
+              <Text style={styles.industryName}>{resolvedName}</Text>
+              <Text style={styles.securityTag}>Official Security Checkpoint</Text>
+            </View>
 
-        <View style={styles.footer}>
-          <Text style={styles.instructionText}>
-            Scan using Rakshak Guard App during assigned patrol routine.
-          </Text>
-          <Text style={styles.instructionText}>
-            Tampering with or relocating this QR code will invalidate patrol logs.
-          </Text>
-        </View>
-      </Page>
-    ))}
-  </Document>
-);
+            {/* Checkpoint / Patrol Point Name */}
+            <View style={styles.checkpointBanner}>
+              <Text style={styles.cpLabel}>Checkpoint / Patrol Point Name</Text>
+              <Text style={styles.cpName}>{cp.name}</Text>
+            </View>
+
+            {/* Large QR Code (>60% A4 width) */}
+            <View style={styles.qrContainer}>
+              <Image src={cp.qrDataUri} style={styles.qrImage} />
+            </View>
+
+            {/* Unique Checkpoint ID & Scan Instruction */}
+            <View style={styles.idBox}>
+              <Text style={styles.idText}>UNIQUE CHECKPOINT ID: {cp.id}</Text>
+            </View>
+            <Text style={styles.scanPrompt}>Scan During Patrol Round</Text>
+            <Text style={styles.coordsText}>
+              GPS: {cp.lat}, {cp.lng}
+            </Text>
+
+            {/* Footer: Powered By Rakshak & Spandan IT Professionals */}
+            <View style={styles.footer}>
+              <View style={styles.footerColLeft}>
+                <Text style={styles.poweredLabel}>Powered By</Text>
+                <Text style={styles.rakshakTitle}>Rakshak Security Operations</Text>
+              </View>
+
+              <View style={styles.footerColRight}>
+                {spandanLogoUrl ? <Image src={spandanLogoUrl} style={styles.partnerLogo} /> : null}
+                <Text style={styles.poweredLabel}>Corporate Technology Partner</Text>
+                <Text style={styles.spandanTitle}>Powered by Spandan IT Professionals</Text>
+              </View>
+            </View>
+          </View>
+        </Page>
+      ))}
+    </Document>
+  );
+};
+
+export default QRSheetPDF;
