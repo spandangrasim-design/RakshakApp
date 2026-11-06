@@ -2336,14 +2336,14 @@ app.get('/api/v1/dashboard/summary', async (c) => {
         computeRouteBoard(supabase, c.env, tenant, null),
         applyTenant(supabase.from('scans').select('*', { count: 'exact', head: true }), tenant).gte('scan_time', dayStart),
         applyTenant(supabase.from('patrol_sessions').select('guard_id'), tenant).eq('status', 'ACTIVE'),
-        applyTenant(supabase.from('patrol_sessions').select('route_id, status, created_at'), tenant)
-          .in('status', ['COMPLETED', 'DONE'])
-          .gte('created_at', dayStart),
+        applyTenant(supabase.from('patrol_sessions').select('round_id, completed_route, end_time, start_time, status'), tenant)
+          .or('completed_route.eq.true,status.eq.COMPLETED')
+          .gte('start_time', dayStart),
       ]);
 
-      // Collect route IDs that have successfully completed at least one run today
+      // Collect round/route IDs that completed at least one run today
       const routesDoneTodayIds = new Set(
-        (completedSessionsRes.data || []).map((s: any) => s.route_id).filter(Boolean)
+        (completedSessionsRes.data || []).map((s: any) => s.round_id).filter(Boolean)
       );
 
       // Route is counted completed today if marked DONE on board OR completed earlier today
