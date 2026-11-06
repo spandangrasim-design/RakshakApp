@@ -2265,26 +2265,116 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     const wStartMs = new Date(startOfSiteDayISO(c.env)).getTime(), wEndMs = Date.now();
     let guards = await guardsActiveBetween(supabase, tenantId, new Date(wStartMs).toISOString(), new Date(wEndMs).toISOString());
     if (body?.guard_id) guards = guards.filter((g) => g.guard_id === body.guard_id);
-    guards = guards.slice(0, 20);
     if (guards.length === 0) return c.json({ success: true, empty: true, message: 'No guard has any activity today yet.' });
 
-    if (body?.preview) {
-      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', guards[0], wStartMs, wEndMs, 'Today so far');
-      return c.json({ success: true, subject: r.subject, html: r.html, guards: guards.length });
+    // Collect all recipients once (tenant configured emails)
+    const recipientsSet = new Set<string>();
+    for (const e of String(cfg['DAILY_REPORT_EMAILS'] || '').split(/[,;\s]+/)) {
+      const ok = safeEmail(e);
+      if (ok) recipientsSet.add(ok);
+    }
+    const recipients = [...recipientsSet];
+    if (recipients.length === 0) {
+      return c.json({ success: false, message: 'No recipient email addresses configured in Daily Report settings.' }, 400);
     }
 
-    let sent = 0, skipped = 0, failed = 0;
-    const errors: string[] = [];
+    // Build consolidated summary metrics
+    const guardSummaries: any[] = [];
+    let totalScansAll = 0;
+    let totalIncidentsAll = 0;
+
     for (const g of guards) {
-      const recipients = await reportRecipients(supabase, cfg, g);
-      if (recipients.length === 0) { skipped++; continue; }
-      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', g, wStartMs, wEndMs, 'Today so far');
-      const res = await sendTenantEmail(c.env, tenantId, recipients, r.subject, r.html);
-      if (res.ok) sent++; else { failed++; errors.push(res.error || 'send failed'); }
+      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', g, wStartMs, wEndMs, 'Today');
+      guardSummaries.push({ guard: g, report: r });
     }
-    return c.json({ success: true, sent, skipped, failed, errors: [...new Set(errors)].slice(0, 3) });
+
+    // Query incidents count for the day
+    const { count: incCount } = await supabase.from('incidents')
+      .select('*', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId)
+      .gte('reported_at', new Date(wStartMs).toISOString());
+    totalIncidentsAll = incCount || 0;
+
+    const reportDateStr = localDate(c.env, wStartMs);
+    const plantName = tenant?.name || 'Plant Facility';
+    const subject = `[Daily Digest] Security & Patrol Briefing - ${plantName} - ${reportDateStr}`;
+
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f8fafc;color:#0f172a;">
+        <div style="background:#0f172a;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0;">
+          <h2 style="margin:0;font-size:20px;font-weight:bold;">${esc(plantName)} - Daily Patrol Digest</h2>
+          <p style="margin:6px 0 0;font-size:13px;color:#94a3b8;">Date: ${esc(reportDateStr)} | Consolidated Shift Briefing</p>
+        </div>
+        <div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+          <h3 style="margin:0 0 14px;font-size:15px;color:#334155;text-transform:uppercase;letter-spacing:0.5px;">Executive Summary</h3>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+            <tr>
+              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
+                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Active Personnel</div>
+                <div style="font-size:24px;font-weight:bold;color:#0f172a;margin-top:4px;">${guards.length}</div>
+              </td>
+              <td style="width:2%;"></td>
+              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
+                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Incidents Logged</div>
+                <div style="font-size:24px;font-weight:bold;color:${totalIncidentsAll > 0 ? '#dc2626' : '#16a34a'};margin-top:4px;">${totalIncidentsAll}</div>
+              </td>
+              <td style="width:2%;"></td>
+              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
+                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Status</div>
+                <div style="font-size:14px;font-weight:bold;color:#16a34a;margin-top:8px;">COMPLETED</div>
+              </td>
+            </tr>
+          </table>
+
+          <h3 style="margin:18px 0 10px;font-size:14px;color:#334155;">Guard Patrol Performance</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;">
+            <tr style="background:#f8fafc;border-bottom:2px solid #cbd5e1;text-align:left;">
+              <th style="padding:10px;">Guard Name</th>
+              <th style="padding:10px;">Emp Code</th>
+              <th style="padding:10px;">Contact</th>
+              <th style="padding:10px;">Status</th>
+            </tr>
+            ${guards.map((g) => `
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:10px;font-weight:bold;color:#0f172a;">${esc(g.full_name)}</td>
+                <td style="padding:10px;font-family:monospace;color:#64748b;">${esc(g.employee_code || '—')}</td>
+                <td style="padding:10px;color:#475569;">${esc(g.phone || '—')}</td>
+                <td style="padding:10px;"><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:11px;font-weight:bold;">Active On Duty</span></td>
+              </tr>
+            `).join('')}
+          </table>
+
+          <div style="margin-top:24px;padding:14px;background:#f8fafc;border-radius:8px;border:1px dashed #cbd5e1;font-size:12px;color:#64748b;">
+            💡 <strong>Export Notice:</strong> Detailed Excel workbooks with GPS timestamps, checkpoint sequences, and incident tickets can be downloaded on-demand from the <strong>Patrol Reports</strong> tab.
+          </div>
+        </div>
+      </div>
+    `;
+
+    if (body?.preview) {
+      return c.json({ success: true, subject, html, guards: guards.length });
+    }
+
+    // Send single consolidated email to all plant recipients
+    const res = await sendTenantEmail(c.env, tenantId, recipients, subject, html);
+    if (!res.ok) {
+      return c.json({ success: false, message: res.error || 'Failed to send consolidated email' }, 500);
+    }
+
+    // Record in daily_report_log
+    await supabase.from('daily_report_log').insert({
+      tenant_id: tenantId,
+      guard_id: guards[0].guard_id,
+      shift_name: 'Consolidated Day Digest',
+      report_date: reportDateStr,
+      status: 'SENT',
+      recipients: recipients.join(', '),
+      sent_at: new Date().toISOString()
+    }).catch(() => {});
+
+    return c.json({ success: true, sent: 1, guards: guards.length, message: `Consolidated briefing sent to ${recipients.length} recipient(s).` });
   } catch (error) {
-    return c.json({ success: false, message: errMsg(error, 'Could not build the report') }, 500);
+    return c.json({ success: false, message: errMsg(error, 'Could not send consolidated report') }, 500);
   }
 });
 

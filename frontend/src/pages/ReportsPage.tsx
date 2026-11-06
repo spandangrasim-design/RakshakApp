@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import L from 'leaflet';
 import {
@@ -635,7 +636,99 @@ export const ReportsPage: React.FC = () => {
     return Array.from(set).sort().reverse();
   }, [allPatrolRuns]);
 
-  const filteredRuns = useMemo(() => {
+
+  // Helper: Export Single Patrol Run to Excel
+  const exportSingleRunExcel = (run: PatrolRun) => {
+    const summaryData = [{
+      'Guard Name': run.guardName,
+      'Employee Code': run.guardCode || '—',
+      'Route Name': run.roundName,
+      'Run Number': run.runNumber,
+      'Date': run.displayDate,
+      'Start Time': run.startTime ? new Date(run.startTime).toLocaleTimeString() : '—',
+      'End Time': run.endTime ? new Date(run.endTime).toLocaleTimeString() : '—',
+      'Duration': run.durationText,
+      'Stops Verified': run.verifiedStopsCount,
+      'Total Stops': run.totalRouteStops,
+      'Compliance %': run.totalRouteStops > 0 ? Math.round((run.verifiedStopsCount / run.totalRouteStops) * 100) + '%' : '0%',
+      'Status': run.status
+    }];
+
+    const scanLogsData = (run.scans || []).map((s, idx) => ({
+      'Scan #': idx + 1,
+      'Checkpoint Name': s.checkpoint_name || '—',
+      'Scan Time': s.scan_time ? new Date(s.scan_time).toLocaleString() : '—',
+      'Verified': s.is_verified ? 'Yes' : 'No',
+      'Distance (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—',
+      'Guard Lat': s.guard_lat || '—',
+      'Guard Lng': s.guard_lng || '—'
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+    const wsScans = XLSX.utils.json_to_sheet(scanLogsData.length > 0 ? scanLogsData : [{ 'Status': 'No scans recorded' }]);
+
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Guard Summary');
+    XLSX.utils.book_append_sheet(wb, wsScans, 'Checkpoint Scans');
+
+    const cleanGuard = (run.guardName || 'Guard').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeDate = (run.dateKey || 'today').replace(/[^a-zA-Z0-9_-]/g, '_');
+    XLSX.writeFile(wb, `Patrol_Report_${cleanGuard}_${safeDate}.xlsx`);
+  };
+
+  // Helper: Export Master Consolidated Excel for Filtered Runs
+  const exportMasterExcel = () => {
+    if (filteredRuns.length === 0) {
+      alert('No patrol data available for the selected filters.');
+      return;
+    }
+
+    const summaryRows = filteredRuns.map((run) => ({
+      'Route Name': run.roundName,
+      'Run #': run.runNumber,
+      'Date': run.displayDate,
+      'Guard Name': run.guardName,
+      'Employee Code': run.guardCode || '—',
+      'Start Time': run.startTime ? new Date(run.startTime).toLocaleTimeString() : '—',
+      'End Time': run.endTime ? new Date(run.endTime).toLocaleTimeString() : '—',
+      'Duration': run.durationText,
+      'Stops Verified': run.verifiedStopsCount,
+      'Total Stops': run.totalRouteStops,
+      'Compliance %': run.totalRouteStops > 0 ? Math.round((run.verifiedStopsCount / run.totalRouteStops) * 100) + '%' : '0%',
+      'Status': run.status
+    }));
+
+    const allScansRows: any[] = [];
+    filteredRuns.forEach((run) => {
+      (run.scans || []).forEach((s) => {
+        allScansRows.push({
+          'Date': run.displayDate,
+          'Route Name': run.roundName,
+          'Run #': run.runNumber,
+          'Guard Name': run.guardName,
+          'Employee Code': run.guardCode || '—',
+          'Checkpoint Name': s.checkpoint_name || '—',
+          'Scan Time': s.scan_time ? new Date(s.scan_time).toLocaleString() : '—',
+          'Verified': s.is_verified ? 'Yes' : 'No',
+          'Distance (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—',
+          'Guard Lat': s.guard_lat || '—',
+          'Guard Lng': s.guard_lng || '—'
+        });
+      });
+    });
+
+    const wb = XLSX.utils.book_new();
+    const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+    const wsAllScans = XLSX.utils.json_to_sheet(allScansRows.length > 0 ? allScansRows : [{ 'Status': 'No scans recorded' }]);
+
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Plant Patrol Summary');
+    XLSX.utils.book_append_sheet(wb, wsAllScans, 'All Checkpoint Scans');
+
+    const dateTag = selectedDate === 'ALL' ? 'All_Dates' : selectedDate;
+    XLSX.writeFile(wb, `Master_Patrol_Report_${dateTag}.xlsx`);
+  };
+
+    const filteredRuns = useMemo(() => {
     return allPatrolRuns.filter((run) => {
       if (selectedRouteFilter !== 'ALL' && run.roundId !== selectedRouteFilter) return false;
       if (selectedDate !== 'ALL' && run.dateKey !== selectedDate) return false;
