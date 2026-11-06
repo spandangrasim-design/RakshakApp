@@ -383,16 +383,21 @@ const QRGenerator: React.FC = () => {
         generatedList.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
       }
 
-      // Retrieve dynamic industry branding
+      // Retrieve dynamic industry branding & address
       const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
-      const brandLogo = storedUser.tenant_logo_url || null;
-      const brandName = storedUser.tenant_name || round.name || 'Industrial Facility';
+      const customBrand = JSON.parse(localStorage.getItem('active_tenant_branding') || 'null');
+      const brandLogo = customBrand?.logo_url || storedUser.tenant_logo_url || null;
+      const brandName = customBrand?.name || storedUser.tenant_name || round.name || 'Industrial Facility';
+      const brandAddress = customBrand?.address || storedUser.tenant_address || '';
+      const spandanLogo = customBrand?.spandan_logo_url || '/spandan-logo.png';
 
       const blob = await pdf(
         <QRSheetPDF
           checkpoints={generatedList}
           industryName={brandName}
+          industryAddress={brandAddress}
           industryLogoUrl={brandLogo}
+          spandanLogoUrl={spandanLogo}
         />
       ).toBlob();
       const url = URL.createObjectURL(blob);

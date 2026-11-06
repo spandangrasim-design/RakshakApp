@@ -13,6 +13,7 @@ interface QRSheetPDFProps {
   checkpoints: QRData[];
   industryName?: string;
   industryLogoUrl?: string | null;
+  industryAddress?: string;
   spandanLogoUrl?: string;
   rakshakLogoUrl?: string;
 }
@@ -175,8 +176,33 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginTop: 1,
   },
+  spandanLogo: {
+    width: 38,
+    height: 38,
+    objectFit: 'contain',
+    marginBottom: 4,
+  },
+  footerIndustryLogo: {
+    width: 38,
+    height: 38,
+    objectFit: 'contain',
+    marginBottom: 4,
+  },
+  industryFooterName: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#000000',
+    textAlign: 'right',
+  },
+  industryFooterAddress: {
+    fontSize: 7.5,
+    color: '#475569',
+    textAlign: 'right',
+    marginTop: 2,
+    maxWidth: 220,
+  },
   spandanTitle: {
-    fontSize: 9.5,
+    fontSize: 10,
     fontWeight: 'bold',
     color: '#000000',
     marginTop: 1,
@@ -191,12 +217,14 @@ const styles = StyleSheet.create({
 export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({
   checkpoints,
   industryName,
+  industryAddress,
   industryLogoUrl,
   spandanLogoUrl,
 }) => {
   const brand = getStoredBranding();
   const resolvedName = industryName || brand.name;
   const resolvedLogo = industryLogoUrl !== undefined ? industryLogoUrl : brand.logoUrl;
+  const resolvedAddress = industryAddress || (brand as any).address || '';
 
   return (
     <Document>
@@ -221,26 +249,23 @@ export const QRSheetPDF: React.FC<QRSheetPDFProps> = ({
               <Image src={cp.qrDataUri} style={styles.qrImage} />
             </View>
 
-            {/* Unique Checkpoint ID & Scan Instruction */}
-            <View style={styles.idBox}>
-              <Text style={styles.idText}>UNIQUE CHECKPOINT ID: {cp.id}</Text>
-            </View>
+            {/* Scan Instruction */}
             <Text style={styles.scanPrompt}>Scan During Patrol Round</Text>
-            <Text style={styles.coordsText}>
-              GPS: {cp.lat}, {cp.lng}
-            </Text>
 
-            {/* Footer: Powered By Rakshak & Spandan IT Professionals */}
+            {/* Footer: Powered By Spandan IT & Industry Info */}
             <View style={styles.footer}>
+              {/* Left: Spandan IT Professionals */}
               <View style={styles.footerColLeft}>
-                <Text style={styles.poweredLabel}>Powered By</Text>
-                <Text style={styles.rakshakTitle}>Rakshak Security Operations</Text>
+                {spandanLogoUrl ? <Image src={spandanLogoUrl} style={styles.spandanLogo} /> : null}
+                <Text style={styles.poweredLabel}>POWERED BY</Text>
+                <Text style={styles.spandanTitle}>Spandan IT Professionals</Text>
               </View>
 
+              {/* Right: Industry Name, Address & Logo */}
               <View style={styles.footerColRight}>
-                {spandanLogoUrl ? <Image src={spandanLogoUrl} style={styles.partnerLogo} /> : null}
-                <Text style={styles.poweredLabel}>Corporate Technology Partner</Text>
-                <Text style={styles.spandanTitle}>Powered by Spandan IT Professionals</Text>
+                {resolvedLogo ? <Image src={resolvedLogo} style={styles.footerIndustryLogo} /> : null}
+                <Text style={styles.industryFooterName}>{resolvedName}</Text>
+                {resolvedAddress ? <Text style={styles.industryFooterAddress}>{resolvedAddress}</Text> : null}
               </View>
             </View>
           </View>
