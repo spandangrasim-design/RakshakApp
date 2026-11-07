@@ -216,7 +216,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   let currentBucket: ScanRecord[] = [];
   let seenCheckpoints = new Set<string>();
   let currentDateKey = '';
-  let currentGuardId = '';
 
   const flushBucket = (bucket: ScanRecord[], indexNum: number, nextScan?: ScanRecord) => {
     if (bucket.length === 0) return;
@@ -281,7 +280,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
       ? (new Date(scan.scan_time).getTime() - new Date(prevScan.scan_time).getTime()) / 3600000
       : 0;
 
-    // Check if new guard, new date, repeated checkpoint, or cycle gap
     const isNewGuard = currentBucket.length > 0 && scan.guard_id && prevScan?.guard_id && scan.guard_id !== prevScan.guard_id;
 
     if (
@@ -298,7 +296,6 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
     }
 
     currentDateKey = scanDate;
-    currentGuardId = scan.guard_id;
     currentBucket.push(scan);
     seenCheckpoints.add(scan.checkpoint_id);
   }
@@ -307,10 +304,345 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
     flushBucket(currentBucket, runs.length + 1);
   }
 
-  return runs;
+  return runs.reverse();
 }
 
-const allPatrolRuns = useMemo(() => {
+function loadLeafletAssets(): Promise<any> {
+  (window as any).L = (window as any).L || L;
+  return Promise.resolve((window as any).L);
+}
+
+export const ReportsPage: React.FC = () => {
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [scansByRound, setScansByRound] = useState<Record<string, ScanRecord[]>>({});
+  const [loading, setLoading] = useState(true);
+
+  const [selectedDate, setSelectedDate] = useState<string>('ALL');
+  const [selectedRouteFilter, setSelectedRouteFilter] = useState<string>('ALL');
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  const [mapModalRun, setMapModalRun] = useState<PatrolRun | null>(null);
+  const [liveTrail, setLiveTrail] = useState<LiveTrailData | null>(null);
+  const [loadingTrail, setLoadingTrail] = useState(false);
+  const [autoRefreshMap, setAutoRefreshMap] = useState(true);
+  const [mapZoomFocus, setMapZoomFocus] = useState<'ALL' | 'QR' | 'GUARD'>('ALL');
+
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+
+  const fetchAllReportsData = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_BASE_URL}/rounds`);
+      const data = await res.json();
+      const roundList: Round[] = data.rounds || [];
+      setRounds(roundList);
+
+      const scanEntries = await Promise.all(
+        roundList.map(async (r) => {
+          try {
+            const sRes = await fetch(`${API_BASE_URL}/rounds/${r.id}/scans`);
+            const sData = await sRes.json();
+            return [r.id, sData.scans || []] as [string, ScanRecord[]];
+          } catch {
+            return [r.id, []] as [string, ScanRecord[]];
+          }
+        })
+      );
+
+      const map: Record<string, ScanRecord[]> = {};
+      for (const [rId, sList] of scanEntries) {
+        map[rId] = sList;
+      }
+      setScansByRound(map);
+    } catch (err) {
+      console.error('Failed to load patrol reports:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAllReportsData();
+  }, []);
+
+  const fetchLiveTrailForRound = async (roundId: string) => {
+    try {
+      setLoadingTrail(true);
+      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail`);
+      const data = await res.json();
+      if (data.success) {
+        setLiveTrail(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch live trail:', e);
+    } finally {
+      setLoadingTrail(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!mapModalRun) {
+      setLiveTrail(null);
+      setMapZoomFocus('ALL');
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+      return;
+    }
+
+    fetchLiveTrailForRound(mapModalRun.roundId);
+
+    if (!autoRefreshMap) return;
+    const interval = setInterval(() => {
+      fetchLiveTrailForRound(mapModalRun.roundId);
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [mapModalRun, autoRefreshMap]);
+
+  // Render Leaflet Map showing BOTH QR Code Expected Locations AND Guard Capture Locations
+  useEffect(() => {
+    if (!mapModalRun || !mapContainerRef.current) return;
+
+    let isMounted = true;
+    const targetRound = rounds.find((r) => r.id === mapModalRun.roundId);
+
+    loadLeafletAssets().then((L) => {
+      if (!isMounted || !L || !mapContainerRef.current) return;
+
+      if (!mapInstanceRef.current) {
+        mapInstanceRef.current = L.map(mapContainerRef.current).setView([22.275, 73.156], 15);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap',
+          maxZoom: 19,
+        }).addTo(mapInstanceRef.current);
+      }
+
+      const map = mapInstanceRef.current;
+
+      map.eachLayer((layer: any) => {
+        if (!layer._url) {
+          map.removeLayer(layer);
+        }
+      });
+
+      const allBounds: [number, number][] = [];
+      const qrBounds: [number, number][] = [];
+      const guardBounds: [number, number][] = [];
+      const plannedCoords: [number, number][] = [];
+
+      const capturedByCpId = new Map<string, ScanRecord>();
+      mapModalRun.scans.forEach((s) => {
+        capturedByCpId.set(s.checkpoint_id, s);
+      });
+
+      const checkpoints = targetRound?.checkpoints || [];
+
+      // 1. Plot Expected QR Code Locations ("QR #1", "QR #2"...)
+      checkpoints.forEach((cp, index) => {
+        const lat = parseFloat(cp.lat);
+        const lng = parseFloat(cp.lng);
+        if (isNaN(lat) || isNaN(lng)) return;
+
+        allBounds.push([lat, lng]);
+        qrBounds.push([lat, lng]);
+        plannedCoords.push([lat, lng]);
+
+        const capturedScan = capturedByCpId.get(cp.id);
+        const isCaptured = !!capturedScan;
+
+        const bg = isCaptured ? '#059669' : '#334155';
+        const border = isCaptured ? '#a7f3d0' : '#ffffff';
+
+        const qrIcon = L.divIcon({
+          className: '',
+          html: `<div style="background:${bg};color:#fff;padding:2px 6px;min-width:42px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;border:2px solid ${border};box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;">QR #${index + 1}</div>`,
+          iconSize: [46, 26],
+          iconAnchor: [23, 13],
+        });
+
+        L.marker([lat, lng], { icon: qrIcon })
+          .addTo(map)
+          .bindPopup(
+            `<div style="font-size:12px;line-height:1.4;">
+              <strong style="color:#0f172a;">📍 QR Code #${index + 1} Expected Location</strong><br/>
+              <span>Checkpoint: <b>${cp.name}</b></span><br/>
+              <span style="font-family:monospace;font-size:11px;color:#475569;">QR GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)}</span><br/>
+              <span style="color:${isCaptured ? '#059669' : '#64748b'};font-weight:bold;">
+                ${isCaptured ? '✅ Scanned in this session' : '⏳ Pending Scan'}
+              </span>
+            </div>`
+          );
+      });
+
+      // 2. Planned Route Line
+      if (plannedCoords.length > 1) {
+        L.polyline(plannedCoords, {
+          color: '#94a3b8',
+          weight: 2,
+          opacity: 0.7,
+          dashArray: '4, 6',
+        }).addTo(map);
+      }
+
+      // 3. Plot Guard Capture Locations (Decoded from numeric or PostGIS EWKB)
+      mapModalRun.scans.forEach((scan, scanIdx) => {
+        const resolved = resolveGuardCaptureCoords(scan);
+        const gLat = resolved.lat;
+        const gLng = resolved.lng;
+        if (isNaN(gLat) || isNaN(gLng) || (gLat === 0 && gLng === 0)) return;
+
+        allBounds.push([gLat, gLng]);
+        guardBounds.push([gLat, gLng]);
+
+        const matchCpIndex = checkpoints.findIndex((c) => c.id === scan.checkpoint_id);
+        const stopLabelNum = matchCpIndex >= 0 ? matchCpIndex + 1 : scanIdx + 1;
+        const matchCp = matchCpIndex >= 0 ? checkpoints[matchCpIndex] : null;
+
+        const expLat = matchCp ? parseFloat(matchCp.lat) : Number(scan.expected_lat || 0);
+        const expLng = matchCp ? parseFloat(matchCp.lng) : Number(scan.expected_lng || 0);
+
+        const driftMeters =
+          scan.distance_meters !== undefined && Number(scan.distance_meters) > 0
+            ? Math.round(Number(scan.distance_meters))
+            : !isNaN(expLat) && !isNaN(expLng) && expLat !== 0
+            ? Math.round(getDistanceMeters(gLat, gLng, expLat, expLng))
+            : 0;
+
+        const isFarAway = driftMeters > 50;
+        const capBg = isFarAway ? '#dc2626' : '#0284c7';
+
+        const captureIcon = L.divIcon({
+          className: '',
+          html: `<div style="background:${capBg};color:#fff;padding:2px 8px;min-width:54px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45);white-space:nowrap;">${
+            isFarAway ? '⚠️' : '📸'
+          } Cap #${stopLabelNum}</div>`,
+          iconSize: [62, 26],
+          iconAnchor: [31, 13],
+        });
+
+        const selfieImg = scan.selfie_url || '';
+        L.marker([gLat, gLng], { icon: captureIcon })
+          .addTo(map)
+          .bindPopup(
+            `<div style="font-size:12px;line-height:1.45;min-width:200px;">
+              <strong style="color:${capBg};">${
+              isFarAway ? '⚠️ Far Away Guard Capture' : '📸 Guard Capture Location'
+            } (Stop #${stopLabelNum})</strong><br/>
+              <span>Checkpoint: <b>${scan.checkpoint_name}</b></span><br/>
+              <span>Scanned At: <b>${new Date(scan.scan_time).toLocaleTimeString()}</b></span><br/>
+              <span style="font-family:monospace;font-size:11px;">Guard GPS: <b>${gLat.toFixed(5)}, ${gLng.toFixed(5)}</b></span><br/>
+              <span style="font-family:monospace;font-size:11px;color:#64748b;">QR GPS: ${expLat.toFixed(5)}, ${expLng.toFixed(5)}</span><br/>
+              <span style="font-weight:bold;color:${isFarAway ? '#dc2626' : '#059669'};">
+                Distance Offset: ${driftMeters}m ${isFarAway ? '(FLAGGED > 50m)' : '(Verified)'}
+              </span>
+              ${
+                selfieImg
+                  ? `<div style="margin-top:6px;"><img src="${selfieImg}" style="width:100%;height:95px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1;" /></div>`
+                  : ''
+              }
+            </div>`
+          );
+
+        // Draw Red Dashed Drift Line connecting QR Expected Location <-> Guard Capture Location
+        if (!isNaN(expLat) && !isNaN(expLng) && expLat !== 0 && driftMeters > 5) {
+          L.polyline(
+            [
+              [expLat, expLng],
+              [gLat, gLng],
+            ],
+            {
+              color: isFarAway ? '#ef4444' : '#0ea5e9',
+              weight: isFarAway ? 2.5 : 2,
+              dashArray: '6, 6',
+              opacity: 0.85,
+            }
+          )
+            .addTo(map)
+            .bindPopup(
+              `<strong>Stop #${stopLabelNum} Drift Offset</strong><br/>Guard captured this QR from <b>${driftMeters} meters</b> away.`
+            );
+        }
+      });
+
+      // 4. Draw Actual Guard Walking Trail
+      const rawCrumbs = (liveTrail?.breadcrumbs || [])
+        .map((b) => [Number(b.lat), Number(b.lng)] as [number, number])
+        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng) && lat !== 0);
+
+      const cleanTrail: [number, number][] = [];
+      for (let i = 0; i < rawCrumbs.length; i++) {
+        const pt = rawCrumbs[i];
+        const prev = cleanTrail.length > 0 ? cleanTrail[cleanTrail.length - 1] : null;
+        if (prev && getDistanceMeters(prev[0], prev[1], pt[0], pt[1]) < 6) {
+          continue;
+        }
+        cleanTrail.push(pt);
+      }
+
+      if (cleanTrail.length > 1) {
+        L.polyline(cleanTrail, {
+          color: '#2563eb',
+          weight: 4,
+          opacity: 0.85,
+        }).addTo(map);
+      }
+      cleanTrail.forEach((pt) => {
+        allBounds.push(pt);
+        guardBounds.push(pt);
+      });
+
+      // 5. Plot Live Guard Marker ("G")
+      const lastScan = mapModalRun.scans[mapModalRun.scans.length - 1];
+      const lastScanResolved = lastScan ? resolveGuardCaptureCoords(lastScan) : { lat: 0, lng: 0 };
+      const liveLat = liveTrail?.session?.last_lat || lastScanResolved.lat;
+      const liveLng = liveTrail?.session?.last_lng || lastScanResolved.lng;
+
+      if (liveLat && liveLng && !isNaN(Number(liveLat)) && !isNaN(Number(liveLng)) && Number(liveLat) !== 0) {
+        const gLat = Number(liveLat);
+        const gLng = Number(liveLng);
+        allBounds.push([gLat, gLng]);
+        guardBounds.push([gLat, gLng]);
+
+        const liveIcon = L.divIcon({
+          className: '',
+          html: `<div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(37,99,235,0.28);"></div>
+            <div style="position:relative;background:#1d4ed8;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">G</div>
+          </div>`,
+          iconSize: [34, 34],
+          iconAnchor: [17, 17],
+        });
+
+        L.marker([gLat, gLng], { icon: liveIcon })
+          .addTo(map)
+          .bindPopup(
+            `<strong>Guard Last Position: ${
+              liveTrail?.session?.guard_name || mapModalRun.guardName
+            }</strong><br/>GPS: ${gLat.toFixed(5)}, ${gLng.toFixed(5)}`
+          );
+      }
+
+      const activeBounds =
+        mapZoomFocus === 'QR' && qrBounds.length > 0
+          ? qrBounds
+          : mapZoomFocus === 'GUARD' && guardBounds.length > 0
+          ? guardBounds
+          : allBounds;
+
+      if (activeBounds.length > 0) {
+        map.fitBounds(activeBounds, { padding: [55, 55], maxZoom: 18 });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [mapModalRun, liveTrail, rounds, mapZoomFocus]);
+
+  const allPatrolRuns = useMemo(() => {
     const list: PatrolRun[] = [];
     for (const r of rounds) {
       const rScans = scansByRound[r.id] || [];
@@ -602,37 +934,14 @@ const allPatrolRuns = useMemo(() => {
 
                         <td className="px-4 py-3.5">
                           {run.status === 'PENDING' ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
-                              <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
-                              Pending
-                            </span>
-                          ) : run.status === 'COMPLETED' ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                              Completed
-                            </span>
-                          ) : run.status === 'PAUSED' ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">
-                              <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
-                              Paused
-                            </span>
-                          ) : run.status === 'PARTIAL' ? (
-                            <div className="flex flex-col gap-0.5">
-                              <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">
-                                <span className="h-1.5 w-1.5 rounded-full bg-orange-500" />
-                                Partially Ended
-                              </span>
-                              {run.handoverNote && (
-                                <span className="text-[10px] text-orange-600 font-medium">
-                                  {run.handoverNote}
-                                </span>
-                              )}
-                            </div>
+                            <span className="text-slate-400 italic">No scans yet</span>
                           ) : (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                              In Progress
-                            </span>
+                            <div>
+                              <div className="font-bold text-slate-800">{run.displayDate}</div>
+                              <div className="text-[10px] text-blue-600 font-semibold">
+                                Patrol Run #{run.runNumber}
+                              </div>
+                            </div>
                           )}
                         </td>
 
@@ -681,6 +990,23 @@ const allPatrolRuns = useMemo(() => {
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
                               COMPLETED
                             </span>
+                          )}
+                          {run.status === 'PAUSED' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 font-bold text-[10px]">
+                              PAUSED
+                            </span>
+                          )}
+                          {run.status === 'PARTIAL' && (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-800 font-bold text-[10px]">
+                                PARTIALLY ENDED
+                              </span>
+                              {run.handoverNote && (
+                                <span className="text-[9px] text-orange-600 font-medium">
+                                  {run.handoverNote}
+                                </span>
+                              )}
+                            </div>
                           )}
                           {run.status === 'IN_PROGRESS' && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px]">
