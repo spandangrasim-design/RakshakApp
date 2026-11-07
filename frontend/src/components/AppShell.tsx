@@ -152,10 +152,10 @@ export const AppShell: React.FC<{
     </nav>
   );
 
-  // Co-Branded Top-Left Identity: [Industry Logo] Industry Name + Powered By Rakshak Security Operations
+  // Co-Branded Top-Left Identity: [Industry Logo] Industry Name + Powered By Spandan IT Professionals Operations
   const brand = (compact: boolean) => (
     <div
-      title={`${brandInfo.name}${brandInfo.address ? ' · ' + brandInfo.address : ''} — Powered by Rakshak Security Operations`}
+      title={`${brandInfo.name}${brandInfo.address ? ' · ' + brandInfo.address : ''} — Powered by Spandan IT Professionals`}
       className={`group relative flex h-16 items-center gap-3 border-b border-slate-100 px-3.5 ${compact ? 'justify-center' : ''}`}
     >
       <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
@@ -179,7 +179,7 @@ export const AppShell: React.FC<{
           </div>
           <div className="mt-0.5 flex items-center gap-1 text-[10px] font-bold text-blue-600">
             <Shield className="h-3 w-3 shrink-0" />
-            <span className="truncate">Powered By Rakshak Security</span>
+            <span className="truncate">Powered By Spandan IT Professionals</span>
           </div>
         </div>
       )}
