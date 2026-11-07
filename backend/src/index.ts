@@ -2318,10 +2318,14 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     const cfg = await loadTenantConfig(supabase, tenantId);
 
     const wStartMs = new Date(startOfSiteDayISO(c.env)).getTime(), wEndMs = Date.now();
-    let guards = await guardsActiveBetween(supabase, tenantId, new Date(wStartMs).toISOString(), new Date(wEndMs).toISOString());
+    const wStartISO = new Date(wStartMs).toISOString();
+    const wEndISO = new Date(wEndMs).toISOString();
+
+    let guards = await guardsActiveBetween(supabase, tenantId, wStartISO, wEndISO);
     if (body?.guard_id) guards = guards.filter((g) => g.guard_id === body.guard_id);
     if (guards.length === 0) return c.json({ success: true, empty: true, message: 'No guard has any activity today yet.' });
 
+    // Recipients
     const recipientsSet = new Set<string>();
     for (const e of String(cfg['DAILY_REPORT_EMAILS'] || '').split(/[,;\s]+/)) {
       const ok = safeEmail(e);
@@ -2332,66 +2336,216 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       return c.json({ success: false, message: 'No recipient email addresses configured in Daily Report settings.' }, 400);
     }
 
-    let totalIncidentsAll = 0;
-    try {
-      const { count: incCount } = await supabase.from('incidents')
-        .select('*', { count: 'exact', head: true })
+    // Parallel query: rounds, scans, and incidents
+    const [roundsRes, scansRes, incListRes] = await Promise.all([
+      supabase.from('rounds')
+        .select('id, name, checkpoints, assigned_guards')
+        .eq('tenant_id', tenantId),
+      supabase.from('scans')
+        .select('checkpoint_id, guard_id, round_id, scan_time, is_verified, distance_meters')
         .eq('tenant_id', tenantId)
-        .gte('reported_at', new Date(wStartMs).toISOString());
-      totalIncidentsAll = incCount || 0;
-    } catch (_) {}
+        .gte('scan_time', wStartISO)
+        .order('scan_time', { ascending: false })
+        .limit(2000),
+      supabase.from('incidents')
+        .select('case_number, title, priority, status, reported_at, guard_id')
+        .eq('tenant_id', tenantId)
+        .gte('reported_at', wStartISO)
+        .order('reported_at', { ascending: false })
+        .limit(500)
+    ]);
 
+    const roundsList: any[] = roundsRes.data || [];
+    const scansList: any[] = scansRes.data || [];
+    const incList: any[] = incListRes.data || [];
+
+    const guardMap = new Map<string, any>();
+    for (const g of guards) guardMap.set(g.guard_id, g);
+
+    // Group scans by round_id to compute route completion
+    const scansByRound = new Map<string, any[]>();
+    for (const s of scansList) {
+      const rId = s.round_id || 'unknown';
+      if (!scansByRound.has(rId)) scansByRound.set(rId, []);
+      scansByRound.get(rId)!.push(s);
+    }
+
+    let completedRoutesCount = 0;
+    const routeStats = roundsList.map((rnd) => {
+      const rScans = scansByRound.get(rnd.id) || [];
+      const totalCheckpoints = Array.isArray(rnd.checkpoints) ? rnd.checkpoints.length : 0;
+      
+      const scannedUnique = new Set(rScans.filter((s) => s.is_verified).map((s) => s.checkpoint_id)).size;
+      const isCompleted = totalCheckpoints > 0 && scannedUnique >= totalCheckpoints;
+      if (isCompleted) completedRoutesCount++;
+
+      const latestScan = rScans[0];
+      const guardName = latestScan ? (guardMap.get(latestScan.guard_id)?.full_name || 'Assigned Guard') : (rnd.assigned_guards?.[0]?.full_name || 'Unassigned');
+
+      return {
+        id: rnd.id,
+        name: rnd.name,
+        guardName,
+        scannedUnique,
+        totalCheckpoints,
+        scansCount: rScans.length,
+        isCompleted,
+        lastScanTime: latestScan?.scan_time ? new Date(latestScan.scan_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'
+      };
+    });
+
+    const totalVerifiedScans = scansList.filter((s) => s.is_verified).length;
     const reportDateStr = localDate(c.env, wStartMs);
     const plantName = tenant?.name || 'Grasim Industrial Plant';
     const subject = `[Daily Digest] Security & Patrol Briefing - ${plantName} - ${reportDateStr}`;
 
+    const cellHead = "padding:10px 12px;background:#f8fafc;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e2e8f0;text-align:left;";
+    const cellRow = "padding:10px 12px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9;vertical-align:middle;";
+
     const html = `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f8fafc;color:#0f172a;">
-        <div style="background:#0f172a;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0;">
-          <h2 style="margin:0;font-size:20px;font-weight:bold;">${esc(plantName)} - Daily Patrol Digest</h2>
-          <p style="margin:6px 0 0;font-size:13px;color:#94a3b8;">Date: ${esc(reportDateStr)} | Shift Briefing & Detailed Attachment</p>
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f1f5f9;color:#0f172a;">
+        <div style="background:#0f172a;color:#ffffff;padding:24px;border-radius:12px 12px 0 0;">
+          <div style="font-size:11px;font-weight:bold;color:#38bdf8;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Rakshak Security Intelligence</div>
+          <h2 style="margin:0;font-size:22px;font-weight:bold;color:#ffffff;">${esc(plantName)} - Daily Patrol Digest</h2>
+          <p style="margin:6px 0 0;font-size:13px;color:#94a3b8;">Shift Date: <strong>${esc(reportDateStr)}</strong> | Automated Consolidated Briefing</p>
         </div>
+
         <div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
-          <h3 style="margin:0 0 14px;font-size:15px;color:#334155;text-transform:uppercase;letter-spacing:0.5px;">Executive Summary</h3>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+          <!-- KPI Executive Summary -->
+          <table style="width:100%;border-collapse:collapse;margin-bottom:28px;">
             <tr>
-              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
-                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Active Personnel</div>
-                <div style="font-size:24px;font-weight:bold;color:#0f172a;margin-top:4px;">${guards.length}</div>
+              <td style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:center;width:24%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Active Personnel</div>
+                <div style="font-size:24px;font-weight:800;color:#0f172a;margin-top:4px;">${guards.length}</div>
               </td>
               <td style="width:2%;"></td>
-              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
-                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Incidents Logged</div>
-                <div style="font-size:24px;font-weight:bold;color:${totalIncidentsAll > 0 ? '#dc2626' : '#16a34a'};margin-top:4px;">${totalIncidentsAll}</div>
+              <td style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:center;width:24%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Routes Done</div>
+                <div style="font-size:24px;font-weight:800;color:${completedRoutesCount > 0 ? '#16a34a' : '#0f172a'};margin-top:4px;">${completedRoutesCount} / ${roundsList.length}</div>
               </td>
               <td style="width:2%;"></td>
-              <td style="padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;width:33%;">
-                <div style="font-size:11px;color:#64748b;font-weight:bold;text-transform:uppercase;">Status</div>
-                <div style="font-size:14px;font-weight:bold;color:#16a34a;margin-top:8px;">COMPLETED</div>
+              <td style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:center;width:24%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">QR Stops Verified</div>
+                <div style="font-size:24px;font-weight:800;color:#2563eb;margin-top:4px;">${totalVerifiedScans}</div>
+              </td>
+              <td style="width:2%;"></td>
+              <td style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;text-align:center;width:24%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Incidents</div>
+                <div style="font-size:24px;font-weight:800;color:${incList.length > 0 ? '#dc2626' : '#16a34a'};margin-top:4px;">${incList.length}</div>
               </td>
             </tr>
           </table>
 
-          <h3 style="margin:18px 0 10px;font-size:14px;color:#334155;">Active Personnel Roster</h3>
-          <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;">
-            <tr style="background:#f8fafc;border-bottom:2px solid #cbd5e1;text-align:left;">
-              <th style="padding:10px;">Guard Name</th>
-              <th style="padding:10px;">Emp Code</th>
-              <th style="padding:10px;">Contact</th>
-              <th style="padding:10px;">Status</th>
-            </tr>
-            ${guards.map((g) => `
-              <tr style="border-bottom:1px solid #f1f5f9;">
-                <td style="padding:10px;font-weight:bold;color:#0f172a;">${esc(g.full_name)}</td>
-                <td style="padding:10px;font-family:monospace;color:#64748b;">${esc(g.employee_code || '—')}</td>
-                <td style="padding:10px;color:#475569;">${esc(g.phone || '—')}</td>
-                <td style="padding:10px;"><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:11px;font-weight:bold;">Active On Duty</span></td>
-              </tr>
-            `).join('')}
-          </table>
+          <!-- Patrol Routes Completed Section -->
+          <div style="margin-bottom:28px;">
+            <h3 style="margin:0 0 10px;font-size:14px;font-weight:bold;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;">
+              Route Completion & Checkpoint Progress
+            </h3>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr>
+                  <th style="${cellHead}">Route / Beat</th>
+                  <th style="${cellHead}">Active Guard</th>
+                  <th style="${cellHead}">Checkpoints</th>
+                  <th style="${cellHead}">Last Activity</th>
+                  <th style="${cellHead}">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${routeStats.length === 0 ? `
+                  <tr><td colspan="5" style="${cellRow}text-align:center;color:#64748b;">No patrol routes registered.</td></tr>
+                ` : routeStats.map((r) => `
+                  <tr>
+                    <td style="${cellRow}font-weight:600;color:#0f172a;">${esc(r.name)}</td>
+                    <td style="${cellRow}color:#475569;">${esc(r.guardName)}</td>
+                    <td style="${cellRow}">
+                      <strong>${r.scannedUnique}</strong> of ${r.totalCheckpoints} stops
+                    </td>
+                    <td style="${cellRow}font-family:monospace;color:#64748b;">${esc(r.lastScanTime)}</td>
+                    <td style="${cellRow}">
+                      ${r.isCompleted ? `
+                        <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;">Completed</span>
+                      ` : r.scannedUnique > 0 ? `
+                        <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#fef3c7;color:#b45309;font-size:11px;font-weight:700;">In Progress</span>
+                      ` : `
+                        <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:11px;font-weight:700;">Pending</span>
+                      `}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
 
+          <!-- Incidents Section -->
+          <div style="margin-bottom:28px;">
+            <h3 style="margin:0 0 10px;font-size:14px;font-weight:bold;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;">
+              Incident & Exception Log
+            </h3>
+            ${incList.length === 0 ? `
+              <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:14px 18px;border-radius:8px;">
+                <span style="color:#16a34a;font-weight:bold;font-size:13px;">✔ No security, safety, or breach incidents logged during this shift.</span>
+              </div>
+            ` : `
+              <table style="width:100%;border-collapse:collapse;border:1px solid #fed7aa;border-radius:8px;overflow:hidden;">
+                <thead>
+                  <tr style="background:#fff7ed;">
+                    <th style="${cellHead}color:#9a3412;">Case #</th>
+                    <th style="${cellHead}color:#9a3412;">Time</th>
+                    <th style="${cellHead}color:#9a3412;">Severity</th>
+                    <th style="${cellHead}color:#9a3412;">Incident Title</th>
+                    <th style="${cellHead}color:#9a3412;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${incList.map((inc: any) => `
+                    <tr>
+                      <td style="${cellRow}font-family:monospace;font-weight:bold;color:#c2410c;">${inc.case_number ? 'RKS-' + String(inc.case_number).padStart(6, '0') : '—'}</td>
+                      <td style="${cellRow}font-family:monospace;color:#64748b;">${inc.reported_at ? new Date(inc.reported_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                      <td style="${cellRow}">
+                        <span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:bold;background:${inc.priority === 'CRITICAL' || inc.priority === 'HIGH' ? '#fee2e2;color:#991b1b;' : '#fef3c7;color:#92400e;'}">
+                          ${esc(inc.priority || 'NORMAL')}
+                        </span>
+                      </td>
+                      <td style="${cellRow}font-weight:600;color:#0f172a;">${esc(inc.title)}</td>
+                      <td style="${cellRow}font-weight:600;color:#475569;">${esc(inc.status || 'OPEN')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            `}
+          </div>
+
+          <!-- Guards On Duty Section -->
+          <div style="margin-bottom:20px;">
+            <h3 style="margin:0 0 10px;font-size:14px;font-weight:bold;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;">
+              Active Personnel Roster
+            </h3>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr>
+                  <th style="${cellHead}">Guard Name</th>
+                  <th style="${cellHead}">Employee Code</th>
+                  <th style="${cellHead}">Contact</th>
+                  <th style="${cellHead}">Shift Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${guards.map((g) => `
+                  <tr>
+                    <td style="${cellRow}font-weight:bold;color:#0f172a;">${esc(g.full_name)}</td>
+                    <td style="${cellRow}font-family:monospace;color:#64748b;">${esc(g.employee_code || '—')}</td>
+                    <td style="${cellRow}color:#475569;">${esc(g.phone || '—')}</td>
+                    <td style="${cellRow}"><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;">Active On Duty</span></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Attachment Notice -->
           <div style="margin-top:24px;padding:14px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;font-size:12px;color:#166534;">
-            📎 <strong>Excel Report Attached:</strong> The attached spreadsheet (<code>Daily_Patrol_Report_${esc(reportDateStr)}.xlsx</code>) contains the full patrol logs, QR checkpoint timestamps, and incident records.
+            📎 <strong>Excel Report Attached:</strong> <code>Daily_Patrol_Report_${esc(reportDateStr)}.xlsx</code> contains individual checkpoint GPS timestamps, distance verifications, and complete logs.
           </div>
         </div>
       </div>
@@ -2401,26 +2555,7 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       return c.json({ success: true, subject, html, guards: guards.length });
     }
 
-    const [scansRes, incListRes] = await Promise.all([
-      supabase.from('scans')
-        .select('checkpoint_id, guard_id, scan_time, is_verified, distance_meters')
-        .eq('tenant_id', tenantId)
-        .gte('scan_time', new Date(wStartMs).toISOString())
-        .order('scan_time', { ascending: false })
-        .limit(2000),
-      supabase.from('incidents')
-        .select('case_number, title, priority, status, reported_at, guard_id')
-        .eq('tenant_id', tenantId)
-        .gte('reported_at', new Date(wStartMs).toISOString())
-        .order('reported_at', { ascending: false })
-        .limit(500)
-    ]);
-
-    const scansList = scansRes.data || [];
-    const incList = incListRes.data || [];
-    const guardMap = new Map<string, any>();
-    for (const g of guards) guardMap.set(g.guard_id, g);
-
+    // Build the Excel workbook
     const guardSummaryRows = guards.map((g) => ({
       'Guard Name': g.full_name,
       'Employee Code': g.employee_code || '—',
