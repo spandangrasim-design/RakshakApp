@@ -110,6 +110,21 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             {isLoading ? 'Signing In...' : 'Sign In'}
           </button>
         </form>
+      
+        {/* Spandan IT System Infrastructure Branding */}
+        <div className="mt-8 pt-4 border-t border-slate-100 text-center">
+          <p className="text-xs font-semibold text-slate-500">
+            Enterprise Security Infrastructure by <span className="text-slate-800 font-bold">Spandan IT Professionals</span>
+          </p>
+          <a
+            href="https://spandanit.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] font-bold text-blue-600 hover:underline mt-1 inline-block"
+          >
+            www.spandanit.com
+          </a>
+        </div>
       </div>
     </div>
   );
