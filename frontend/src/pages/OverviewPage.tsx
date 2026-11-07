@@ -227,11 +227,26 @@ export const OverviewPage: React.FC = () => {
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-bold text-slate-900">{r.name}</div>
                           <div className="truncate text-xs text-slate-400">
-                            {r.status === 'DONE' ? `Completed by ${r.done_by || 'a guard'}${r.done_at ? ' at ' + fmtTime(r.done_at) : ''}`
-                              : r.status === 'IN_PROGRESS' ? `On it now: ${r.on_it.join(', ')}`
-                              : r.status === 'PAUSED' ? `Paused by ${(r.paused_by || []).join(', ') || 'a guard'}`
-                              : r.status === 'PARTIAL' ? `${r.progress?.scanned ?? 0} of ${r.progress?.total ?? 0} checkpoints done. Needs a guard to continue`
-                              : 'Waiting for a guard'}
+                            {r.status === 'DONE' ? (
+                                <span>Completed by <strong>{r.done_by || 'a guard'}</strong>{r.done_at ? ' at ' + fmtTime(r.done_at) : ''}</span>
+                              ) : r.status === 'IN_PROGRESS' ? (
+                                <span>
+                                  Active: <strong>{r.on_it.join(', ')}</strong> ({r.progress?.scanned ?? 0}/{r.progress?.total ?? 0} stops done)
+                                  {(r.paused_by && r.paused_by.length > 0) && (
+                                    <span className="ml-1 text-sky-600 font-medium">· Earlier paused by {r.paused_by.join(', ')}</span>
+                                  )}
+                                </span>
+                              ) : r.status === 'PAUSED' ? (
+                                <span>
+                                  Paused by <strong>{(r.paused_by || []).join(', ') || 'a guard'}</strong> at {r.progress?.scanned ?? 0}/{r.progress?.total ?? 0} stops
+                                </span>
+                              ) : r.status === 'PARTIAL' ? (
+                                <span>
+                                  Partially ended at <strong>{r.progress?.scanned ?? 0} of {r.progress?.total ?? 0}</strong> checkpoints. Needs next guard to resume
+                                </span>
+                              ) : (
+                                'Waiting for a guard'
+                              )}
                           </div>
                         </div>
                         <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS_STYLE[r.status].chip}`}>{STATUS_STYLE[r.status].label}</span>
