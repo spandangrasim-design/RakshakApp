@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { sign, verify } from 'hono/jwt' 
@@ -2155,20 +2156,73 @@ async function reportRecipients(supabase: any, cfg: Record<string, string>, guar
   return [...out];
 }
 
-async function sendTenantEmail(env: Bindings, tenantId: string, recipients: string[], subject: string, html: string): Promise<{ ok: boolean; error?: string }> {
+interface EmailAttachment {
+  filename: string;
+  contentType: string;
+  contentBase64: string;
+}
+
+function chunkBase64(str: string, size = 76): string {
+  const chunks: string[] = [];
+  for (let i = 0; i < str.length; i += size) {
+    chunks.push(str.slice(i, i + size));
+  }
+  return chunks.join('\r\n');
+}
+
+async function sendTenantEmail(
+  env: Bindings,
+  tenantId: string,
+  recipients: string[],
+  subject: string,
+  html: string,
+  attachment?: EmailAttachment
+): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabase(env);
   const cfg = await loadTenantConfig(supabase, tenantId);
   const tokenResult = await getValidGmailAccessToken(supabase, cfg, `t:${tenantId}:`);
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
 
-  const raw = utf8ToBase64([
-    `To: ${recipients.join(', ')}`,
-    `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=utf-8',
-    '',
-    html,
-  ].join('\r\n')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  let mimeRaw = '';
+  if (attachment) {
+    const boundary = '----=_Part_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+    const htmlBase64 = chunkBase64(utf8ToBase64(html));
+    const attachBase64 = chunkBase64(attachment.contentBase64);
+
+    mimeRaw = [
+      `To: ${recipients.join(', ')}`,
+      `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      htmlBase64,
+      '',
+      `--${boundary}`,
+      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${attachment.filename}"`,
+      '',
+      attachBase64,
+      '',
+      `--${boundary}--`,
+      ''
+    ].join('\r\n');
+  } else {
+    mimeRaw = [
+      `To: ${recipients.join(', ')}`,
+      `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      html,
+    ].join('\r\n');
+  }
+
+  const raw = utf8ToBase64(mimeRaw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
   try {
     const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
@@ -2254,6 +2308,7 @@ function reportTenant(c: any): string | null {
 
 // Admins: preview or send today's report so far (also the quickest way to test the email setup).
 app.post('/api/v1/daily-reports/send-now', async (c) => {
+  const esc = (s: any) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   try {
     const tenantId = reportTenant(c);
     if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
@@ -2267,7 +2322,6 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     if (body?.guard_id) guards = guards.filter((g) => g.guard_id === body.guard_id);
     if (guards.length === 0) return c.json({ success: true, empty: true, message: 'No guard has any activity today yet.' });
 
-    // Collect all recipients once (tenant configured emails)
     const recipientsSet = new Set<string>();
     for (const e of String(cfg['DAILY_REPORT_EMAILS'] || '').split(/[,;\s]+/)) {
       const ok = safeEmail(e);
@@ -2278,32 +2332,24 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       return c.json({ success: false, message: 'No recipient email addresses configured in Daily Report settings.' }, 400);
     }
 
-    // Build consolidated summary metrics
-    const guardSummaries: any[] = [];
-    let totalScansAll = 0;
     let totalIncidentsAll = 0;
-
-    for (const g of guards) {
-      const r = await buildShiftReport(supabase, c.env, tenant?.name || 'Your industry', g, wStartMs, wEndMs, 'Today');
-      guardSummaries.push({ guard: g, report: r });
-    }
-
-    // Query incidents count for the day
-    const { count: incCount } = await supabase.from('incidents')
-      .select('*', { count: 'exact', head: true })
-      .eq('tenant_id', tenantId)
-      .gte('reported_at', new Date(wStartMs).toISOString());
-    totalIncidentsAll = incCount || 0;
+    try {
+      const { count: incCount } = await supabase.from('incidents')
+        .select('*', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .gte('reported_at', new Date(wStartMs).toISOString());
+      totalIncidentsAll = incCount || 0;
+    } catch (_) {}
 
     const reportDateStr = localDate(c.env, wStartMs);
-    const plantName = tenant?.name || 'Plant Facility';
+    const plantName = tenant?.name || 'Grasim Industrial Plant';
     const subject = `[Daily Digest] Security & Patrol Briefing - ${plantName} - ${reportDateStr}`;
 
     const html = `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;background:#f8fafc;color:#0f172a;">
         <div style="background:#0f172a;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0;">
           <h2 style="margin:0;font-size:20px;font-weight:bold;">${esc(plantName)} - Daily Patrol Digest</h2>
-          <p style="margin:6px 0 0;font-size:13px;color:#94a3b8;">Date: ${esc(reportDateStr)} | Consolidated Shift Briefing</p>
+          <p style="margin:6px 0 0;font-size:13px;color:#94a3b8;">Date: ${esc(reportDateStr)} | Shift Briefing & Detailed Attachment</p>
         </div>
         <div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
           <h3 style="margin:0 0 14px;font-size:15px;color:#334155;text-transform:uppercase;letter-spacing:0.5px;">Executive Summary</h3>
@@ -2326,7 +2372,7 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
             </tr>
           </table>
 
-          <h3 style="margin:18px 0 10px;font-size:14px;color:#334155;">Guard Patrol Performance</h3>
+          <h3 style="margin:18px 0 10px;font-size:14px;color:#334155;">Active Personnel Roster</h3>
           <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;">
             <tr style="background:#f8fafc;border-bottom:2px solid #cbd5e1;text-align:left;">
               <th style="padding:10px;">Guard Name</th>
@@ -2344,8 +2390,8 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
             `).join('')}
           </table>
 
-          <div style="margin-top:24px;padding:14px;background:#f8fafc;border-radius:8px;border:1px dashed #cbd5e1;font-size:12px;color:#64748b;">
-            💡 <strong>Export Notice:</strong> Detailed Excel workbooks with GPS timestamps, checkpoint sequences, and incident tickets can be downloaded on-demand from the <strong>Patrol Reports</strong> tab.
+          <div style="margin-top:24px;padding:14px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;font-size:12px;color:#166534;">
+            📎 <strong>Excel Report Attached:</strong> The attached spreadsheet (<code>Daily_Patrol_Report_${esc(reportDateStr)}.xlsx</code>) contains the full patrol logs, QR checkpoint timestamps, and incident records.
           </div>
         </div>
       </div>
@@ -2355,13 +2401,77 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       return c.json({ success: true, subject, html, guards: guards.length });
     }
 
-    // Send single consolidated email to all plant recipients
-    const res = await sendTenantEmail(c.env, tenantId, recipients, subject, html);
+    const [scansRes, incListRes] = await Promise.all([
+      supabase.from('scans')
+        .select('checkpoint_id, guard_id, scan_time, is_verified, distance_meters')
+        .eq('tenant_id', tenantId)
+        .gte('scan_time', new Date(wStartMs).toISOString())
+        .order('scan_time', { ascending: false })
+        .limit(2000),
+      supabase.from('incidents')
+        .select('case_number, title, priority, status, reported_at, guard_id')
+        .eq('tenant_id', tenantId)
+        .gte('reported_at', new Date(wStartMs).toISOString())
+        .order('reported_at', { ascending: false })
+        .limit(500)
+    ]);
+
+    const scansList = scansRes.data || [];
+    const incList = incListRes.data || [];
+    const guardMap = new Map<string, any>();
+    for (const g of guards) guardMap.set(g.guard_id, g);
+
+    const guardSummaryRows = guards.map((g) => ({
+      'Guard Name': g.full_name,
+      'Employee Code': g.employee_code || '—',
+      'Phone': g.phone || '—',
+      'Status': 'Active On Duty',
+      'Date': reportDateStr
+    }));
+
+    const scanRows = scansList.map((s: any, idx: number) => {
+      const g = guardMap.get(s.guard_id);
+      return {
+        'Index': idx + 1,
+        'Scan Time': s.scan_time ? new Date(s.scan_time).toLocaleString() : '—',
+        'Guard Name': g?.full_name || s.guard_id,
+        'Employee Code': g?.employee_code || '—',
+        'Checkpoint ID': s.checkpoint_id,
+        'Verified': s.is_verified ? 'Yes' : 'No',
+        'Distance (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—'
+      };
+    });
+
+    const incidentRows = incList.map((i: any) => {
+      const g = guardMap.get(i.guard_id);
+      return {
+        'Case #': i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—',
+        'Reported Time': i.reported_at ? new Date(i.reported_at).toLocaleString() : '—',
+        'Reported By': g?.full_name || '—',
+        'Severity': i.priority || 'NORMAL',
+        'Title': i.title || '—',
+        'Status': i.status || 'OPEN'
+      };
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(guardSummaryRows), 'Guards Summary');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scanRows.length > 0 ? scanRows : [{ 'Notice': 'No scans recorded today' }]), 'Checkpoint Scans');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(incidentRows.length > 0 ? incidentRows : [{ 'Notice': 'No incidents logged today' }]), 'Incidents');
+
+    const excelBase64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+    const filename = `Daily_Patrol_Report_${reportDateStr}.xlsx`;
+
+    const res = await sendTenantEmail(c.env, tenantId, recipients, subject, html, {
+      filename,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      contentBase64: excelBase64
+    });
+
     if (!res.ok) {
       return c.json({ success: false, message: res.error || 'Failed to send consolidated email' }, 500);
     }
 
-    // Record in daily_report_log
     try {
       await supabase.from('daily_report_log').insert({
         tenant_id: tenantId,
@@ -2372,13 +2482,12 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
         recipients: recipients.join(', '),
         sent_at: new Date().toISOString()
       });
-    } catch (logErr) {
-      console.warn('Could not insert daily_report_log:', logErr);
-    }
+    } catch (_) {}
 
-    return c.json({ success: true, sent: 1, guards: guards.length, message: `Consolidated briefing sent to ${recipients.length} recipient(s).` });
-  } catch (error) {
-    return c.json({ success: false, message: errMsg(error, 'Could not send consolidated report') }, 500);
+    return c.json({ success: true, sent: 1, guards: guards.length, message: `Consolidated briefing sent to ${recipients.length} recipient(s) with Excel attachment.` });
+  } catch (error: any) {
+    console.error('send-now error:', error);
+    return c.json({ success: false, message: error?.message || 'Could not send consolidated report' }, 500);
   }
 });
 
