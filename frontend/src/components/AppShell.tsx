@@ -192,6 +192,31 @@ export const AppShell: React.FC<{
       <aside className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200 bg-white transition-[width] duration-300 md:flex ${collapsed ? 'w-[76px]' : 'w-64'}`}>
         {brand(collapsed)}
         {renderNav(collapsed)}
+
+        {/* Persistent Spandan IT Professionals Branding Footer */}
+        {!collapsed ? (
+          <div className="p-3 border-t border-slate-100 bg-slate-50/70">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Platform By</span>
+                <span className="text-xs font-black text-slate-800 truncate">Spandan IT Professionals</span>
+              </div>
+              <a
+                href="https://spandanit.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] font-bold text-blue-600 hover:text-blue-700 hover:underline shrink-0"
+              >
+                Visit ↗
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="py-2 flex justify-center border-t border-slate-100 bg-slate-50/50">
+            <span className="text-[10px] font-black text-blue-600" title="Spandan IT Professionals">SIT</span>
+          </div>
+        )}
+
         <div className="border-t border-slate-100 p-3">
           <button
             onClick={() => setCollapsed((c) => !c)}
