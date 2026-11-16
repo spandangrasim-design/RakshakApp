@@ -446,7 +446,7 @@ export const DailyReportsPage: React.FC = () => {
                 <CheckCircle2 className={`h-4 w-4 ${r.status === 'SENT' ? 'text-emerald-500' : 'text-slate-300'}`} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-bold text-slate-900">
-                    {r.guard_name || r.shift_name} <span className="font-medium text-slate-400">· {r.shift_name} · {r.report_date}</span>
+                    {r.guard_name && r.guard_name !== 'Unknown' ? r.guard_name : r.shift_name} <span className="font-medium text-slate-400">· {r.shift_name} · {r.report_date}</span>
                   </div>
                   <div className="truncate text-xs text-slate-400">{r.error ? r.error : r.recipients || '—'}</div>
                 </div>

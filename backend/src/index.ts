@@ -3125,7 +3125,7 @@ app.get('/api/v1/daily-reports/log', async (c) => {
       const { data: gs } = await supabase.from('guards').select('guard_id, full_name').in('guard_id', ids);
       for (const g of gs || []) names.set(g.guard_id, g.full_name);
     }
-    return c.json({ success: true, log: rows.map((r) => ({ ...r, guard_name: names.get(r.guard_id) || 'Unknown' })) });
+    return c.json({ success: true, log: rows.map((r) => ({ ...r, guard_name: names.get(r.guard_id) || (String(r.guard_id || '').startsWith('AUTO_') ? 'Automated Schedule' : String(r.guard_id || '').startsWith('MANUAL_') ? 'Manual Dispatch' : 'Consolidated Report') })) });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error) }, 500);
   }
