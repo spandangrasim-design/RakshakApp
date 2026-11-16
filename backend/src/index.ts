@@ -1968,6 +1968,213 @@ app.post('/api/v1/field/runs/:id/end', async (c) => {
 });
 
 // The server decides whether the route is complete: every checkpoint must be scanned in the current cycle.
+
+async function dispatchRouteCompletionReport(
+  env: Bindings,
+  tenantId: string,
+  guardId: string,
+  session: any,
+  doneAt: string
+) {
+  try {
+    const supabase = getSupabase(env);
+    const { data: tenant } = await supabase.from('tenants').select('id, name, features, status').eq('id', tenantId).maybeSingle();
+    if (!tenant || (tenant.status || 'ACTIVE') !== 'ACTIVE') return;
+    const f = normalizeTenantFeatures(tenant.features);
+    if (!f.module_patrol.allow_daily_reports || !f.module_integrations.channels.gmail_oauth) return;
+
+    const cfg = await loadTenantConfig(supabase, tenantId);
+    if (cfg['DAILY_REPORT_ENABLED'] === 'false') return;
+
+    const [guardRes, roundRes, cpsRes, scansRes, incRes] = await Promise.all([
+      supabase.from('guards').select('*').eq('guard_id', guardId).maybeSingle(),
+      supabase.from('rounds').select('id, name').eq('id', session.round_id).maybeSingle(),
+      supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng').eq('round_id', session.round_id),
+      supabase.from('scans').select('*')
+        .eq('tenant_id', tenantId)
+        .eq('guard_id', guardId)
+        .eq('round_id', session.round_id)
+        .gte('scan_time', session.start_time)
+        .lte('scan_time', doneAt)
+        .order('scan_time', { ascending: true }),
+      // STRICT ISOLATION: only incidents logged by THIS guard during THIS route window
+      supabase.from('incidents').select('*')
+        .eq('tenant_id', tenantId)
+        .eq('guard_id', guardId)
+        .gte('reported_at', session.start_time)
+        .lte('reported_at', doneAt)
+        .order('reported_at', { ascending: true }),
+    ]);
+
+    const guard = guardRes.data;
+    if (!guard) return;
+    const roundName = roundRes.data?.name || 'Patrol Route';
+    const checkpoints: any[] = cpsRes.data || [];
+    const scans: any[] = scansRes.data || [];
+    const incidents: any[] = incRes.data || [];
+    const cpById = new Map<string, any>(checkpoints.map((c) => [String(c.checkpoint_id), c]));
+
+    // Collect recipients from Shift/Route schedule + fallback + assigned supervisor
+    let schedules: Record<string, { enabled: boolean; emails: string }> = {};
+    try { schedules = JSON.parse(cfg['REPORT_SCHEDULES_JSON'] || '{}'); } catch {}
+    const recipSet = new Set<string>(await reportRecipients(supabase, cfg, guard));
+    for (const raw of [schedules.shift?.emails, schedules.daily?.emails]) {
+      for (const e of String(raw || '').split(/[,;\s]+/)) {
+        const ok = safeEmail(e);
+        if (ok) recipSet.add(ok);
+      }
+    }
+    const recipients = [...recipSet];
+    if (recipients.length === 0) return;
+
+    const mapHtml = buildStaticRouteMapSvg(checkpoints, scans);
+    const startHM = localHM(env, new Date(session.start_time).getTime());
+    const endHM = localHM(env, new Date(doneAt).getTime());
+    const dateStr = localDate(env, new Date(doneAt).getTime());
+    const plantName = tenant.name || 'Enterprise Security Site';
+
+    const cellHead = 'padding:8px 10px;background:#f8fafc;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;border-bottom:1px solid #e2e8f0;text-align:left;';
+    const cellRow = 'padding:8px 10px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9;vertical-align:middle;';
+
+    const subject = `[${plantName}] Route Completed: ${roundName} · ${guard.full_name} · ${dateStr}`;
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;max-width:760px;margin:0 auto;padding:20px;background:#f1f5f9;color:#0f172a;">
+        <div style="background:#0f172a;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0;">
+          <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:1px;">Spandan IT Professionals · Instant Patrol Completion Alert</div>
+          <h2 style="margin:6px 0 0;font-size:20px;font-weight:800;">Route Completed: ${esc(roundName)}</h2>
+          <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">
+            Guard: <strong>${esc(guard.full_name)}</strong> (${esc(guard.employee_code || '—')}) | Window: <strong>${esc(startHM)} – ${esc(endHM)}</strong> | Date: <strong>${esc(dateStr)}</strong>
+          </p>
+        </div>
+        <div style="background:#ffffff;padding:22px 24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+          <table style="width:100%;border-collapse:collapse;margin-bottom:18px;">
+            <tr>
+              <td style="padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;text-align:center;width:33%;">
+                <div style="font-size:10px;color:#166534;font-weight:700;text-transform:uppercase;">Route Status</div>
+                <div style="font-size:18px;font-weight:800;color:#15803d;margin-top:2px;">COMPLETED</div>
+              </td>
+              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:33%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Checkpoints Verified</div>
+                <div style="font-size:18px;font-weight:800;color:#2563eb;margin-top:2px;">${scans.length} / ${checkpoints.length}</div>
+              </td>
+              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:33%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Incidents by Guard</div>
+                <div style="font-size:18px;font-weight:800;color:${incidents.length > 0 ? '#dc2626' : '#16a34a'};margin-top:2px;">${incidents.length}</div>
+              </td>
+            </tr>
+          </table>
+
+          <h3 style="margin:0 0 8px;font-size:14px;color:#0f172a;">Checkpoint GPS Verification Log</h3>
+          <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:16px;">
+            <thead><tr>
+              <th style="${cellHead}">Time</th>
+              <th style="${cellHead}">Checkpoint</th>
+              <th style="${cellHead}">Expected GPS</th>
+              <th style="${cellHead}">Captured GPS</th>
+              <th style="${cellHead}">Drift</th>
+            </tr></thead>
+            <tbody>
+              ${scans.map((sc) => {
+                const cp = cpById.get(String(sc.checkpoint_id));
+                const gLat = sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat;
+                const gLng = sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng;
+                return `<tr>
+                  <td style="${cellRow}font-size:11px;">${sc.scan_time ? esc(localHM(env, new Date(sc.scan_time).getTime())) : '—'}</td>
+                  <td style="${cellRow}font-weight:600;">${esc(cp?.name || sc.checkpoint_id)}</td>
+                  <td style="${cellRow}font-family:monospace;font-size:11px;">${cp?.lat ? `${Number(cp.lat).toFixed(5)}, ${Number(cp.lng).toFixed(5)}` : '—'}</td>
+                  <td style="${cellRow}font-family:monospace;font-size:11px;">${gLat != null ? `${Number(gLat).toFixed(5)}, ${Number(gLng).toFixed(5)}` : '—'}</td>
+                  <td style="${cellRow}">${sc.distance_meters != null ? Number(sc.distance_meters).toFixed(1) + 'm' : '—'}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+
+          ${mapHtml}
+
+          <h3 style="margin:18px 0 8px;font-size:14px;color:#0f172a;">Incidents Reported During This Route (${esc(guard.full_name)})</h3>
+          ${incidents.length === 0 ? `
+            <div style="padding:12px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:12px;color:#166534;font-weight:600;">
+              ✔ No incidents reported by ${esc(guard.full_name)} during this route.
+            </div>
+          ` : `
+            <table style="width:100%;border-collapse:collapse;border:1px solid #fed7aa;">
+              <thead><tr style="background:#fff7ed;">
+                <th style="${cellHead}color:#9a3412;">Case #</th>
+                <th style="${cellHead}color:#9a3412;">Time</th>
+                <th style="${cellHead}color:#9a3412;">Priority</th>
+                <th style="${cellHead}color:#9a3412;">Title &amp; Details</th>
+                <th style="${cellHead}color:#9a3412;">Status</th>
+              </tr></thead>
+              <tbody>
+                ${incidents.map((i) => `<tr>
+                  <td style="${cellRow}font-family:monospace;font-weight:700;color:#c2410c;">${i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—'}</td>
+                  <td style="${cellRow}font-size:11px;">${i.reported_at ? esc(localHM(env, new Date(i.reported_at).getTime())) : '—'}</td>
+                  <td style="${cellRow}"><strong>${esc(i.priority || 'P3')}</strong></td>
+                  <td style="${cellRow}"><strong>${esc(i.title || 'Incident')}</strong><div style="font-size:11px;color:#64748b;">${esc(i.description || '')}</div></td>
+                  <td style="${cellRow}">${esc(i.status || 'OPEN')}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          `}
+
+          <div style="margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;display:flex;justify-content:space-between;">
+            <span>Instant Route Completion Report · <strong>Spandan IT Professionals</strong></span>
+            <a href="https://spandanit.com" style="color:#2563eb;text-decoration:none;font-weight:700;">www.spandanit.com</a>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scans.map((s, idx) => {
+      const cp = cpById.get(String(s.checkpoint_id));
+      const gLat = s.guard_lat ?? s.guard_latitude ?? s.latitude ?? s.lat;
+      const gLng = s.guard_lng ?? s.guard_longitude ?? s.longitude ?? s.lng;
+      return {
+        '#': idx + 1,
+        'Time': s.scan_time ? new Date(s.scan_time).toLocaleString() : '—',
+        'Guard': guard.full_name,
+        'Route': roundName,
+        'Checkpoint': cp?.name || s.checkpoint_id,
+        'Expected GPS': cp?.lat ? `${cp.lat}, ${cp.lng}` : '—',
+        'Captured GPS': gLat != null ? `${gLat}, ${gLng}` : '—',
+        'Drift (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—',
+      };
+    })), 'Route Scans');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(incidents.length > 0 ? incidents.map((i) => ({
+      'Case #': i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—',
+      'Time': i.reported_at ? new Date(i.reported_at).toLocaleString() : '—',
+      'Guard': guard.full_name,
+      'Priority': i.priority || 'P3',
+      'Title': i.title || '—',
+      'Description': i.description || '—',
+      'Status': i.status || 'OPEN',
+    })) : [{ Notice: 'No incidents reported by this guard during this route' }]), 'Guard Incidents');
+
+    const excelBase64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+    const filename = `Route_Completed_${roundName.replace(/[^a-zA-Z0-9]/g, '_')}_${guard.full_name.replace(/[^a-zA-Z0-9]/g, '_')}_${dateStr}.xlsx`;
+
+    const res = await sendTenantEmail(env, tenantId, recipients, subject, html, {
+      filename,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      contentBase64: excelBase64,
+    });
+
+    await supabase.from('daily_report_log').insert({
+      tenant_id: tenantId,
+      guard_id: guardId,
+      shift_name: `Route Completed: ${roundName}`,
+      report_date: dateStr,
+      status: res.ok ? 'SENT' : 'FAILED',
+      error: res.error || null,
+      recipients: recipients.join(', '),
+      sent_at: res.ok ? new Date().toISOString() : null,
+    });
+  } catch (err) {
+    console.error('dispatchRouteCompletionReport error:', err);
+  }
+}
+
 app.post('/api/v1/field/runs/:id/complete', async (c) => {
   try {
     const a = c.get('auth');
@@ -1986,6 +2193,9 @@ app.post('/api/v1/field/runs/:id/complete', async (c) => {
       status: 'COMPLETED', end_time: doneAt, completed_route: true, paused_at: null, paused_seconds: (session.paused_seconds || 0) + pausedExtraSeconds(session),
     }).eq('id', session.id);
     if (error) throw error;
+    if (a.tenant_id && a.guard_id) {
+      c.executionCtx.waitUntil(dispatchRouteCompletionReport(c.env, a.tenant_id, a.guard_id, session, doneAt));
+    }
     return c.json({ success: true, done_at: doneAt });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error, 'Could not complete route') }, 500);
@@ -2356,7 +2566,8 @@ async function generateTypedReport(
   reportType: ReportCategory,
   customStartMs?: number,
   customEndMs?: number,
-  shiftLabel?: string
+  shiftLabel?: string,
+  filterGuardId?: string
 ) {
   const nowMs = customEndMs || Date.now();
   const siteDayStartMs = new Date(startOfSiteDayISO(env)).getTime();
@@ -2385,9 +2596,15 @@ async function generateTypedReport(
   const allGuards: any[] = guardsRes.data || [];
   const rounds: any[] = roundsRes.data || [];
   const checkpoints: any[] = cpsRes.data || [];
-  const sessions: any[] = sessionsRes.data || [];
-  const scans: any[] = scansRes.data || [];
-  const incidents: any[] = incRes.data || [];
+  let sessions: any[] = sessionsRes.data || [];
+  let scans: any[] = scansRes.data || [];
+  let incidents: any[] = incRes.data || [];
+
+  if (filterGuardId) {
+    sessions = sessions.filter((s) => String(s.guard_id) === String(filterGuardId));
+    scans = scans.filter((s) => String(s.guard_id) === String(filterGuardId));
+    incidents = incidents.filter((i) => String(i.guard_id) === String(filterGuardId));
+  }
 
   const guardById = new Map<string, any>(allGuards.map((g) => [String(g.guard_id), g]));
   const roundById = new Map<string, any>(rounds.map((r) => [String(r.id), r]));
@@ -2428,7 +2645,7 @@ async function generateTypedReport(
       avgDriftM: avgDrift,
       incidentsCount: gInc.length,
     };
-  }).filter((gs) => reportType === 'monthly' || reportType === 'weekly' || gs.runsTotal > 0 || gs.scansTotal > 0 || gs.incidentsCount > 0 || allGuards.length <= 25);
+  }).filter((gs) => filterGuardId ? gs.guardId === String(filterGuardId) : (reportType === 'monthly' || reportType === 'weekly' || gs.runsTotal > 0 || gs.scansTotal > 0 || gs.incidentsCount > 0 || allGuards.length <= 25));
 
   const mapHtml = (reportType === 'shift' || reportType === 'daily')
     ? buildStaticRouteMapSvg(checkpoints, scans)
@@ -2436,9 +2653,13 @@ async function generateTypedReport(
 
   let sectionHtml = '';
   if (reportType === 'individual') {
+    const selectedGuardObj = filterGuardId ? guardById.get(String(filterGuardId)) : null;
     sectionHtml = `
-      <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Individual Guard Breakdown</h3>
-      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;">
+      ${selectedGuardObj ? `<div style="margin-bottom:14px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:13px;color:#1e3a8a;">
+        <strong>Complete Guard Dossier:</strong> ${esc(selectedGuardObj.full_name)} (${esc(selectedGuardObj.employee_code || '—')}) · Phone: ${esc(selectedGuardObj.phone || '—')}
+      </div>` : ''}
+      <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Individual Guard Performance Summary</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
         <thead><tr>
           <th style="${cellHead}">Guard Name</th>
           <th style="${cellHead}">Code</th>
@@ -2456,6 +2677,77 @@ async function generateTypedReport(
               <td style="${cellRow}"><strong>${g.scansVerified}</strong> / ${g.scansTotal}</td>
               <td style="${cellRow}">${esc(g.avgDriftM)} m</td>
               <td style="${cellRow}">${g.incidentsCount}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+
+      <h3 style="margin:16px 0 10px;font-size:14px;color:#0f172a;">Patrol Runs &amp; Route History (${sessions.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
+        <thead><tr>
+          <th style="${cellHead}">Date</th>
+          <th style="${cellHead}">Guard</th>
+          <th style="${cellHead}">Route</th>
+          <th style="${cellHead}">Start – End</th>
+          <th style="${cellHead}">Status</th>
+        </tr></thead>
+        <tbody>
+          ${sessions.length === 0 ? `<tr><td colspan="5" style="${cellRow}text-align:center;color:#64748b;">No patrol runs in this window.</td></tr>` : sessions.slice(0, 80).map((s) => `
+            <tr>
+              <td style="${cellRow}font-size:11px;">${s.start_time ? esc(localDate(env, new Date(s.start_time).getTime())) : '—'}</td>
+              <td style="${cellRow}font-weight:600;">${esc(guardById.get(String(s.guard_id))?.full_name || 'Guard')}</td>
+              <td style="${cellRow}">${esc(roundById.get(String(s.round_id))?.name || 'Patrol Route')}</td>
+              <td style="${cellRow}font-size:11px;">${s.start_time ? esc(localHM(env, new Date(s.start_time).getTime())) : '—'} – ${s.end_time ? esc(localHM(env, new Date(s.end_time).getTime())) : 'Active'}</td>
+              <td style="${cellRow}">${s.completed_route ? '<span style="color:#15803d;font-weight:700;">Completed</span>' : esc(s.status || 'IN_PROGRESS')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+
+      <h3 style="margin:16px 0 10px;font-size:14px;color:#0f172a;">Checkpoint Scans &amp; GPS Coordinates (${scans.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
+        <thead><tr>
+          <th style="${cellHead}">Date &amp; Time</th>
+          <th style="${cellHead}">Guard</th>
+          <th style="${cellHead}">Checkpoint</th>
+          <th style="${cellHead}">Expected GPS</th>
+          <th style="${cellHead}">Captured GPS</th>
+          <th style="${cellHead}">Drift</th>
+        </tr></thead>
+        <tbody>
+          ${scans.length === 0 ? `<tr><td colspan="6" style="${cellRow}text-align:center;color:#64748b;">No QR scans recorded in this window.</td></tr>` : scans.slice(0, 80).map((sc) => {
+            const cp = cpById.get(String(sc.checkpoint_id));
+            const gLat = sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat;
+            const gLng = sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng;
+            return `<tr>
+              <td style="${cellRow}font-size:11px;">${sc.scan_time ? esc(localDate(env, new Date(sc.scan_time).getTime()) + ' ' + localHM(env, new Date(sc.scan_time).getTime())) : '—'}</td>
+              <td style="${cellRow}font-weight:600;">${esc(guardById.get(String(sc.guard_id))?.full_name || 'Guard')}</td>
+              <td style="${cellRow}">${esc(cp?.name || sc.checkpoint_id || 'Checkpoint')}</td>
+              <td style="${cellRow}font-family:monospace;font-size:11px;">${cp?.lat ? `${Number(cp.lat).toFixed(5)}, ${Number(cp.lng).toFixed(5)}` : '—'}</td>
+              <td style="${cellRow}font-family:monospace;font-size:11px;">${gLat != null ? `${Number(gLat).toFixed(5)}, ${Number(gLng).toFixed(5)}` : '—'}</td>
+              <td style="${cellRow}">${sc.distance_meters != null ? Number(sc.distance_meters).toFixed(1) + 'm' : '—'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
+      ${buildStaticRouteMapSvg(checkpoints, scans)}
+
+      <h3 style="margin:18px 0 10px;font-size:14px;color:#0f172a;">Incidents Reported (${incidents.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #fed7aa;">
+        <thead><tr style="background:#fff7ed;">
+          <th style="${cellHead}color:#9a3412;">Case #</th>
+          <th style="${cellHead}color:#9a3412;">Date &amp; Time</th>
+          <th style="${cellHead}color:#9a3412;">Priority</th>
+          <th style="${cellHead}color:#9a3412;">Title &amp; Details</th>
+          <th style="${cellHead}color:#9a3412;">Status</th>
+        </tr></thead>
+        <tbody>
+          ${incidents.length === 0 ? `<tr><td colspan="5" style="${cellRow}text-align:center;color:#16a34a;font-weight:600;">No incidents logged by selected guard(s).</td></tr>` : incidents.map((i) => `
+            <tr>
+              <td style="${cellRow}font-family:monospace;font-weight:700;color:#c2410c;">${i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—'}</td>
+              <td style="${cellRow}font-size:11px;">${i.reported_at ? esc(localDate(env, new Date(i.reported_at).getTime()) + ' ' + localHM(env, new Date(i.reported_at).getTime())) : '—'}</td>
+              <td style="${cellRow}"><strong>${esc(i.priority || 'P3')}</strong></td>
+              <td style="${cellRow}"><strong>${esc(i.title || 'Incident')}</strong><div style="font-size:11px;color:#64748b;">${esc(i.description || '')}</div></td>
+              <td style="${cellRow}">${esc(i.status || 'OPEN')}</td>
             </tr>`).join('')}
         </tbody>
       </table>`;
@@ -2765,7 +3057,36 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     if (body?.report_type) {
       const rType = body.report_type as ReportCategory;
       const plantName = tenant?.name || 'Enterprise Security Site';
-      const built = await generateTypedReport(supabase, c.env, tenantId, plantName, rType);
+      const offMs = siteOffsetMinutes(c.env) * MIN_MS;
+      let customStartMs: number | undefined;
+      let customEndMs: number | undefined;
+
+      if (body?.date_from) {
+        const dFrom = new Date(`${body.date_from}T00:00:00.000Z`).getTime() - offMs;
+        if (!Number.isNaN(dFrom)) customStartMs = dFrom;
+      }
+      if (body?.date_to) {
+        const dTo = new Date(`${body.date_to}T23:59:59.999Z`).getTime() - offMs;
+        if (!Number.isNaN(dTo)) customEndMs = dTo;
+      }
+
+      // If a specific shift is chosen on a date, narrow start/end to that shift window
+      if (body?.shift_name && body?.date_from) {
+        const shifts = parseShifts(cfg['DAILY_REPORT_SHIFTS']);
+        const matched = shifts.find((s) => s.name === body.shift_name);
+        if (matched) {
+          const [sh, sm] = matched.start.split(':').map(Number);
+          const [eh, em] = matched.end.split(':').map(Number);
+          const baseStart = new Date(`${body.date_from}T00:00:00.000Z`).getTime() - offMs;
+          customStartMs = baseStart + (sh * 60 + sm) * MIN_MS;
+          const endOffsetDays = matched.end <= matched.start ? 1 : 0;
+          customEndMs = baseStart + endOffsetDays * 86400000 + (eh * 60 + em) * MIN_MS;
+        }
+      }
+
+      const filterGuardId = body?.guard_id ? String(body.guard_id) : undefined;
+      const shiftLabel = body?.shift_name ? String(body.shift_name) : undefined;
+      const built = await generateTypedReport(supabase, c.env, tenantId, plantName, rType, customStartMs, customEndMs, shiftLabel, filterGuardId);
       if (body?.preview || body?.download) {
         return c.json({
           success: true,

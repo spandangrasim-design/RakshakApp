@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Mail, Plus, Trash2, Eye, Send, Save, X, Clock, CheckCircle2,
-  AlertTriangle, Loader2, Download, MapPin, Users, Calendar, ShieldAlert, FileSpreadsheet
+  AlertTriangle, Loader2, Download, MapPin, Users, Calendar, ShieldAlert, FileSpreadsheet, Filter
 } from 'lucide-react';
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
@@ -9,6 +9,7 @@ const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.sp
 type ReportCategory = 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 interface Shift { name: string; start: string; end: string }
+interface GuardOption { guard_id: string; full_name: string; employee_code?: string }
 interface ScheduleRule { enabled: boolean; emails: string }
 interface LogRow { guard_id?: string; guard_name?: string; shift_name: string; report_date: string; status: string; recipients: string | null; error: string | null; sent_at: string | null; created_at: string }
 
@@ -22,44 +23,44 @@ const REPORT_TYPES: {
 }[] = [
   {
     key: 'shift',
-    title: 'Shift-Wise Patrol & Route Map Report',
-    subtitle: 'Shift execution breakdown with attached Expected QR vs Guard Capture GPS route map.',
-    frequency: 'After each shift & at Daily Time',
-    badge: 'Includes Map',
+    title: 'Shift-Wise & Route Completion Report',
+    subtitle: 'Sent automatically when a route completes (with guard-isolated incidents + map) & after each shift.',
+    frequency: 'On Route Completion + Shift End',
+    badge: 'Auto on Route Done + Map',
     icon: MapPin,
   },
   {
     key: 'individual',
-    title: 'Individual User / Guard Report',
-    subtitle: 'Guard-by-guard patrol runs, verified QR scans, GPS drift accuracy, and incident counts.',
-    frequency: 'Daily at configured time',
+    title: 'Individual Guard Dossier Report',
+    subtitle: 'All patrol runs, verified QR GPS coordinates, route map, and incidents for the selected guard.',
+    frequency: 'Daily at configured time or On-Demand',
     icon: Users,
   },
   {
     key: 'daily',
     title: 'Daily Consolidated Digest',
-    subtitle: 'Complete 24-hour site overview with KPIs, route completion, and Excel workbook attachment.',
+    subtitle: 'Complete 24-hour site overview with KPIs, route completion, GPS logs, and Excel workbook.',
     frequency: 'Once daily (Default 8:00 PM)',
     icon: Calendar,
   },
   {
     key: 'weekly',
     title: 'Weekly Management Summary',
-    subtitle: '7-day rolling compliance and patrol performance summary for plant leadership.',
+    subtitle: '7-day or custom date-range compliance and patrol performance summary.',
     frequency: 'Every Sunday at configured time',
     icon: FileSpreadsheet,
   },
   {
     key: 'monthly',
     title: 'Monthly Audit & Operations Report',
-    subtitle: 'Full 30-day patrol attendance, checkpoint verification rate, and audit trail.',
+    subtitle: 'Full 30-day or custom month patrol attendance, GPS verification rate, and audit trail.',
     frequency: '1st of every month at configured time',
     icon: FileSpreadsheet,
   },
   {
     key: 'incident',
     title: 'Incident & Exception Report',
-    subtitle: 'All logged P1–P4 security, fire, safety, and equipment incidents with timestamps.',
+    subtitle: 'All logged P1–P4 security, fire, safety, and equipment incidents in the selected date window.',
     frequency: 'Daily at configured time',
     icon: ShieldAlert,
   },
@@ -86,6 +87,8 @@ const STATUS: Record<string, string> = {
   SKIPPED: 'bg-slate-50 text-slate-600 border-slate-200',
   PENDING: 'bg-amber-50 text-amber-700 border-amber-200',
 };
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 const post = (path: string, body: any) =>
   fetch(`${API}${path}`, {
@@ -115,6 +118,13 @@ export const DailyReportsPage: React.FC = () => {
   const [preview, setPreview] = useState<{ subject: string; html: string } | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // Interactive Filters for Preview / Download / Send Now
+  const [dateFrom, setDateFrom] = useState<string>(todayISO());
+  const [dateTo, setDateTo] = useState<string>(todayISO());
+  const [selectedGuardId, setSelectedGuardId] = useState<string>('');
+  const [selectedShift, setSelectedShift] = useState<string>('');
+  const [guardsList, setGuardsList] = useState<GuardOption[]>([]);
+
   const token = localStorage.getItem('token');
   const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
@@ -126,9 +136,11 @@ export const DailyReportsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    fetch(`${API}/admin/configs`, { headers: authHeaders })
-      .then((r) => r.json())
-      .then((d) => {
+    Promise.all([
+      fetch(`${API}/admin/configs`, { headers: authHeaders }).then((r) => r.json()),
+      fetch(`${API}/guards`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ guards: [] })),
+    ])
+      .then(([d, gRes]) => {
         const cfg: Record<string, string> = {};
         for (const row of d.configs || []) cfg[row.key_name] = row.key_value;
         setEnabled(cfg.DAILY_REPORT_ENABLED !== 'false');
@@ -143,6 +155,7 @@ export const DailyReportsPage: React.FC = () => {
             setSchedules({ ...DEFAULT_SCHEDULES, ...parsed });
           } catch {}
         }
+        setGuardsList(gRes.guards || gRes.data || []);
       })
       .catch(() => alert('Could not load report settings.'))
       .finally(() => setLoading(false));
@@ -157,6 +170,13 @@ export const DailyReportsPage: React.FC = () => {
   const updateShift = (i: number, patch: Partial<Shift>) => {
     setShifts((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
     setDirty(true);
+  };
+
+  const applyQuickRange = (days: number) => {
+    const end = new Date();
+    const start = new Date(Date.now() - (days - 1) * 86400000);
+    setDateFrom(start.toISOString().slice(0, 10));
+    setDateTo(end.toISOString().slice(0, 10));
   };
 
   const save = async () => {
@@ -197,6 +217,10 @@ export const DailyReportsPage: React.FC = () => {
         preview: mode === 'preview',
         download: mode === 'download',
         recipients,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        guard_id: selectedGuardId || undefined,
+        shift_name: selectedShift || undefined,
       });
       if (!d.success) throw new Error(d.message);
 
@@ -237,7 +261,7 @@ export const DailyReportsPage: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Automated Reporting &amp; Dispatch Center</h2>
-          <p className="text-sm text-slate-500">Configure recipients, daily dispatch time, route map attachments, and download reports on demand.</p>
+          <p className="text-sm text-slate-500">Auto-emails on route completion with guard-isolated incidents, custom date/guard/shift filters, and Excel export.</p>
         </div>
         <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
           Spandan IT Professionals Engine
@@ -256,7 +280,7 @@ export const DailyReportsPage: React.FC = () => {
         <label className="flex cursor-pointer items-center justify-between gap-4 rounded-xl border border-slate-100 bg-slate-50/70 p-4">
           <span>
             <span className="block text-base font-extrabold text-slate-900">Enable Automated Reports</span>
-            <span className="block text-xs text-slate-500">Master switch for scheduled email dispatches.</span>
+            <span className="block text-xs text-slate-500">Sends instant route completion reports &amp; scheduled digests.</span>
           </span>
           <span className={`relative h-7 w-12 shrink-0 rounded-full transition ${enabled ? 'bg-brand-600' : 'bg-slate-300'}`}>
             <input type="checkbox" className="sr-only" checked={enabled} onChange={(e) => { setEnabled(e.target.checked); setDirty(true); }} />
@@ -277,6 +301,73 @@ export const DailyReportsPage: React.FC = () => {
               onChange={(e) => { setSendTime(e.target.value); setDirty(true); }}
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:border-brand-500"
             />
+          </div>
+        </div>
+      </section>
+
+      {/* Interactive Report Filter Bar (Date Range, Guard, Shift) */}
+      <section className="card border-brand-200 bg-brand-50/30 p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-brand-600" />
+            <h3 className="text-sm font-extrabold text-slate-900">Report Data Filters (Applies to Preview, Download &amp; Send Now)</h3>
+          </div>
+          <div className="flex gap-1.5">
+            <button onClick={() => applyQuickRange(1)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:border-brand-400">Today</button>
+            <button onClick={() => applyQuickRange(7)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:border-brand-400">Last 7 Days</button>
+            <button onClick={() => applyQuickRange(30)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:border-brand-400">Last 30 Days</button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">From Date</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">To Date</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">Individual Guard Filter</label>
+            <select
+              value={selectedGuardId}
+              onChange={(e) => setSelectedGuardId(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500"
+            >
+              <option value="">All Guards</option>
+              {guardsList.map((g) => (
+                <option key={g.guard_id} value={g.guard_id}>
+                  {g.full_name} {g.employee_code ? `(${g.employee_code})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">Shift Filter</label>
+            <select
+              value={selectedShift}
+              onChange={(e) => setSelectedShift(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500"
+            >
+              <option value="">All Shifts</option>
+              {(shifts.length > 0 ? shifts : PRESET).map((s, idx) => (
+                <option key={idx} value={s.name}>{s.name} ({s.start}–{s.end})</option>
+              ))}
+            </select>
           </div>
         </div>
       </section>
@@ -413,7 +504,7 @@ export const DailyReportsPage: React.FC = () => {
         <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-slate-100 pt-4 text-xs text-slate-600">
           <label className="flex items-center gap-2 font-semibold">
             <input type="checkbox" checked={toSupervisor} onChange={(e) => { setToSupervisor(e.target.checked); setDirty(true); }} className="h-4 w-4 accent-brand-600" />
-            Also copy each guard&apos;s assigned supervisor on shift reports
+            Also copy each guard&apos;s assigned supervisor on shift &amp; route-completion reports
           </label>
           <div className="flex items-center gap-2">
             <span>Fallback email(s):</span>
