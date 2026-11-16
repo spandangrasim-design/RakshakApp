@@ -2168,6 +2168,27 @@ async function dispatchRouteCompletionReport(
     const recipients = [...recipSet];
     if (recipients.length === 0) return;
 
+    // Reverse-geocode the route center coordinate via OpenStreetMap Nominatim so the report displays the real street/area name
+    let areaAddress = '';
+    const firstCoordCp = checkpoints.find((c) => Number(c.lat) && Number(c.lng));
+    if (firstCoordCp) {
+      try {
+        const geoRes = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${Number(firstCoordCp.lat)}&lon=${Number(firstCoordCp.lng)}`,
+          { headers: { 'User-Agent': 'RakshakPatrolReport/1.0 (spandanit.com)' } }
+        );
+        if (geoRes.ok) {
+          const geoJson: any = await geoRes.json();
+          areaAddress = String(geoJson?.display_name || '');
+        }
+      } catch {}
+    }
+
+    const validDrifts = scans.map((s) => Number(s.distance_meters)).filter((d) => !Number.isNaN(d));
+    const avgDriftStr = validDrifts.length > 0
+      ? (validDrifts.reduce((a, c) => a + c, 0) / validDrifts.length).toFixed(1) + ' m'
+      : '—';
+
     const mapHtml = buildStaticRouteMapSvg(checkpoints, scans);
     const startMs = new Date(session.start_time).getTime();
     const endMs = new Date(doneAt).getTime();
@@ -2187,51 +2208,70 @@ async function dispatchRouteCompletionReport(
         <div style="background:#0f172a;color:#ffffff;padding:20px 24px;border-radius:12px 12px 0 0;">
           <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:1px;">Spandan IT Professionals · Instant Patrol Completion Alert</div>
           <h2 style="margin:6px 0 0;font-size:20px;font-weight:800;">Route Completed: ${esc(roundName)}</h2>
-          <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">
-            Guard: <strong>${esc(guardDisplay)}</strong> | Window: <strong>${esc(startHM)} – ${esc(endHM)}</strong> (${durationMin} min) | Date: <strong>${esc(dateStr)}</strong>
+          <p style="margin:6px 0 0;font-size:12px;color:#cbd5e1;">
+            Guard: <strong>${esc(guardDisplay)}</strong> ${guard.phone ? `· Tel: <strong>${esc(guard.phone)}</strong>` : ''}
           </p>
+          <p style="margin:3px 0 0;font-size:12px;color:#94a3b8;">
+            Patrol Window: <strong>${esc(startHM)} – ${esc(endHM)}</strong> (${durationMin} min) | Date: <strong>${esc(dateStr)}</strong>
+          </p>
+          ${areaAddress ? `<p style="margin:6px 0 0;font-size:11px;color:#38bdf8;">📍 Site Location: ${esc(areaAddress)}</p>` : ''}
         </div>
         <div style="background:#ffffff;padding:22px 24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
           <table style="width:100%;border-collapse:collapse;margin-bottom:18px;">
             <tr>
-              <td style="padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;text-align:center;width:33%;">
+              <td style="padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;text-align:center;width:25%;">
                 <div style="font-size:10px;color:#166534;font-weight:700;text-transform:uppercase;">Route Status</div>
-                <div style="font-size:18px;font-weight:800;color:#15803d;margin-top:2px;">COMPLETED</div>
+                <div style="font-size:16px;font-weight:800;color:#15803d;margin-top:2px;">COMPLETED</div>
               </td>
-              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:33%;">
-                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Checkpoints Verified</div>
-                <div style="font-size:18px;font-weight:800;color:#2563eb;margin-top:2px;">${scans.length} / ${checkpoints.length}</div>
+              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Checkpoints</div>
+                <div style="font-size:16px;font-weight:800;color:#2563eb;margin-top:2px;">${scans.length} / ${checkpoints.length}</div>
               </td>
-              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:33%;">
+              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Avg GPS Drift</div>
+                <div style="font-size:16px;font-weight:800;color:#0f172a;margin-top:2px;">${esc(avgDriftStr)}</div>
+              </td>
+              <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
                 <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Incidents by Guard</div>
-                <div style="font-size:18px;font-weight:800;color:${incidents.length > 0 ? '#dc2626' : '#16a34a'};margin-top:2px;">${incidents.length}</div>
+                <div style="font-size:16px;font-weight:800;color:${incidents.length > 0 ? '#dc2626' : '#16a34a'};margin-top:2px;">${incidents.length}</div>
               </td>
             </tr>
           </table>
 
-          <h3 style="margin:0 0 8px;font-size:14px;color:#0f172a;">Checkpoint GPS Verification Log</h3>
+          <h3 style="margin:0 0 8px;font-size:14px;color:#0f172a;">Checkpoint GPS Verification &amp; Geofence Log</h3>
           <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:16px;">
             <thead><tr>
               <th style="${cellHead}">Time</th>
               <th style="${cellHead}">Checkpoint</th>
-              <th style="${cellHead}">Expected GPS</th>
-              <th style="${cellHead}">Captured GPS</th>
+              <th style="${cellHead}">Expected QR GPS</th>
+              <th style="${cellHead}">Guard Capture GPS</th>
               <th style="${cellHead}">Drift</th>
+              <th style="${cellHead}">Geofence</th>
             </tr></thead>
             <tbody>
               ${checkpoints.map((cp) => {
                 const sc = scans.find((s) => String(s.checkpoint_id) === String(cp.checkpoint_id));
                 const gLat = sc ? (sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat) : null;
                 const gLng = sc ? (sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng) : null;
-                const mapLink = gLat != null ? `https://www.google.com/maps?q=${gLat},${gLng}` : (cp.lat ? `https://www.google.com/maps?q=${cp.lat},${cp.lng}` : '#');
+                const driftVal = sc?.distance_meters != null ? Number(sc.distance_meters) : null;
+                const inZone = driftVal == null || driftVal <= 50;
+                const qrLink = cp.lat ? `https://www.google.com/maps?q=${cp.lat},${cp.lng}` : '#';
+                const capLink = gLat != null ? `https://www.google.com/maps?q=${gLat},${gLng}` : qrLink;
                 return `<tr>
                   <td style="${cellRow}font-size:11px;">${sc?.scan_time ? esc(localHM(env, new Date(sc.scan_time).getTime())) : esc(endHM)}</td>
-                  <td style="${cellRow}font-weight:600;">${esc(cp.name || cp.checkpoint_id)}</td>
-                  <td style="${cellRow}font-family:monospace;font-size:11px;">${cp.lat ? `${Number(cp.lat).toFixed(5)}, ${Number(cp.lng).toFixed(5)}` : '—'}</td>
+                  <td style="${cellRow}font-weight:700;">${esc(cp.name || cp.checkpoint_id)}</td>
                   <td style="${cellRow}font-family:monospace;font-size:11px;">
-                    ${gLat != null ? `<a href="${mapLink}" target="_blank" style="color:#2563eb;text-decoration:none;">${Number(gLat).toFixed(5)}, ${Number(gLng).toFixed(5)} ↗</a>` : '<span style="color:#16a34a;font-weight:600;">Verified</span>'}
+                    ${cp.lat ? `<a href="${qrLink}" target="_blank" style="color:#059669;text-decoration:none;">${Number(cp.lat).toFixed(5)}, ${Number(cp.lng).toFixed(5)} ↗</a>` : '—'}
                   </td>
-                  <td style="${cellRow}">${sc?.distance_meters != null ? Number(sc.distance_meters).toFixed(1) + 'm' : '—'}</td>
+                  <td style="${cellRow}font-family:monospace;font-size:11px;">
+                    ${gLat != null ? `<a href="${capLink}" target="_blank" style="color:#2563eb;text-decoration:none;">${Number(gLat).toFixed(5)}, ${Number(gLng).toFixed(5)} ↗</a>` : '<span style="color:#16a34a;font-weight:600;">Verified</span>'}
+                  </td>
+                  <td style="${cellRow}font-weight:700;">${driftVal != null ? driftVal.toFixed(1) + 'm' : '—'}</td>
+                  <td style="${cellRow}">
+                    <span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;background:${inZone ? '#dcfce7' : '#fee2e2'};color:${inZone ? '#166534' : '#991b1b'};">
+                      ${inZone ? '✔ ON-SITE (≤50m)' : '⚠ DRIFT (>50m)'}
+                    </span>
+                  </td>
                 </tr>`;
               }).join('')}
             </tbody>
@@ -2636,14 +2676,14 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
-  const qrPts: { lat: number; lng: number; id: string }[] = [];
-  const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number }[] = [];
+  const qrPts: { lat: number; lng: number; id: string; name: string }[] = [];
+  const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number; time?: string }[] = [];
 
-  checkpoints.forEach((cp) => {
+  checkpoints.forEach((cp, idx) => {
     const lat = Number(cp.lat ?? cp.latitude);
     const lng = Number(cp.lng ?? cp.longitude);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
-      qrPts.push({ lat, lng, id: String(cp.checkpoint_id || '') });
+      qrPts.push({ lat, lng, id: String(cp.checkpoint_id || ''), name: String(cp.name || `Checkpoint #${idx + 1}`) });
     }
   });
 
@@ -2659,6 +2699,7 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
         lng,
         drift: sc.distance_meters != null ? Number(sc.distance_meters) : undefined,
         qrIdx: matchedIdx,
+        time: sc.scan_time || undefined,
       });
     }
   });
@@ -2675,7 +2716,6 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   const centerLat = (minLat + maxLat) / 2;
   const centerLng = (minLng + maxLng) / 2;
 
-  // Auto-select optimal OpenStreetMap zoom (13 to 17) so all route checkpoints fit cleanly inside 660x300
   const spanDeg = Math.max(maxLat - minLat, maxLng - minLng);
   let zoom = 17;
   if (spanDeg > 0.08) zoom = 12;
@@ -2684,7 +2724,6 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   else if (spanDeg > 0.009) zoom = 15;
   else if (spanDeg > 0.004) zoom = 16;
 
-  // Compute exact 3x2 OpenStreetMap tile grid centered on (centerLat, centerLng)
   const n = Math.pow(2, zoom);
   const exactTileX = ((centerLng + 180) / 360) * n;
   const rad = (centerLat * Math.PI) / 180;
@@ -2692,8 +2731,6 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
 
   const centerTileX = Math.floor(exactTileX);
   const centerTileY = Math.floor(exactTileY);
-
-  // Build 3 columns (centerTileX - 1 .. centerTileX + 1) x 2 rows (centerTileY .. centerTileY + 1) = 660x440 cropped to 660x300
   const startTileX = centerTileX - 1;
   const startTileY = exactTileY - centerTileY < 0.5 ? centerTileY - 1 : centerTileY;
 
@@ -2701,33 +2738,52 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
     const ty = startTileY + dy;
     const cols = [0, 1, 2].map((dx) => {
       const tx = startTileX + dx;
-      return `<td style="padding:0;margin:0;border:0;width:220px;height:150px;line-height:0;"><img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}" width="220" height="150" style="display:block;width:220px;height:150px;border:0;" alt="" /></td>`;
+      return `<td style="padding:0;margin:0;border:0;width:220px;height:140px;line-height:0;"><img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}" width="220" height="140" style="display:block;width:220px;height:140px;border:0;" alt="" /></td>`;
     }).join('');
     return `<tr>${cols}</tr>`;
   }).join('');
 
-  const qrParam = qrPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
-  const capParam = scanPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)},${p.qrIdx}`).join(';');
-
-  const overlayUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}&z=${zoom}&stx=${startTileX}&sty=${startTileY}`;
   const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat.toFixed(6)},${centerLng.toFixed(6)}`;
+
+  // Email-native Pin & Drift Legend Cards (guaranteed to render in Gmail without CSS position stripping)
+  const pinBadgesHtml = qrPts.slice(0, 12).map((qp, idx) => {
+    const cap = scanPts.find((s) => s.qrIdx === idx) || scanPts[idx];
+    const drift = cap?.drift != null ? Number(cap.drift) : null;
+    const withinLimit = drift == null || drift <= 50;
+    const targetUrl = cap
+      ? `https://www.google.com/maps/dir/?api=1&origin=${qp.lat.toFixed(6)},${qp.lng.toFixed(6)}&destination=${cap.lat.toFixed(6)},${cap.lng.toFixed(6)}`
+      : `https://www.google.com/maps?q=${qp.lat.toFixed(6)},${qp.lng.toFixed(6)}`;
+    return `
+      <div style="display:inline-block;margin:4px 6px 4px 0;padding:6px 10px;background:#ffffff;border:1px solid ${withinLimit ? '#bbf7d0' : '#fecaca'};border-radius:8px;font-size:11px;vertical-align:top;">
+        <span style="display:inline-block;padding:1px 6px;border-radius:4px;background:#059669;color:#fff;font-weight:700;">QR #${idx + 1}</span>
+        <strong style="color:#0f172a;margin-left:4px;">${esc(qp.name)}</strong>
+        ${cap ? `
+          <span style="margin-left:6px;padding:1px 6px;border-radius:4px;background:${withinLimit ? '#2563eb' : '#dc2626'};color:#fff;font-weight:700;">Cap #${idx + 1}</span>
+          <span style="margin-left:5px;font-weight:700;color:${withinLimit ? '#15803d' : '#b91c1c'};">${drift != null ? drift.toFixed(1) + 'm' : 'Verified'}</span>
+        ` : `<span style="margin-left:6px;color:#64748b;">Pending</span>`}
+        <a href="${targetUrl}" target="_blank" style="margin-left:6px;color:#2563eb;font-weight:700;text-decoration:none;">Pin ↗</a>
+      </div>
+    `;
+  }).join('');
 
   return `
     <div style="margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;background:#ffffff;">
       <div style="background:#0f172a;color:#ffffff;padding:10px 14px;font-size:12px;font-weight:bold;">
-        🗺️ Patrol Route Map (Expected QR Locations vs Guard Capture Locations)
+        🗺️ Patrol Area Map &amp; GPS Pin Verification (Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)})
       </div>
       <div style="padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">
         <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#059669;color:#fff;font-weight:bold;margin-right:8px;">QR #</span> Expected Checkpoint (${qrPts.length})
         <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Cap #</span> Guard Capture (${scanPts.length})
-        <a href="${gmapsRouteUrl}" target="_blank" style="float:right;color:#2563eb;font-weight:bold;text-decoration:none;">Open in Google Maps ↗</a>
+        <a href="${gmapsRouteUrl}" target="_blank" style="float:right;color:#2563eb;font-weight:bold;text-decoration:none;">Open Exact Pins in Google Maps ↗</a>
       </div>
       <div style="padding:10px;background:#f1f5f9;overflow-x:auto;">
-        <div style="width:660px;height:300px;margin:0 auto;border-radius:8px;overflow:hidden;border:1px solid #cbd5e1;background:#e2e8f0;">
-          <table cellpadding="0" cellspacing="0" border="0" style="width:660px;height:300px;border-collapse:collapse;table-layout:fixed;">
+        <div style="width:660px;height:280px;margin:0 auto;border-radius:8px;overflow:hidden;border:1px solid #cbd5e1;background:#e2e8f0;">
+          <table cellpadding="0" cellspacing="0" border="0" style="width:660px;height:280px;border-collapse:collapse;table-layout:fixed;">
             ${tileRowsHtml}
           </table>
-          <img src="${overlayUrl}" width="660" height="300" alt="Patrol Route GPS Overlay" style="display:block;width:660px;height:300px;margin-top:-300px;position:relative;" />
+        </div>
+        <div style="max-width:660px;margin:8px auto 0;text-align:left;">
+          ${pinBadgesHtml}
         </div>
       </div>
     </div>
