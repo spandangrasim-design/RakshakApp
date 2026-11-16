@@ -510,7 +510,7 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 //   bought, not allocated -> 403
 // ==========================================
 
-// Public static map transparent pin overlay aligned 1:1 with the 3x2 OpenStreetMap tile grid
+// Public static map composite renderer: embeds Esri World Street Map tiles ({z}/{ty}/{tx}) + QR/Capture pins in one image
 app.get('/api/v1/public/route-map.svg', async (c) => {
   const parsePts = (raw: string | undefined) =>
     String(raw || '')
@@ -534,7 +534,7 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
 
   const W = 660, H = 300;
   if (all.length === 0) {
-    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"></svg>`;
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#f8fafc"/></svg>`;
     return new Response(emptySvg, { headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
   }
 
@@ -543,28 +543,53 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
 
   const zoom = Number(c.req.query('z') || 17);
   const n = Math.pow(2, zoom);
-  const exactCenterTileX = ((centerLng + 180) / 360) * n;
-  const radC = (centerLat * Math.PI) / 180;
-  const exactCenterTileY = ((1 - Math.log(Math.tan(radC) + 1 / Math.cos(radC)) / Math.PI) / 2) * n;
-
-  const startTileX = c.req.query('stx') != null ? Number(c.req.query('stx')) : Math.floor(exactCenterTileX) - 1;
-  const startTileY = c.req.query('sty') != null ? Number(c.req.query('sty')) : (exactCenterTileY - Math.floor(exactCenterTileY) < 0.5 ? Math.floor(exactCenterTileY) - 1 : Math.floor(exactCenterTileY));
-
-  // Each OSM tile is scaled to 220px wide x 150px high in the 3x2 table
-  const toX = (lng: number) => {
-    const tx = ((lng + 180) / 360) * n;
-    return Math.round((tx - startTileX) * 220);
-  };
-  const toY = (lat: number) => {
+  const lngToWorldX = (lng: number) => ((lng + 180) / 360) * n * 256;
+  const latToWorldY = (lat: number) => {
     const rad = (lat * Math.PI) / 180;
-    const ty = ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n;
-    return Math.round((ty - startTileY) * 150);
+    return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n * 256;
   };
 
-  // 50m geofence ring scaled to Web Mercator pixels at current zoom & latitude
+  const cWorldX = lngToWorldX(centerLng);
+  const cWorldY = latToWorldY(centerLat);
+  const topLeftWorldX = cWorldX - W / 2;
+  const topLeftWorldY = cWorldY - H / 2;
+
+  const toX = (lng: number) => Math.round(lngToWorldX(lng) - topLeftWorldX);
+  const toY = (lat: number) => Math.round(latToWorldY(lat) - topLeftWorldY);
+
+  // Fetch surrounding Esri World_Street_Map tiles (note Esri tile URL order: /tile/{zoom}/{ty}/{tx})
+  const minTileX = Math.floor(topLeftWorldX / 256);
+  const maxTileX = Math.floor((topLeftWorldX + W) / 256);
+  const minTileY = Math.floor(topLeftWorldY / 256);
+  const maxTileY = Math.floor((topLeftWorldY + H) / 256);
+
+  const tilePromises: Promise<string>[] = [];
+  for (let tx = minTileX; tx <= maxTileX; tx++) {
+    for (let ty = minTileY; ty <= maxTileY; ty++) {
+      const drawX = Math.round(tx * 256 - topLeftWorldX);
+      const drawY = Math.round(ty * 256 - topLeftWorldY);
+      const tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}`;
+      tilePromises.push(
+        fetch(tileUrl)
+          .then(async (res) => {
+            if (!res.ok) return '';
+            const buf = await res.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let bin = '';
+            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            const b64 = btoa(bin);
+            return `<image href="data:image/jpeg;base64,${b64}" xlink:href="data:image/jpeg;base64,${b64}" x="${drawX}" y="${drawY}" width="256" height="256" />`;
+          })
+          .catch(() => '')
+      );
+    }
+  }
+  const tileImages = (await Promise.all(tilePromises)).join('');
+
+  const radC = (centerLat * Math.PI) / 180;
   const metersPerTile = (40075016.686 * Math.cos(radC)) / n;
-  const pxPerMeter = 220 / metersPerTile;
-  const ringRadiusPx = Math.max(14, Math.round(50 * pxPerMeter));
+  const pxPerMeter = 256 / metersPerTile;
+  const ringRadiusPx = Math.max(16, Math.round(50 * pxPerMeter));
 
   const geofenceRings = qrPts.map((p) => {
     const x = toX(p.lng), y = toY(p.lat);
@@ -584,10 +609,10 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
     const x2 = toX(cp.lng), y2 = toY(cp.lat);
     const distM = Math.round(cp.drift);
     const midX = Math.round((x1 + x2) / 2);
-    const midY = Math.round((y1 + y2) / 2) + 18;
+    const midY = Math.round((y1 + y2) / 2) + 22;
     const labelStr = distM >= 1000 ? `${(distM / 1000).toFixed(1)}km` : `${distM}m`;
     const badgeW = Math.max(38, labelStr.length * 7 + 10);
-    driftLines.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#dc2626" stroke-width="2" stroke-dasharray="4,3" />`);
+    driftLines.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#dc2626" stroke-width="2.2" stroke-dasharray="4,3" />`);
     driftBadges.push(`
       <rect x="${midX - badgeW / 2}" y="${midY - 10}" width="${badgeW}" height="15" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
       <text x="${midX}" y="${midY + 1}" text-anchor="middle" fill="#92400e" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${labelStr}</text>
@@ -597,7 +622,7 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
   const qrMarkers = qrPts.map((p, idx) => {
     const x = toX(p.lng), y = toY(p.lat);
     return `<g transform="translate(${x},${y})">
-      <rect x="-20" y="-11" width="40" height="20" rx="5" fill="#059669" stroke="#ffffff" stroke-width="2"/>
+      <rect x="-22" y="-11" width="44" height="20" rx="5" fill="#059669" stroke="#ffffff" stroke-width="2"/>
       <text y="3" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9.5" font-weight="bold">QR #${idx + 1}</text>
     </g>`;
   }).join('');
@@ -607,13 +632,15 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
     const far = p.drift > 50;
     const fill = far ? '#dc2626' : '#2563eb';
     return `<g transform="translate(${x},${y})">
-      <rect x="-22" y="-31" width="44" height="18" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
-      <text y="-19" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap #${idx + 1}</text>
+      <rect x="-23" y="-33" width="46" height="18" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
+      <text y="-21" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap #${idx + 1}</text>
       <circle r="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
     </g>`;
   }).join('');
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <rect width="${W}" height="${H}" fill="#f1f5f9"/>
+    ${tileImages}
     ${geofenceRings}
     ${qrPts.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="2.5" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
     ${capPts.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${capPolyline}" />` : ''}
@@ -621,8 +648,8 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
     ${qrMarkers}
     ${capMarkers}
     ${driftBadges.join('')}
-    <rect x="8" y="${H - 22}" width="230" height="16" rx="4" fill="rgba(15,23,42,0.82)"/>
-    <text x="14" y="${H - 11}" fill="#ffffff" font-family="Arial,sans-serif" font-size="9.5" font-weight="bold">Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)} · © OpenStreetMap</text>
+    <rect x="8" y="${H - 22}" width="235" height="16" rx="4" fill="rgba(15,23,42,0.82)"/>
+    <text x="14" y="${H - 11}" fill="#ffffff" font-family="Arial,sans-serif" font-size="9.5" font-weight="bold">Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)} · Esri Map</text>
   </svg>`;
 
   return new Response(svg, {
@@ -2677,7 +2704,7 @@ type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'w
 
 function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   const qrPts: { lat: number; lng: number; id: string; name: string }[] = [];
-  const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number; time?: string }[] = [];
+  const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number }[] = [];
 
   checkpoints.forEach((cp, idx) => {
     const lat = Number(cp.lat ?? cp.latitude);
@@ -2699,7 +2726,6 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
         lng,
         drift: sc.distance_meters != null ? Number(sc.distance_meters) : undefined,
         qrIdx: matchedIdx,
-        time: sc.scan_time || undefined,
       });
     }
   });
@@ -2724,28 +2750,12 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   else if (spanDeg > 0.009) zoom = 15;
   else if (spanDeg > 0.004) zoom = 16;
 
-  const n = Math.pow(2, zoom);
-  const exactTileX = ((centerLng + 180) / 360) * n;
-  const rad = (centerLat * Math.PI) / 180;
-  const exactTileY = ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n;
+  const qrParam = qrPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
+  const capParam = scanPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)},${p.qrIdx}`).join(';');
 
-  const centerTileX = Math.floor(exactTileX);
-  const centerTileY = Math.floor(exactTileY);
-  const startTileX = centerTileX - 1;
-  const startTileY = exactTileY - centerTileY < 0.5 ? centerTileY - 1 : centerTileY;
-
-  const tileRowsHtml = [0, 1].map((dy) => {
-    const ty = startTileY + dy;
-    const cols = [0, 1, 2].map((dx) => {
-      const tx = startTileX + dx;
-      return `<td style="padding:0;margin:0;border:0;width:220px;height:140px;line-height:0;"><img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}" width="220" height="140" style="display:block;width:220px;height:140px;border:0;" alt="" /></td>`;
-    }).join('');
-    return `<tr>${cols}</tr>`;
-  }).join('');
-
+  const compositeMapUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}&z=${zoom}`;
   const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat.toFixed(6)},${centerLng.toFixed(6)}`;
 
-  // Email-native Pin & Drift Legend Cards (guaranteed to render in Gmail without CSS position stripping)
   const pinBadgesHtml = qrPts.slice(0, 12).map((qp, idx) => {
     const cap = scanPts.find((s) => s.qrIdx === idx) || scanPts[idx];
     const drift = cap?.drift != null ? Number(cap.drift) : null;
@@ -2769,19 +2779,15 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   return `
     <div style="margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;background:#ffffff;">
       <div style="background:#0f172a;color:#ffffff;padding:10px 14px;font-size:12px;font-weight:bold;">
-        🗺️ Patrol Area Map &amp; GPS Pin Verification (Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)})
+        🗺️ Patrol Route Map (Expected QR Locations vs Guard Capture Locations)
       </div>
       <div style="padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">
         <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#059669;color:#fff;font-weight:bold;margin-right:8px;">QR #</span> Expected Checkpoint (${qrPts.length})
         <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Cap #</span> Guard Capture (${scanPts.length})
         <a href="${gmapsRouteUrl}" target="_blank" style="float:right;color:#2563eb;font-weight:bold;text-decoration:none;">Open Exact Pins in Google Maps ↗</a>
       </div>
-      <div style="padding:10px;background:#f1f5f9;overflow-x:auto;">
-        <div style="width:660px;height:280px;margin:0 auto;border-radius:8px;overflow:hidden;border:1px solid #cbd5e1;background:#e2e8f0;">
-          <table cellpadding="0" cellspacing="0" border="0" style="width:660px;height:280px;border-collapse:collapse;table-layout:fixed;">
-            ${tileRowsHtml}
-          </table>
-        </div>
+      <div style="padding:10px;background:#f1f5f9;text-align:center;">
+        <img src="${compositeMapUrl}" width="660" height="300" alt="Patrol Route GPS Map" style="width:100%;max-width:660px;height:auto;border-radius:8px;border:1px solid #cbd5e1;display:block;margin:0 auto;" />
         <div style="max-width:660px;margin:8px auto 0;text-align:left;">
           ${pinBadgesHtml}
         </div>
