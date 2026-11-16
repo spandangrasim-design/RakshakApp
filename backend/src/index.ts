@@ -509,6 +509,127 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 //   tenant didn't buy it  -> 404  (endpoint "does not exist" for this tenant)
 //   bought, not allocated -> 403
 // ==========================================
+
+// Public static map renderer for email clients (Gmail image proxy fetches this URL directly)
+app.get('/api/v1/public/route-map.svg', async (c) => {
+  const parsePts = (raw: string | undefined) =>
+    String(raw || '')
+      .split(';')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const [latS, lngS, driftS] = item.split(',');
+        return { lat: Number(latS), lng: Number(lngS), drift: driftS != null ? Number(driftS) : 0 };
+      })
+      .filter((p) => !Number.isNaN(p.lat) && !Number.isNaN(p.lng) && p.lat !== 0 && p.lng !== 0);
+
+  const qrPts = parsePts(c.req.query('qr'));
+  const capPts = parsePts(c.req.query('cap'));
+  const all = [...qrPts, ...capPts];
+
+  const W = 660, H = 300;
+  if (all.length === 0) {
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#f1f5f9"/><text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-family="Arial,sans-serif" font-size="14">No GPS coordinates available</text></svg>`;
+    return new Response(emptySvg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } });
+  }
+
+  const centerLat = all.reduce((s, p) => s + p.lat, 0) / all.length;
+  const centerLng = all.reduce((s, p) => s + p.lng, 0) / all.length;
+
+  // Web Mercator projection at zoom 17 so real CartoDB street map tiles align 1:1 with GPS pins!
+  const zoom = 17;
+  const n = Math.pow(2, zoom);
+  const lngToWorldX = (lng: number) => ((lng + 180) / 360) * n * 256;
+  const latToWorldY = (lat: number) => {
+    const rad = (lat * Math.PI) / 180;
+    return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n * 256;
+  };
+
+  const cWorldX = lngToWorldX(centerLng);
+  const cWorldY = latToWorldY(centerLat);
+  const topLeftWorldX = cWorldX - W / 2;
+  const topLeftWorldY = cWorldY - H / 2;
+
+  const toScreenX = (lng: number) => Math.round(lngToWorldX(lng) - topLeftWorldX);
+  const toScreenY = (lat: number) => Math.round(latToWorldY(lat) - topLeftWorldY);
+
+  // Fetch surrounding 256x256 CartoDB Voyager street tiles and embed as base64 data URIs
+  const minTileX = Math.floor(topLeftWorldX / 256);
+  const maxTileX = Math.floor((topLeftWorldX + W) / 256);
+  const minTileY = Math.floor(topLeftWorldY / 256);
+  const maxTileY = Math.floor((topLeftWorldY + H) / 256);
+
+  const tilePromises: Promise<string>[] = [];
+  for (let tx = minTileX; tx <= maxTileX; tx++) {
+    for (let ty = minTileY; ty <= maxTileY; ty++) {
+      const drawX = Math.round(tx * 256 - topLeftWorldX);
+      const drawY = Math.round(ty * 256 - topLeftWorldY);
+      const tileUrl = `https://basemaps.cartocdn.com/rastertiles/voyager/${zoom}/${tx}/${ty}.png`;
+      tilePromises.push(
+        fetch(tileUrl, { headers: { 'User-Agent': 'RakshakSecurityMap/1.0' } })
+          .then(async (res) => {
+            if (!res.ok) return '';
+            const buf = await res.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let bin = '';
+            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return `<image href="data:image/png;base64,${btoa(bin)}" x="${drawX}" y="${drawY}" width="256" height="256" />`;
+          })
+          .catch(() => '')
+      );
+    }
+  }
+  const tileImages = (await Promise.all(tilePromises)).join('');
+
+  const qrPolyline = qrPts.map((p) => `${toScreenX(p.lng)},${toScreenY(p.lat)}`).join(' ');
+  const capPolyline = capPts.map((p) => `${toScreenX(p.lng)},${toScreenY(p.lat)}`).join(' ');
+
+  // Draw dashed drift lines connecting matching QR and Guard Capture points
+  const driftLines = qrPts.map((qp, idx) => {
+    const cp = capPts[idx];
+    if (!cp) return '';
+    return `<line x1="${toScreenX(qp.lng)}" y1="${toScreenY(qp.lat)}" x2="${toScreenX(cp.lng)}" y2="${toScreenY(cp.lat)}" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,3" />`;
+  }).join('');
+
+  const qrMarkers = qrPts.map((p, idx) => {
+    const x = toScreenX(p.lng), y = toScreenY(p.lat);
+    return `<g transform="translate(${x},${y})">
+      <circle r="13" fill="#059669" stroke="#ffffff" stroke-width="2.5"/>
+      <text y="4" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">QR${idx + 1}</text>
+    </g>`;
+  }).join('');
+
+  const capMarkers = capPts.map((p, idx) => {
+    const x = toScreenX(p.lng), y = toScreenY(p.lat);
+    const far = p.drift > 50;
+    const fill = far ? '#dc2626' : '#2563eb';
+    return `<g transform="translate(${x},${y})">
+      <rect x="-20" y="-28" width="40" height="17" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
+      <text y="-16" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap${idx + 1}</text>
+      <circle r="4" fill="${fill}" stroke="#ffffff" stroke-width="1.5"/>
+    </g>`;
+  }).join('');
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <rect width="${W}" height="${H}" fill="#e2e8f0"/>
+    ${tileImages}
+    ${qrPts.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="3" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
+    ${capPts.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="3" points="${capPolyline}" />` : ''}
+    ${driftLines}
+    ${qrMarkers}
+    ${capMarkers}
+    <rect x="8" y="${H - 24}" width="210" height="18" rx="4" fill="rgba(15,23,42,0.75)"/>
+    <text x="14" y="${H - 12}" fill="#ffffff" font-family="Arial,sans-serif" font-size="10" font-weight="bold">Center: ${centerLat}, ${centerLng}</text>
+  </svg>`;
+
+  return new Response(svg, {
+    headers: {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400',
+    },
+  });
+});
+
 app.use('/api/v1/*', async (c, next) => {
   const p = new URL(c.req.url).pathname
   if (p === '/api/v1/auth/login' || p.startsWith('/api/v1/media/') || p.startsWith('/api/v1/guest/')) return next()
@@ -2511,25 +2632,24 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
-  const qrPts: { lat: number; lng: number; label: string }[] = [];
-  const scanPts: { lat: number; lng: number; label: string; drift?: number }[] = [];
+  const qrPts: { lat: number; lng: number }[] = [];
+  const scanPts: { lat: number; lng: number; drift?: number }[] = [];
 
-  checkpoints.forEach((cp, idx) => {
+  checkpoints.forEach((cp) => {
     const lat = Number(cp.lat ?? cp.latitude);
     const lng = Number(cp.lng ?? cp.longitude);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
-      qrPts.push({ lat, lng, label: `${idx + 1}` });
+      qrPts.push({ lat, lng });
     }
   });
 
-  scans.forEach((sc, idx) => {
+  scans.forEach((sc) => {
     const lat = Number(sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat);
     const lng = Number(sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
       scanPts.push({
         lat,
         lng,
-        label: `${idx + 1}`,
         drift: sc.distance_meters != null ? Number(sc.distance_meters) : undefined,
       });
     }
@@ -2543,15 +2663,10 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   const centerLat = (allPts.reduce((s, p) => s + p.lat, 0) / allPts.length).toFixed(6);
   const centerLng = (allPts.reduce((s, p) => s + p.lng, 0) / allPts.length).toFixed(6);
 
-  // Build Gmail-safe static map image URL using OpenStreetMap staticmap service
-  const markers: string[] = [];
-  qrPts.slice(0, 15).forEach((p) => markers.push(`${p.lat.toFixed(6)},${p.lng.toFixed(6)},ol-marker-green`));
-  scanPts.slice(0, 15).forEach((p) => {
-    const color = (p.drift ?? 0) > 50 ? 'ol-marker' : 'ol-marker-blue';
-    markers.push(`${p.lat.toFixed(6)},${p.lng.toFixed(6)},${color}`);
-  });
+  const qrParam = qrPts.slice(0, 25).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
+  const capParam = scanPts.slice(0, 25).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)}`).join(';');
 
-  const staticMapUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${centerLat},${centerLng}&zoom=17&size=680x280&maptype=mapnik&markers=${encodeURIComponent(markers.join('|'))}`;
+  const mapImgUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}`;
   const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat},${centerLng}`;
 
   return `
@@ -2560,12 +2675,12 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
         🗺️ Patrol Route Map (Expected QR Locations vs Guard Capture Locations)
       </div>
       <div style="padding:8px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">
-        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#059669;color:#fff;font-weight:bold;margin-right:8px;">Green Pin</span> Expected QR (${qrPts.length})
-        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Blue Pin</span> Guard Capture (${scanPts.length})
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#059669;color:#fff;font-weight:bold;margin-right:8px;">QR #</span> Expected Checkpoint (${qrPts.length})
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Cap #</span> Guard Capture (${scanPts.length})
         <a href="${gmapsRouteUrl}" target="_blank" style="float:right;color:#2563eb;font-weight:bold;text-decoration:none;">Open in Google Maps ↗</a>
       </div>
       <div style="padding:10px;text-align:center;background:#f1f5f9;">
-        <img src="${staticMapUrl}" alt="Patrol Route GPS Map" width="660" style="width:100%;max-width:660px;height:auto;border-radius:8px;border:1px solid #cbd5e1;display:block;margin:0 auto;" />
+        <img src="${mapImgUrl}" alt="Patrol Route GPS Map" width="660" height="300" style="width:100%;max-width:660px;height:auto;border-radius:8px;border:1px solid #cbd5e1;display:block;margin:0 auto;" />
       </div>
     </div>
   `;
