@@ -6,7 +6,7 @@ import {
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
 
-type ReportCategory = 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
+type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 interface Shift { name: string; start: string; end: string }
 interface GuardOption { guard_id: string; full_name: string; employee_code?: string }
@@ -22,11 +22,19 @@ const REPORT_TYPES: {
   icon: React.FC<{ className?: string }>;
 }[] = [
   {
+    key: 'route_completion',
+    title: 'Route Completion Report (Auto on Finish)',
+    subtitle: 'Sent immediately when a guard completes a route—includes route map, GPS logs, and only incidents logged by that guard during that route.',
+    frequency: 'Instant upon route completion',
+    badge: 'Guard-Isolated + Map',
+    icon: CheckCircle2,
+  },
+  {
     key: 'shift',
-    title: 'Shift-Wise & Route Completion Report',
-    subtitle: 'Sent automatically when a route completes (with guard-isolated incidents + map) & after each shift.',
-    frequency: 'On Route Completion + Shift End',
-    badge: 'Auto on Route Done + Map',
+    title: 'Shift-Wise Patrol & Route Map Report',
+    subtitle: 'Shift execution breakdown with attached Expected QR vs Guard Capture GPS route map.',
+    frequency: 'After each shift ends',
+    badge: 'Includes Map',
     icon: MapPin,
   },
   {
@@ -67,6 +75,7 @@ const REPORT_TYPES: {
 ];
 
 const DEFAULT_SCHEDULES: Record<ReportCategory, ScheduleRule> = {
+  route_completion: { enabled: true, emails: '' },
   individual: { enabled: true, emails: '' },
   shift: { enabled: true, emails: '' },
   daily: { enabled: true, emails: '' },

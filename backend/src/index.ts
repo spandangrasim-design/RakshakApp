@@ -2014,11 +2014,18 @@ async function dispatchRouteCompletionReport(
     const incidents: any[] = incRes.data || [];
     const cpById = new Map<string, any>(checkpoints.map((c) => [String(c.checkpoint_id), c]));
 
-    // Collect recipients from Shift/Route schedule + fallback + assigned supervisor
+    // Collect recipients exclusively from dedicated 'route_completion' card + optional per-route override + supervisor
     let schedules: Record<string, { enabled: boolean; emails: string }> = {};
+    let routeEmailsMap: Record<string, string> = {};
     try { schedules = JSON.parse(cfg['REPORT_SCHEDULES_JSON'] || '{}'); } catch {}
+    try { routeEmailsMap = JSON.parse(cfg['ROUTE_COMPLETION_EMAILS_JSON'] || '{}'); } catch {}
+
+    if (schedules.route_completion && schedules.route_completion.enabled === false) return;
+
     const recipSet = new Set<string>(await reportRecipients(supabase, cfg, guard));
-    for (const raw of [schedules.shift?.emails, schedules.daily?.emails]) {
+    const dedicatedEmails = schedules.route_completion?.emails || '';
+    const perRouteEmails = routeEmailsMap[String(session.round_id)] || '';
+    for (const raw of [dedicatedEmails, perRouteEmails]) {
       for (const e of String(raw || '').split(/[,;\s]+/)) {
         const ok = safeEmail(e);
         if (ok) recipSet.add(ok);
@@ -2467,7 +2474,7 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 // =====================================================================
 // MULTI-REPORT AUTOMATION ENGINE (INDIVIDUAL, SHIFT+MAP, DAILY, WEEKLY, MONTHLY, INCIDENT)
 // =====================================================================
-type ReportCategory = 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
+type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   const pts: { lat: number; lng: number; type: 'qr' | 'scan'; label: string; drift?: number }[] = [];
@@ -2611,6 +2618,7 @@ async function generateTypedReport(
   const cpById = new Map<string, any>(checkpoints.map((c) => [String(c.checkpoint_id), c]));
 
   const TITLES: Record<ReportCategory, string> = {
+    route_completion: 'Route Completion & Guard-Isolated Incident Report',
     individual: 'Individual Guard Patrol Performance Report',
     shift: `Shift-Wise Patrol & Route Map Report${shiftLabel ? ' (' + shiftLabel + ')' : ''}`,
     daily: 'Daily Consolidated Security & Patrol Digest',
@@ -2647,7 +2655,7 @@ async function generateTypedReport(
     };
   }).filter((gs) => filterGuardId ? gs.guardId === String(filterGuardId) : (reportType === 'monthly' || reportType === 'weekly' || gs.runsTotal > 0 || gs.scansTotal > 0 || gs.incidentsCount > 0 || allGuards.length <= 25));
 
-  const mapHtml = (reportType === 'shift' || reportType === 'daily')
+  const mapHtml = (reportType === 'route_completion' || reportType === 'shift' || reportType === 'daily')
     ? buildStaticRouteMapSvg(checkpoints, scans)
     : '';
 
