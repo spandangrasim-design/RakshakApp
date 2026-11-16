@@ -2269,8 +2269,8 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
     }
   });
   scans.forEach((sc, idx) => {
-    const lat = Number(sc.guard_latitude ?? sc.latitude ?? sc.lat);
-    const lng = Number(sc.guard_longitude ?? sc.longitude ?? sc.lng);
+    const lat = Number(sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat);
+    const lng = Number(sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
       pts.push({
         lat,
@@ -2371,14 +2371,14 @@ async function generateTypedReport(
   const dateLabel = `${localDate(env, startMs)}${localDate(env, startMs) !== localDate(env, nowMs) ? ' to ' + localDate(env, nowMs) : ''}`;
 
   const [guardsRes, roundsRes, cpsRes, sessionsRes, scansRes, incRes] = await Promise.all([
-    supabase.from('guards').select('guard_id, full_name, employee_code, phone, reporting_to, email').eq('tenant_id', tenantId),
-    supabase.from('rounds').select('id, name, checkpoints, assigned_guards').eq('tenant_id', tenantId),
-    supabase.from('checkpoints').select('checkpoint_id, round_id, name, latitude, longitude').eq('tenant_id', tenantId),
+    supabase.from('guards').select('*').eq('tenant_id', tenantId),
+    supabase.from('rounds').select('id, name').eq('tenant_id', tenantId),
+    supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng').eq('tenant_id', tenantId),
     supabase.from('patrol_sessions').select('id, guard_id, round_id, status, completed_route, start_time, end_time, paused_seconds')
       .eq('tenant_id', tenantId).gte('start_time', startISO).lte('start_time', endISO).order('start_time', { ascending: false }).limit(2000),
-    supabase.from('scans').select('checkpoint_id, guard_id, round_id, scan_time, is_verified, distance_meters, guard_latitude, guard_longitude')
+    supabase.from('scans').select('*')
       .eq('tenant_id', tenantId).gte('scan_time', startISO).lte('scan_time', endISO).order('scan_time', { ascending: false }).limit(3000),
-    supabase.from('incidents').select('case_number, title, description, priority, category, status, reported_at, guard_id, photo_url')
+    supabase.from('incidents').select('*')
       .eq('tenant_id', tenantId).gte('reported_at', startISO).lte('reported_at', endISO).order('reported_at', { ascending: false }).limit(1000),
   ]);
 
@@ -2484,7 +2484,7 @@ async function generateTypedReport(
         </tbody>
       </table>`;
   } else {
-    // shift, daily, weekly, monthly
+    // shift, daily, weekly, monthly — includes Patrol Runs, GPS Scan Coordinates, Map Snapshot, AND Incidents
     sectionHtml = `
       <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Shift &amp; Patrol Execution Summary</h3>
       <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
@@ -2498,13 +2498,65 @@ async function generateTypedReport(
           ${sessions.length === 0 ? `<tr><td colspan="4" style="${cellRow}text-align:center;color:#64748b;">No patrol sessions logged in this window.</td></tr>` : sessions.slice(0, 60).map((s) => `
             <tr>
               <td style="${cellRow}font-weight:600;">${esc(guardById.get(String(s.guard_id))?.full_name || 'Guard')}</td>
-              <td style="${cellRow}">${esc(roundById.get(String(s.round_id))?.name || 'Route')}</td>
+              <td style="${cellRow}">${esc(roundById.get(String(s.round_id))?.name || 'Patrol Route')}</td>
               <td style="${cellRow}font-size:11px;">${s.start_time ? esc(localHM(env, new Date(s.start_time).getTime())) : '—'} – ${s.end_time ? esc(localHM(env, new Date(s.end_time).getTime())) : 'Active'}</td>
               <td style="${cellRow}">${s.completed_route ? '<span style="color:#15803d;font-weight:700;">Completed</span>' : esc(s.status || 'IN_PROGRESS')}</td>
             </tr>`).join('')}
         </tbody>
       </table>
+
+      <h3 style="margin:18px 0 10px;font-size:14px;color:#0f172a;">Checkpoint Scans &amp; GPS Coordinates (${scans.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
+        <thead><tr>
+          <th style="${cellHead}">Time</th>
+          <th style="${cellHead}">Guard</th>
+          <th style="${cellHead}">Checkpoint</th>
+          <th style="${cellHead}">Expected GPS</th>
+          <th style="${cellHead}">Captured GPS</th>
+          <th style="${cellHead}">Drift</th>
+        </tr></thead>
+        <tbody>
+          ${scans.length === 0 ? `<tr><td colspan="6" style="${cellRow}text-align:center;color:#64748b;">No QR scans recorded in this window.</td></tr>` : scans.slice(0, 60).map((sc) => {
+            const cp = cpById.get(String(sc.checkpoint_id));
+            const gLat = sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat;
+            const gLng = sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng;
+            return `
+              <tr>
+                <td style="${cellRow}font-size:11px;">${sc.scan_time ? esc(localHM(env, new Date(sc.scan_time).getTime())) : '—'}</td>
+                <td style="${cellRow}font-weight:600;">${esc(guardById.get(String(sc.guard_id))?.full_name || 'Guard')}</td>
+                <td style="${cellRow}">${esc(cp?.name || sc.checkpoint_id || 'Checkpoint')}</td>
+                <td style="${cellRow}font-family:monospace;font-size:11px;">${cp?.lat ? `${Number(cp.lat).toFixed(5)}, ${Number(cp.lng).toFixed(5)}` : '—'}</td>
+                <td style="${cellRow}font-family:monospace;font-size:11px;">${gLat != null ? `${Number(gLat).toFixed(5)}, ${Number(gLng).toFixed(5)}` : '—'}</td>
+                <td style="${cellRow}">${sc.distance_meters != null ? Number(sc.distance_meters).toFixed(1) + 'm' : '—'}</td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
       ${mapHtml}
+
+      <h3 style="margin:20px 0 10px;font-size:14px;color:#0f172a;">Incidents &amp; Exceptions Reported (${incidents.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #fed7aa;">
+        <thead><tr style="background:#fff7ed;">
+          <th style="${cellHead}color:#9a3412;">Case #</th>
+          <th style="${cellHead}color:#9a3412;">Time</th>
+          <th style="${cellHead}color:#9a3412;">Priority</th>
+          <th style="${cellHead}color:#9a3412;">Title &amp; Description</th>
+          <th style="${cellHead}color:#9a3412;">Reported By</th>
+          <th style="${cellHead}color:#9a3412;">Status</th>
+        </tr></thead>
+        <tbody>
+          ${incidents.length === 0 ? `<tr><td colspan="6" style="${cellRow}text-align:center;color:#16a34a;font-weight:600;">No incidents reported during this period.</td></tr>` : incidents.map((i) => `
+            <tr>
+              <td style="${cellRow}font-family:monospace;font-weight:700;color:#c2410c;">${i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—'}</td>
+              <td style="${cellRow}font-size:11px;">${i.reported_at ? esc(localHM(env, new Date(i.reported_at).getTime())) : '—'}</td>
+              <td style="${cellRow}"><strong>${esc(i.priority || 'P3')}</strong></td>
+              <td style="${cellRow}"><strong>${esc(i.title || 'Incident')}</strong><div style="font-size:11px;color:#64748b;">${esc(i.description || '')}</div></td>
+              <td style="${cellRow}">${esc(guardById.get(String(i.guard_id))?.full_name || 'Field Guard')}</td>
+              <td style="${cellRow}">${esc(i.status || 'OPEN')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
     `;
   }
 
@@ -2572,8 +2624,8 @@ async function generateTypedReport(
       'Guard': guardById.get(String(s.guard_id))?.full_name || s.guard_id,
       'Route': roundById.get(String(s.round_id))?.name || s.round_id,
       'Checkpoint': cpById.get(String(s.checkpoint_id))?.name || s.checkpoint_id,
-      'Expected Lat/Lng': cpById.get(String(s.checkpoint_id)) ? `${cpById.get(String(s.checkpoint_id)).latitude}, ${cpById.get(String(s.checkpoint_id)).longitude}` : '—',
-      'Guard Capture Lat/Lng': s.guard_latitude ? `${s.guard_latitude}, ${s.guard_longitude}` : '—',
+      'Expected Lat/Lng': cpById.get(String(s.checkpoint_id)) ? `${cpById.get(String(s.checkpoint_id)).lat}, ${cpById.get(String(s.checkpoint_id)).lng}` : '—',
+      'Guard Capture Lat/Lng': (s.guard_lat ?? s.guard_latitude ?? s.lat) ? `${s.guard_lat ?? s.guard_latitude ?? s.lat}, ${s.guard_lng ?? s.guard_longitude ?? s.lng}` : '—',
       'Drift (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—',
       'Verified': s.is_verified ? 'Yes' : 'No',
     })) : [{ Notice: 'No scans in period' }]),
