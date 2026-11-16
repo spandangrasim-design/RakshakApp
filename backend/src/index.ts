@@ -564,7 +564,7 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
     for (let ty = minTileY; ty <= maxTileY; ty++) {
       const drawX = Math.round(tx * 256 - topLeftWorldX);
       const drawY = Math.round(ty * 256 - topLeftWorldY);
-      const tileUrl = `https://basemaps.cartocdn.com/rastertiles/voyager/${zoom}/${tx}/${ty}.png`;
+      const tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}`;
       tilePromises.push(
         fetch(tileUrl, { headers: { 'User-Agent': 'RakshakSecurityMap/1.0' } })
           .then(async (res) => {
