@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../session.dart';
 import '../util.dart';
+import 'incident_screen.dart';
 import 'onboarding_screen.dart';
 import 'run_screen.dart';
 
@@ -108,6 +109,24 @@ class _RoutesScreenState extends State<RoutesScreen> {
           ],
         ),
         actions: [
+          if (Session.can('report_incident') && Session.formFields.where((f) => f != 'group').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.red.shade700,
+                  backgroundColor: Colors.red.shade50,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const IncidentScreen()),
+                  );
+                },
+                icon: const Icon(Icons.report_problem_rounded, size: 18),
+                label: const Text('Report', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
+              ),
+            ),
           IconButton(onPressed: () => _load(), icon: const Icon(Icons.refresh)),
           PopupMenuButton<String>(
             onSelected: (v) {
@@ -119,9 +138,65 @@ class _RoutesScreenState extends State<RoutesScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: _error != null && _routes.isEmpty
+          : Column(
+              children: [
+                if (Session.can('report_incident') && Session.formFields.where((f) => f != 'group').isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 2),
+                    child: Material(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const IncidentScreen()),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.red.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.shade600,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(Icons.report_problem_rounded, color: Colors.white, size: 22),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Report an Incident',
+                                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.black87),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Tap to log a safety, fire, security, or equipment issue anytime',
+                                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Icon(Icons.chevron_right, color: Colors.red.shade700),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _load,
+                    child: _error != null && _routes.isEmpty
                   ? ListView(children: [
                       Padding(padding: const EdgeInsets.all(24), child: Text(_error!)),
                     ])
@@ -138,6 +213,9 @@ class _RoutesScreenState extends State<RoutesScreen> {
                           separatorBuilder: (_, __) => const SizedBox(height: 10),
                           itemBuilder: (_, i) => _RouteCard(route: _routes[i], onTap: () => _open(_routes[i])),
                         ),
+                  ),
+                ),
+              ],
             ),
     );
   }

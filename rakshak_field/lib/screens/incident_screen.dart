@@ -11,9 +11,9 @@ import 'camera_capture_screen.dart';
 
 /// Shows only the fields this guard is allowed to fill, numbered 1..n with no gaps.
 class IncidentScreen extends StatefulWidget {
-  final String checkpointName;
+  final String? checkpointName;
 
-  const IncidentScreen({super.key, required this.checkpointName});
+  const IncidentScreen({super.key, this.checkpointName});
 
   @override
   State<IncidentScreen> createState() => _IncidentScreenState();
@@ -38,6 +38,7 @@ class _IncidentScreenState extends State<IncidentScreen> {
 
   final _title = TextEditingController();
   final _desc = TextEditingController();
+  final _location = TextEditingController();
   String _priority = 'P3';
   String _category = 'Security / Patrol';
   Uint8List? _photo;
@@ -50,6 +51,7 @@ class _IncidentScreenState extends State<IncidentScreen> {
   void dispose() {
     _title.dispose();
     _desc.dispose();
+    _location.dispose();
     super.dispose();
   }
 
@@ -79,7 +81,10 @@ class _IncidentScreenState extends State<IncidentScreen> {
     }
     if (_fields.contains('description')) {
       final text = _desc.text.trim().isNotEmpty ? _desc.text.trim() : _title.text.trim();
-      payload['description'] = '[${widget.checkpointName}] $text';
+      final loc = (widget.checkpointName != null && widget.checkpointName!.trim().isNotEmpty)
+          ? widget.checkpointName!.trim()
+          : _location.text.trim();
+      payload['description'] = loc.isNotEmpty ? '[$loc] $text' : text;
     }
     if (_fields.contains('photo') && _photo != null) {
       payload['photo_url'] = base64Encode(_photo!);
@@ -172,7 +177,13 @@ class _IncidentScreenState extends State<IncidentScreen> {
     ));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Report incident')),
+      appBar: AppBar(
+        title: Text(
+          widget.checkpointName != null && widget.checkpointName!.isNotEmpty
+              ? 'Report incident · ${widget.checkpointName}'
+              : 'Report incident',
+        ),
+      ),
       body: ListView(padding: const EdgeInsets.all(16), children: children),
     );
   }

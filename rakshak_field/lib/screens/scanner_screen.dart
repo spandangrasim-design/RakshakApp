@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../session.dart';
+import 'incident_screen.dart';
+
 /// Full-screen QR scanner. Pops with the raw text of the first Rakshak checkpoint QR it sees.
 ///
 /// Camera start-up follows the proven pattern of the main Rakshak app: the camera is started by hand
@@ -178,6 +181,29 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         title: const Text('Scan checkpoint QR', style: TextStyle(color: Colors.white)),
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          if (Session.can('report_incident') && Session.formFields.where((f) => f != 'group').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: Colors.red.shade600,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                ),
+                onPressed: () async {
+                  await _stopScanner();
+                  if (!context.mounted) return;
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const IncidentScreen()),
+                  );
+                  if (mounted && !_found) _startScanner();
+                },
+                icon: const Icon(Icons.report_problem_rounded, size: 18),
+                label: const Text('Report Incident', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
+              ),
+            ),
+        ],
       ),
       body: Stack(
         alignment: Alignment.center,

@@ -153,21 +153,6 @@ class _RunScreenState extends State<RunScreen> {
     }
   }
 
-  Future<bool?> _askIncident(String checkpointName) {
-    return showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Any incident?'),
-        content: Text('Did you notice anything wrong at "$checkpointName"?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No, all clear')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes, report it')),
-        ],
-      ),
-    );
-  }
-
   Future<void> _scan() async {
     if (_busy || _sessionId == null || _paused) return;
 
@@ -220,16 +205,6 @@ class _RunScreenState extends State<RunScreen> {
     }
 
     _snack('"$cpName" verified');
-
-    final fields = Session.formFields.where((f) => f != 'group');
-    if (Session.can('report_incident') && fields.isNotEmpty) {
-      final yes = await _askIncident(cpName);
-      if (yes == true && mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => IncidentScreen(checkpointName: cpName)),
-        );
-      }
-    }
 
     if (!mounted) return;
     if (_scanned.length >= _cps.length) await _finish();
@@ -376,6 +351,26 @@ class _RunScreenState extends State<RunScreen> {
       appBar: AppBar(
         title: Text(widget.route['name'].toString()),
         actions: [
+          if (Session.can('report_incident') && Session.formFields.where((f) => f != 'group').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.red.shade700,
+                  backgroundColor: Colors.red.shade50,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => IncidentScreen(checkpointName: widget.route['name']?.toString()),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.report_problem_rounded, size: 18),
+                label: const Text('Report', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
+              ),
+            ),
           if (!_starting && _error == null)
             PopupMenuButton<String>(
               onSelected: (v) {
