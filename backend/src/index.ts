@@ -2253,6 +2253,353 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 }
 
 /** Scheduler: after each configured shift ends, send one report per guard who worked it. */
+
+// =====================================================================
+// MULTI-REPORT AUTOMATION ENGINE (INDIVIDUAL, SHIFT+MAP, DAILY, WEEKLY, MONTHLY, INCIDENT)
+// =====================================================================
+type ReportCategory = 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
+
+function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
+  const pts: { lat: number; lng: number; type: 'qr' | 'scan'; label: string; drift?: number }[] = [];
+  checkpoints.forEach((cp, idx) => {
+    const lat = Number(cp.latitude ?? cp.lat);
+    const lng = Number(cp.longitude ?? cp.lng);
+    if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
+      pts.push({ lat, lng, type: 'qr', label: `QR #${idx + 1}` });
+    }
+  });
+  scans.forEach((sc, idx) => {
+    const lat = Number(sc.guard_latitude ?? sc.latitude ?? sc.lat);
+    const lng = Number(sc.guard_longitude ?? sc.longitude ?? sc.lng);
+    if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
+      pts.push({
+        lat,
+        lng,
+        type: 'scan',
+        label: `Cap #${idx + 1}`,
+        drift: sc.distance_meters != null ? Number(sc.distance_meters) : undefined,
+      });
+    }
+  });
+
+  if (pts.length === 0) {
+    return `<div style="padding:14px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;color:#64748b;font-size:12px;text-align:center;">No GPS coordinates recorded for route map snapshot in this window.</div>`;
+  }
+
+  const lats = pts.map((p) => p.lat);
+  const lngs = pts.map((p) => p.lng);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const padLat = Math.max(0.0006, (maxLat - minLat) * 0.22);
+  const padLng = Math.max(0.0006, (maxLng - minLng) * 0.22);
+  const loLat = minLat - padLat, hiLat = maxLat + padLat;
+  const loLng = minLng - padLng, hiLng = maxLng + padLng;
+
+  const W = 680, H = 260;
+  const toX = (lng: number) => Math.round(((lng - loLng) / (hiLng - loLng)) * (W - 80) + 40);
+  const toY = (lat: number) => Math.round(H - (((lat - loLat) / (hiLat - loLat)) * (H - 60) + 30));
+
+  const qrPts = pts.filter((p) => p.type === 'qr');
+  const scanPts = pts.filter((p) => p.type === 'scan');
+  const qrPolyline = qrPts.map((p) => `${toX(p.lng)},${toY(p.lat)}`).join(' ');
+  const scanPolyline = scanPts.map((p) => `${toX(p.lng)},${toY(p.lat)}`).join(' ');
+
+  const svgInner = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto;background:#f1f5f9;border-radius:8px;border:1px solid #cbd5e1;display:block;">
+      <defs>
+        <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+          <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+        </pattern>
+      </defs>
+      <rect width="${W}" height="${H}" fill="url(#grid)" />
+      ${qrPts.length > 1 ? `<polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
+      ${scanPts.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${scanPolyline}" />` : ''}
+      ${qrPts.map((p) => {
+        const x = toX(p.lng), y = toY(p.lat);
+        return `<g transform="translate(${x},${y})">
+          <circle r="11" fill="#059669" stroke="#ffffff" stroke-width="2"/>
+          <text y="3.5" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="8" font-weight="bold">${esc(p.label)}</text>
+        </g>`;
+      }).join('')}
+      ${scanPts.map((p) => {
+        const x = toX(p.lng), y = toY(p.lat);
+        const far = (p.drift ?? 0) > 50;
+        const fill = far ? '#dc2626' : '#2563eb';
+        return `<g transform="translate(${x},${y})">
+          <rect x="-18" y="-22" width="36" height="14" rx="4" fill="${fill}" stroke="#ffffff" stroke-width="1.5"/>
+          <text y="-12" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="8" font-weight="bold">${esc(p.label)}</text>
+        </g>`;
+      }).join('')}
+    </svg>
+  `;
+
+  return `
+    <div style="margin-top:12px;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;background:#ffffff;">
+      <div style="background:#0f172a;color:#ffffff;padding:8px 14px;font-size:12px;font-weight:bold;">
+        🗺️ Patrol Route Map (Expected QR Locations vs Guard Capture Locations)
+      </div>
+      <div style="padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#059669;color:#fff;font-weight:bold;margin-right:8px;">QR #</span> Expected Checkpoint
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Cap #</span> Guard Capture (&le;50m)
+        <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#dc2626;color:#fff;font-weight:bold;margin-left:8px;">Cap #</span> Drift (&gt;50m)
+      </div>
+      <div style="padding:10px;">${svgInner}</div>
+    </div>
+  `;
+}
+
+async function generateTypedReport(
+  supabase: any,
+  env: Bindings,
+  tenantId: string,
+  tenantName: string,
+  reportType: ReportCategory,
+  customStartMs?: number,
+  customEndMs?: number,
+  shiftLabel?: string
+) {
+  const nowMs = customEndMs || Date.now();
+  const siteDayStartMs = new Date(startOfSiteDayISO(env)).getTime();
+  let startMs = customStartMs ?? siteDayStartMs;
+  if (!customStartMs) {
+    if (reportType === 'weekly') startMs = nowMs - 7 * 86400000;
+    else if (reportType === 'monthly') startMs = nowMs - 30 * 86400000;
+  }
+
+  const startISO = new Date(startMs).toISOString();
+  const endISO = new Date(nowMs).toISOString();
+  const dateLabel = `${localDate(env, startMs)}${localDate(env, startMs) !== localDate(env, nowMs) ? ' to ' + localDate(env, nowMs) : ''}`;
+
+  const [guardsRes, roundsRes, cpsRes, sessionsRes, scansRes, incRes] = await Promise.all([
+    supabase.from('guards').select('guard_id, full_name, employee_code, phone, reporting_to, email').eq('tenant_id', tenantId),
+    supabase.from('rounds').select('id, name, checkpoints, assigned_guards').eq('tenant_id', tenantId),
+    supabase.from('checkpoints').select('checkpoint_id, round_id, name, latitude, longitude').eq('tenant_id', tenantId),
+    supabase.from('patrol_sessions').select('id, guard_id, round_id, status, completed_route, start_time, end_time, paused_seconds')
+      .eq('tenant_id', tenantId).gte('start_time', startISO).lte('start_time', endISO).order('start_time', { ascending: false }).limit(2000),
+    supabase.from('scans').select('checkpoint_id, guard_id, round_id, scan_time, is_verified, distance_meters, guard_latitude, guard_longitude')
+      .eq('tenant_id', tenantId).gte('scan_time', startISO).lte('scan_time', endISO).order('scan_time', { ascending: false }).limit(3000),
+    supabase.from('incidents').select('case_number, title, description, priority, category, status, reported_at, guard_id, photo_url')
+      .eq('tenant_id', tenantId).gte('reported_at', startISO).lte('reported_at', endISO).order('reported_at', { ascending: false }).limit(1000),
+  ]);
+
+  const allGuards: any[] = guardsRes.data || [];
+  const rounds: any[] = roundsRes.data || [];
+  const checkpoints: any[] = cpsRes.data || [];
+  const sessions: any[] = sessionsRes.data || [];
+  const scans: any[] = scansRes.data || [];
+  const incidents: any[] = incRes.data || [];
+
+  const guardById = new Map<string, any>(allGuards.map((g) => [String(g.guard_id), g]));
+  const roundById = new Map<string, any>(rounds.map((r) => [String(r.id), r]));
+  const cpById = new Map<string, any>(checkpoints.map((c) => [String(c.checkpoint_id), c]));
+
+  const TITLES: Record<ReportCategory, string> = {
+    individual: 'Individual Guard Patrol Performance Report',
+    shift: `Shift-Wise Patrol & Route Map Report${shiftLabel ? ' (' + shiftLabel + ')' : ''}`,
+    daily: 'Daily Consolidated Security & Patrol Digest',
+    weekly: 'Weekly Executive Security & Compliance Summary',
+    monthly: 'Monthly Security Operations & Audit Report',
+    incident: 'Security & Safety Incident Exception Report',
+  };
+
+  const cellHead = 'padding:9px 11px;background:#f8fafc;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;border-bottom:1px solid #e2e8f0;text-align:left;';
+  const cellRow = 'padding:9px 11px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9;vertical-align:middle;';
+
+  // Guard-level metrics
+  const guardStats = allGuards.map((g) => {
+    const gId = String(g.guard_id);
+    const gSessions = sessions.filter((s) => String(s.guard_id) === gId);
+    const gScans = scans.filter((s) => String(s.guard_id) === gId);
+    const gInc = incidents.filter((i) => String(i.guard_id) === gId);
+    const completed = gSessions.filter((s) => s.completed_route).length;
+    const verified = gScans.filter((s) => s.is_verified).length;
+    const avgDrift = gScans.length > 0
+      ? (gScans.reduce((acc, x) => acc + (Number(x.distance_meters) || 0), 0) / gScans.length).toFixed(1)
+      : '0.0';
+    return {
+      guardId: gId,
+      name: g.full_name,
+      code: g.employee_code || '—',
+      phone: g.phone || '—',
+      runsTotal: gSessions.length,
+      runsCompleted: completed,
+      scansTotal: gScans.length,
+      scansVerified: verified,
+      avgDriftM: avgDrift,
+      incidentsCount: gInc.length,
+    };
+  }).filter((gs) => reportType === 'monthly' || reportType === 'weekly' || gs.runsTotal > 0 || gs.scansTotal > 0 || gs.incidentsCount > 0 || allGuards.length <= 25);
+
+  const mapHtml = (reportType === 'shift' || reportType === 'daily')
+    ? buildStaticRouteMapSvg(checkpoints, scans)
+    : '';
+
+  let sectionHtml = '';
+  if (reportType === 'individual') {
+    sectionHtml = `
+      <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Individual Guard Breakdown</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;">
+        <thead><tr>
+          <th style="${cellHead}">Guard Name</th>
+          <th style="${cellHead}">Code</th>
+          <th style="${cellHead}">Patrol Runs</th>
+          <th style="${cellHead}">Verified Scans</th>
+          <th style="${cellHead}">Avg GPS Drift</th>
+          <th style="${cellHead}">Incidents</th>
+        </tr></thead>
+        <tbody>
+          ${guardStats.length === 0 ? `<tr><td colspan="6" style="${cellRow}text-align:center;color:#64748b;">No guard patrol activity recorded in this period.</td></tr>` : guardStats.map((g) => `
+            <tr>
+              <td style="${cellRow}font-weight:700;">${esc(g.name)}</td>
+              <td style="${cellRow}font-family:monospace;">${esc(g.code)}</td>
+              <td style="${cellRow}">${g.runsCompleted} / ${g.runsTotal} completed</td>
+              <td style="${cellRow}"><strong>${g.scansVerified}</strong> / ${g.scansTotal}</td>
+              <td style="${cellRow}">${esc(g.avgDriftM)} m</td>
+              <td style="${cellRow}">${g.incidentsCount}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } else if (reportType === 'incident') {
+    sectionHtml = `
+      <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Logged Incidents (${incidents.length})</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #fed7aa;">
+        <thead><tr>
+          <th style="${cellHead}">Case #</th>
+          <th style="${cellHead}">Time</th>
+          <th style="${cellHead}">Priority</th>
+          <th style="${cellHead}">Title &amp; Details</th>
+          <th style="${cellHead}">Reported By</th>
+          <th style="${cellHead}">Status</th>
+        </tr></thead>
+        <tbody>
+          ${incidents.length === 0 ? `<tr><td colspan="6" style="${cellRow}text-align:center;color:#16a34a;font-weight:600;">No incidents reported during this period.</td></tr>` : incidents.map((i) => `
+            <tr>
+              <td style="${cellRow}font-family:monospace;font-weight:700;color:#c2410c;">${i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—'}</td>
+              <td style="${cellRow}font-size:11px;">${i.reported_at ? esc(new Date(i.reported_at).toLocaleString()) : '—'}</td>
+              <td style="${cellRow}"><strong>${esc(i.priority || 'P3')}</strong></td>
+              <td style="${cellRow}"><strong>${esc(i.title || 'Incident')}</strong><div style="font-size:11px;color:#64748b;">${esc(i.description || '')}</div></td>
+              <td style="${cellRow}">${esc(guardById.get(String(i.guard_id))?.full_name || 'Field Guard')}</td>
+              <td style="${cellRow}">${esc(i.status || 'OPEN')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } else {
+    // shift, daily, weekly, monthly
+    sectionHtml = `
+      <h3 style="margin:0 0 10px;font-size:14px;color:#0f172a;">Shift &amp; Patrol Execution Summary</h3>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;margin-bottom:18px;">
+        <thead><tr>
+          <th style="${cellHead}">Guard</th>
+          <th style="${cellHead}">Route</th>
+          <th style="${cellHead}">Start – End</th>
+          <th style="${cellHead}">Status</th>
+        </tr></thead>
+        <tbody>
+          ${sessions.length === 0 ? `<tr><td colspan="4" style="${cellRow}text-align:center;color:#64748b;">No patrol sessions logged in this window.</td></tr>` : sessions.slice(0, 60).map((s) => `
+            <tr>
+              <td style="${cellRow}font-weight:600;">${esc(guardById.get(String(s.guard_id))?.full_name || 'Guard')}</td>
+              <td style="${cellRow}">${esc(roundById.get(String(s.round_id))?.name || 'Route')}</td>
+              <td style="${cellRow}font-size:11px;">${s.start_time ? esc(localHM(env, new Date(s.start_time).getTime())) : '—'} – ${s.end_time ? esc(localHM(env, new Date(s.end_time).getTime())) : 'Active'}</td>
+              <td style="${cellRow}">${s.completed_route ? '<span style="color:#15803d;font-weight:700;">Completed</span>' : esc(s.status || 'IN_PROGRESS')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      ${mapHtml}
+    `;
+  }
+
+  const subject = `[${tenantName}] ${TITLES[reportType]} · ${dateLabel}`;
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;max-width:780px;margin:0 auto;padding:20px;background:#f1f5f9;color:#0f172a;">
+      <div style="background:#0f172a;color:#ffffff;padding:22px 24px;border-radius:12px 12px 0 0;">
+        <div style="font-size:11px;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:1px;">Spandan IT Professionals · Enterprise Security Suite</div>
+        <h2 style="margin:6px 0 0;font-size:20px;font-weight:800;">${esc(TITLES[reportType])}</h2>
+        <p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">Site: <strong>${esc(tenantName)}</strong> | Period: <strong>${esc(dateLabel)}</strong></p>
+      </div>
+      <div style="background:#ffffff;padding:22px 24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+          <tr>
+            <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Guards Active</div>
+              <div style="font-size:22px;font-weight:800;color:#0f172a;">${guardStats.length}</div>
+            </td>
+            <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Patrol Runs</div>
+              <div style="font-size:22px;font-weight:800;color:#16a34a;">${sessions.filter((s) => s.completed_route).length} / ${sessions.length}</div>
+            </td>
+            <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">QR Scans</div>
+              <div style="font-size:22px;font-weight:800;color:#2563eb;">${scans.length}</div>
+            </td>
+            <td style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;width:25%;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Incidents</div>
+              <div style="font-size:22px;font-weight:800;color:${incidents.length > 0 ? '#dc2626' : '#16a34a'};">${incidents.length}</div>
+            </td>
+          </tr>
+        </table>
+        ${sectionHtml}
+        <div style="margin-top:24px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;display:flex;justify-content:space-between;">
+          <span>Automated Report Engine · Powered by <strong>Spandan IT Professionals</strong></span>
+          <a href="https://spandanit.com" style="color:#2563eb;text-decoration:none;font-weight:700;">www.spandanit.com</a>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Build multi-sheet Excel workbook for attachment & frontend download
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(guardStats.length > 0 ? guardStats.map((g) => ({
+      'Guard Name': g.name,
+      'Employee Code': g.code,
+      'Phone': g.phone,
+      'Completed Runs': g.runsCompleted,
+      'Total Runs': g.runsTotal,
+      'Verified Scans': g.scansVerified,
+      'Total Scans': g.scansTotal,
+      'Avg GPS Drift (m)': g.avgDriftM,
+      'Incidents': g.incidentsCount,
+    })) : [{ Notice: 'No guard records in period' }]),
+    'Individual Guard Summary'
+  );
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(scans.length > 0 ? scans.map((s, idx) => ({
+      '#': idx + 1,
+      'Scan Time': s.scan_time ? new Date(s.scan_time).toLocaleString() : '—',
+      'Guard': guardById.get(String(s.guard_id))?.full_name || s.guard_id,
+      'Route': roundById.get(String(s.round_id))?.name || s.round_id,
+      'Checkpoint': cpById.get(String(s.checkpoint_id))?.name || s.checkpoint_id,
+      'Expected Lat/Lng': cpById.get(String(s.checkpoint_id)) ? `${cpById.get(String(s.checkpoint_id)).latitude}, ${cpById.get(String(s.checkpoint_id)).longitude}` : '—',
+      'Guard Capture Lat/Lng': s.guard_latitude ? `${s.guard_latitude}, ${s.guard_longitude}` : '—',
+      'Drift (m)': s.distance_meters != null ? Number(s.distance_meters).toFixed(1) : '—',
+      'Verified': s.is_verified ? 'Yes' : 'No',
+    })) : [{ Notice: 'No scans in period' }]),
+    'Patrol Scans & GPS Map'
+  );
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(incidents.length > 0 ? incidents.map((i) => ({
+      'Case #': i.case_number ? 'RKS-' + String(i.case_number).padStart(6, '0') : '—',
+      'Reported At': i.reported_at ? new Date(i.reported_at).toLocaleString() : '—',
+      'Priority': i.priority || 'P3',
+      'Category': i.category || 'Security',
+      'Title': i.title || '—',
+      'Description': i.description || '—',
+      'Status': i.status || 'OPEN',
+    })) : [{ Notice: 'No incidents in period' }]),
+    'Incidents'
+  );
+
+  const excelBase64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  const filename = `${tenantName.replace(/[^a-zA-Z0-9]/g, '_')}_${reportType.toUpperCase()}_Report_${localDate(env, nowMs)}.xlsx`;
+
+  return { subject, html, excelBase64, filename, counts: { guards: guardStats.length, scans: scans.length, incidents: incidents.length } };
+}
+
 async function runDailyReports(env: Bindings) {
   const supabase = getSupabase(env);
   const { data: tenants } = await supabase.from('tenants').select('id, name, features, status');
@@ -2298,6 +2645,51 @@ async function runDailyReports(env: Bindings) {
           .match(key);
       }
     }
+
+    // Custom Daily Send Time Scheduler (defaults to 20:00 site local time)
+    const sendTime = (cfg['DAILY_REPORT_SEND_TIME'] || '20:00').trim();
+    const [targetH, targetM] = sendTime.split(':').map((n) => parseInt(n, 10) || 0);
+    const localNow = new Date(nowMs + siteOffsetMinutes(env) * MIN_MS);
+    const curMinutes = localNow.getUTCHours() * 60 + localNow.getUTCMinutes();
+    const targetMinutes = targetH * 60 + targetM;
+    const todayStr = localDate(env, nowMs);
+    const isSunday = localNow.getUTCDay() === 0;
+    const isFirstOfMonth = localNow.getUTCDate() === 1;
+
+    if (curMinutes >= targetMinutes && curMinutes < targetMinutes + 30) {
+      let schedules: Record<string, { enabled: boolean; emails: string }> = {};
+      try { schedules = JSON.parse(cfg['REPORT_SCHEDULES_JSON'] || '{}'); } catch {}
+
+      const typesToCheck: ReportCategory[] = ['individual', 'shift', 'daily', 'incident'];
+      if (isSunday) typesToCheck.push('weekly');
+      if (isFirstOfMonth) typesToCheck.push('monthly');
+
+      for (const rType of typesToCheck) {
+        if (budget <= 0) break;
+        const rule = schedules[rType];
+        if (!rule || !rule.enabled || !rule.emails?.trim()) continue;
+        const recips = rule.emails.split(/[,;\s]+/).map((e) => safeEmail(e)).filter(Boolean) as string[];
+        if (recips.length === 0) continue;
+
+        const logKey = { tenant_id: t.id, guard_id: `AUTO_${rType.toUpperCase()}`, shift_name: `Scheduled ${rType.toUpperCase()} (${sendTime})`, report_date: todayStr };
+        const claim = await supabase.from('daily_report_log').insert([{ ...logKey, status: 'PENDING' }]);
+        if (claim.error) continue;
+        budget--;
+
+        const built = await generateTypedReport(supabase, env, t.id, t.name, rType);
+        const res = await sendTenantEmail(env, t.id, recips, built.subject, built.html, {
+          filename: built.filename,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          contentBase64: built.excelBase64,
+        });
+        await supabase.from('daily_report_log').update({
+          status: res.ok ? 'SENT' : 'FAILED',
+          error: res.error || null,
+          recipients: recips.join(', '),
+          sent_at: res.ok ? new Date().toISOString() : null,
+        }).match(logKey);
+      }
+    }
   }
 }
 
@@ -2316,6 +2708,47 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const { data: tenant } = await supabase.from('tenants').select('name').eq('id', tenantId).maybeSingle();
     const cfg = await loadTenantConfig(supabase, tenantId);
+
+    // Handle typed report requests (individual, shift, daily, weekly, monthly, incident)
+    if (body?.report_type) {
+      const rType = body.report_type as ReportCategory;
+      const plantName = tenant?.name || 'Enterprise Security Site';
+      const built = await generateTypedReport(supabase, c.env, tenantId, plantName, rType);
+      if (body?.preview || body?.download) {
+        return c.json({
+          success: true,
+          subject: built.subject,
+          html: built.html,
+          filename: built.filename,
+          excelBase64: built.excelBase64,
+        });
+      }
+      let schedules: Record<string, { enabled: boolean; emails: string }> = {};
+      try { schedules = JSON.parse(cfg['REPORT_SCHEDULES_JSON'] || '{}'); } catch {}
+      const rawEmails = body?.recipients || schedules[rType]?.emails || cfg['DAILY_REPORT_EMAILS'] || '';
+      const recips = String(rawEmails).split(/[,;\s]+/).map((e) => safeEmail(e)).filter(Boolean) as string[];
+      if (recips.length === 0) {
+        return c.json({ success: false, message: `No recipient email configured for ${rType} report.` }, 400);
+      }
+      const res = await sendTenantEmail(c.env, tenantId, recips, built.subject, built.html, {
+        filename: built.filename,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        contentBase64: built.excelBase64,
+      });
+      if (!res.ok) return c.json({ success: false, message: res.error || 'Email send failed' }, 500);
+      try {
+        await supabase.from('daily_report_log').insert({
+          tenant_id: tenantId,
+          guard_id: `MANUAL_${rType.toUpperCase()}`,
+          shift_name: `${rType.toUpperCase()} Report`,
+          report_date: localDate(c.env, Date.now()),
+          status: 'SENT',
+          recipients: recips.join(', '),
+          sent_at: new Date().toISOString(),
+        });
+      } catch (_) {}
+      return c.json({ success: true, sent: 1, message: `${rType.toUpperCase()} report sent to ${recips.join(', ')}` });
+    }
 
     const wStartMs = new Date(startOfSiteDayISO(c.env)).getTime(), wEndMs = Date.now();
     const wStartISO = new Date(wStartMs).toISOString();
