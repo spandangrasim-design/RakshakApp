@@ -2158,7 +2158,8 @@ async function dispatchRouteCompletionReport(
     const recipSet = new Set<string>(await reportRecipients(supabase, cfg, guard));
     const dedicatedEmails = schedules.route_completion?.emails || '';
     const perRouteEmails = routeEmailsMap[String(session.round_id)] || '';
-    for (const raw of [dedicatedEmails, perRouteEmails]) {
+    const fallbackChain = dedicatedEmails || perRouteEmails ? [dedicatedEmails, perRouteEmails] : [schedules.shift?.emails, schedules.daily?.emails];
+    for (const raw of fallbackChain) {
       for (const e of String(raw || '').split(/[,;\s]+/)) {
         const ok = safeEmail(e);
         if (ok) recipSet.add(ok);
@@ -2700,8 +2701,7 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
     const ty = startTileY + dy;
     const cols = [0, 1, 2].map((dx) => {
       const tx = startTileX + dx;
-      const sub = ['a', 'b', 'c'][(tx + ty) % 3];
-      return `<td style="padding:0;margin:0;border:0;width:220px;height:150px;line-height:0;"><img src="https://${sub}.tile.openstreetmap.org/${zoom}/${tx}/${ty}.png" width="220" height="150" style="display:block;width:220px;height:150px;border:0;" alt="" /></td>`;
+      return `<td style="padding:0;margin:0;border:0;width:220px;height:150px;line-height:0;"><img src="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}" width="220" height="150" style="display:block;width:220px;height:150px;border:0;" alt="" /></td>`;
     }).join('');
     return `<tr>${cols}</tr>`;
   }).join('');
