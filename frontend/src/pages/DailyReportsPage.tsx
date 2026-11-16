@@ -115,7 +115,8 @@ export const DailyReportsPage: React.FC = () => {
   const [preview, setPreview] = useState<{ subject: string; html: string } | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  const authHeaders = localStorage.getItem('token') ? { Authorization: `Bearer ${localStorage.getItem('token')}` } : {};
+  const token = localStorage.getItem('token');
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
   const loadLog = useCallback(() => {
     fetch(`${API}/daily-reports/log`, { headers: authHeaders })
