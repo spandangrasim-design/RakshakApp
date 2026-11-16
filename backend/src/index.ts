@@ -510,7 +510,7 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 //   bought, not allocated -> 403
 // ==========================================
 
-// Public static map renderer for email clients (100% pure vector SVG so Gmail's image proxy renders every element cleanly)
+// Public static map transparent pin overlay aligned 1:1 with the 3x2 OpenStreetMap tile grid
 app.get('/api/v1/public/route-map.svg', async (c) => {
   const parsePts = (raw: string | undefined) =>
     String(raw || '')
@@ -518,8 +518,13 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
       .map((item) => item.trim())
       .filter(Boolean)
       .map((item) => {
-        const [latS, lngS, driftS] = item.split(',');
-        return { lat: Number(latS), lng: Number(lngS), drift: driftS != null ? Number(driftS) : 0 };
+        const [latS, lngS, driftS, qrIdxS] = item.split(',');
+        return {
+          lat: Number(latS),
+          lng: Number(lngS),
+          drift: driftS != null ? Number(driftS) : 0,
+          qrIdx: qrIdxS != null ? Number(qrIdxS) : -1,
+        };
       })
       .filter((p) => !Number.isNaN(p.lat) && !Number.isNaN(p.lng) && p.lat !== 0 && p.lng !== 0);
 
@@ -529,135 +534,95 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
 
   const W = 660, H = 300;
   if (all.length === 0) {
-    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#f8fafc"/><text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-family="Arial,sans-serif" font-size="14">No GPS coordinates available</text></svg>`;
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"></svg>`;
     return new Response(emptySvg, { headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
   }
 
   const centerLat = all.reduce((s, p) => s + p.lat, 0) / all.length;
   const centerLng = all.reduce((s, p) => s + p.lng, 0) / all.length;
 
-  // Convert lat/lng to local meters relative to center for true spatial proportions
-  const metersPerDegLat = 111320;
-  const metersPerDegLng = 111320 * Math.cos((centerLat * Math.PI) / 180);
+  const zoom = Number(c.req.query('z') || 17);
+  const n = Math.pow(2, zoom);
+  const exactCenterTileX = ((centerLng + 180) / 360) * n;
+  const radC = (centerLat * Math.PI) / 180;
+  const exactCenterTileY = ((1 - Math.log(Math.tan(radC) + 1 / Math.cos(radC)) / Math.PI) / 2) * n;
 
-  const toMeters = (p: { lat: number; lng: number }) => ({
-    mx: (p.lng - centerLng) * metersPerDegLng,
-    my: (p.lat - centerLat) * metersPerDegLat,
+  const startTileX = c.req.query('stx') != null ? Number(c.req.query('stx')) : Math.floor(exactCenterTileX) - 1;
+  const startTileY = c.req.query('sty') != null ? Number(c.req.query('sty')) : (exactCenterTileY - Math.floor(exactCenterTileY) < 0.5 ? Math.floor(exactCenterTileY) - 1 : Math.floor(exactCenterTileY));
+
+  // Each OSM tile is scaled to 220px wide x 150px high in the 3x2 table
+  const toX = (lng: number) => {
+    const tx = ((lng + 180) / 360) * n;
+    return Math.round((tx - startTileX) * 220);
+  };
+  const toY = (lat: number) => {
+    const rad = (lat * Math.PI) / 180;
+    const ty = ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n;
+    return Math.round((ty - startTileY) * 150);
+  };
+
+  // 50m geofence ring scaled to Web Mercator pixels at current zoom & latitude
+  const metersPerTile = (40075016.686 * Math.cos(radC)) / n;
+  const pxPerMeter = 220 / metersPerTile;
+  const ringRadiusPx = Math.max(14, Math.round(50 * pxPerMeter));
+
+  const geofenceRings = qrPts.map((p) => {
+    const x = toX(p.lng), y = toY(p.lat);
+    return `<circle cx="${x}" cy="${y}" r="${ringRadiusPx}" fill="rgba(16,185,129,0.14)" stroke="#059669" stroke-width="1.5" stroke-dasharray="4,3"/>`;
+  }).join('');
+
+  const qrPolyline = qrPts.map((p) => `${toX(p.lng)},${toY(p.lat)}`).join(' ');
+  const capPolyline = capPts.map((p) => `${toX(p.lng)},${toY(p.lat)}`).join(' ');
+
+  const driftLines: string[] = [];
+  const driftBadges: string[] = [];
+  capPts.forEach((cp, idx) => {
+    const targetIdx = cp.qrIdx >= 0 && cp.qrIdx < qrPts.length ? cp.qrIdx : (idx < qrPts.length ? idx : -1);
+    if (targetIdx < 0) return;
+    const qp = qrPts[targetIdx];
+    const x1 = toX(qp.lng), y1 = toY(qp.lat);
+    const x2 = toX(cp.lng), y2 = toY(cp.lat);
+    const distM = Math.round(cp.drift);
+    const midX = Math.round((x1 + x2) / 2);
+    const midY = Math.round((y1 + y2) / 2) + 18;
+    const labelStr = distM >= 1000 ? `${(distM / 1000).toFixed(1)}km` : `${distM}m`;
+    const badgeW = Math.max(38, labelStr.length * 7 + 10);
+    driftLines.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#dc2626" stroke-width="2" stroke-dasharray="4,3" />`);
+    driftBadges.push(`
+      <rect x="${midX - badgeW / 2}" y="${midY - 10}" width="${badgeW}" height="15" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
+      <text x="${midX}" y="${midY + 1}" text-anchor="middle" fill="#92400e" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${labelStr}</text>
+    `);
   });
 
-  const qrM = qrPts.map((p) => ({ ...p, ...toMeters(p) }));
-  const capM = capPts.map((p) => ({ ...p, ...toMeters(p) }));
-  const allM = [...qrM, ...capM];
-
-  const maxExtentM = Math.max(
-    75,
-    ...allM.map((p) => Math.max(Math.abs(p.mx), Math.abs(p.my)) * 1.45)
-  );
-  const pxPerMeter = Math.min((W - 140) / (2 * maxExtentM), (H - 90) / (2 * maxExtentM));
-
-  const toX = (mx: number) => Math.round(W / 2 + mx * pxPerMeter);
-  const toY = (my: number) => Math.round(H / 2 - my * pxPerMeter);
-
-  // Coordinate grid lines (25m / 50m / 100m intervals)
-  const gridStepM = maxExtentM > 300 ? 100 : maxExtentM > 120 ? 50 : 25;
-  let gridSvg = '';
-  for (let gx = -Math.ceil(maxExtentM / gridStepM) * gridStepM; gx <= maxExtentM; gx += gridStepM) {
-    const sx = toX(gx);
-    if (sx >= 16 && sx <= W - 16) {
-      gridSvg += `<line x1="${sx}" y1="16" x2="${sx}" y2="${H - 28}" stroke="${gx === 0 ? '#94a3b8' : '#cbd5e1'}" stroke-width="${gx === 0 ? 1.2 : 0.8}" stroke-dasharray="${gx === 0 ? 'none' : '4,4'}"/>`;
-    }
-  }
-  for (let gy = -Math.ceil(maxExtentM / gridStepM) * gridStepM; gy <= maxExtentM; gy += gridStepM) {
-    const sy = toY(gy);
-    if (sy >= 16 && sy <= H - 28) {
-      gridSvg += `<line x1="16" y1="${sy}" x2="${W - 16}" y2="${sy}" stroke="${gy === 0 ? '#94a3b8' : '#cbd5e1'}" stroke-width="${gy === 0 ? 1.2 : 0.8}" stroke-dasharray="${gy === 0 ? 'none' : '4,4'}"/>`;
-    }
-  }
-
-  // 50m allowed geofence tolerance rings around every expected QR checkpoint
-  const ringRadiusPx = Math.max(18, Math.round(50 * pxPerMeter));
-  const geofenceRings = qrM.map((p) => {
-    const x = toX(p.mx), y = toY(p.my);
-    return `<circle cx="${x}" cy="${y}" r="${ringRadiusPx}" fill="rgba(16,185,129,0.08)" stroke="#10b981" stroke-width="1.2" stroke-dasharray="4,3"/>`;
-  }).join('');
-
-  const qrPolyline = qrM.map((p) => `${toX(p.mx)},${toY(p.my)}`).join(' ');
-  const capPolyline = capM.map((p) => `${toX(p.mx)},${toY(p.my)}`).join(' ');
-
-  // Drift lines & exact meter labels between QR and Guard Capture points
-  const driftSvg = qrM.map((qp, idx) => {
-    const cp = capM[idx];
-    if (!cp) return '';
-    const x1 = toX(qp.mx), y1 = toY(qp.my);
-    const x2 = toX(cp.mx), y2 = toY(cp.my);
-    const distM = Math.round(Math.hypot(cp.mx - qp.mx, cp.my - qp.my));
-    const midX = Math.round((x1 + x2) / 2);
-    const midY = Math.round((y1 + y2) / 2) + 14;
-    return `
-      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#f59e0b" stroke-width="2.2" stroke-dasharray="4,3" />
-      <rect x="${midX - 20}" y="${midY - 10}" width="40" height="14" rx="4" fill="#fef3c7" stroke="#f59e0b" stroke-width="1"/>
-      <text x="${midX}" y="${midY}" text-anchor="middle" fill="#92400e" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${distM}m</text>
-    `;
-  }).join('');
-
-  const qrMarkers = qrM.map((p, idx) => {
-    const x = toX(p.mx), y = toY(p.my);
+  const qrMarkers = qrPts.map((p, idx) => {
+    const x = toX(p.lng), y = toY(p.lat);
     return `<g transform="translate(${x},${y})">
-      <circle r="14" fill="#059669" stroke="#ffffff" stroke-width="2.5"/>
-      <text y="3.5" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">QR${idx + 1}</text>
+      <rect x="-20" y="-11" width="40" height="20" rx="5" fill="#059669" stroke="#ffffff" stroke-width="2"/>
+      <text y="3" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9.5" font-weight="bold">QR #${idx + 1}</text>
     </g>`;
   }).join('');
 
-  const capMarkers = capM.map((p, idx) => {
-    const x = toX(p.mx), y = toY(p.my);
+  const capMarkers = capPts.map((p, idx) => {
+    const x = toX(p.lng), y = toY(p.lat);
     const far = p.drift > 50;
     const fill = far ? '#dc2626' : '#2563eb';
     return `<g transform="translate(${x},${y})">
-      <rect x="-21" y="-29" width="42" height="17" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
-      <text y="-17" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap${idx + 1}</text>
-      <circle r="4.5" fill="${fill}" stroke="#ffffff" stroke-width="1.5"/>
+      <rect x="-22" y="-31" width="44" height="18" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
+      <text y="-19" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap #${idx + 1}</text>
+      <circle r="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
     </g>`;
   }).join('');
 
-  // Scale bar width in pixels for gridStepM
-  const scalePx = Math.max(36, Math.round(gridStepM * pxPerMeter));
-
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-    <defs>
-      <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#f8fafc"/>
-        <stop offset="100%" stop-color="#eef2f6"/>
-      </linearGradient>
-    </defs>
-    <rect width="${W}" height="${H}" fill="url(#bgGrad)"/>
-    <rect x="16" y="16" width="${W - 32}" height="${H - 44}" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-    ${gridSvg}
     ${geofenceRings}
-    ${qrM.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="2.5" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
-    ${capM.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${capPolyline}" />` : ''}
-    ${driftSvg}
+    ${qrPts.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="2.5" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
+    ${capPts.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${capPolyline}" />` : ''}
+    ${driftLines.join('')}
     ${qrMarkers}
     ${capMarkers}
-
-    <!-- Compass Rose (Top Right) -->
-    <g transform="translate(${W - 44}, 44)">
-      <circle r="16" fill="#0f172a" opacity="0.88"/>
-      <text y="-4" text-anchor="middle" fill="#38bdf8" font-family="Arial,sans-serif" font-size="9" font-weight="bold">N</text>
-      <polygon points="0,-13 -3,-6 3,-6" fill="#38bdf8"/>
-      <text y="10" text-anchor="middle" fill="#94a3b8" font-family="Arial,sans-serif" font-size="7">GPS</text>
-    </g>
-
-    <!-- Bottom Status & Scale Bar -->
-    <rect x="16" y="${H - 24}" width="250" height="18" rx="4" fill="#0f172a"/>
-    <text x="24" y="${H - 12}" fill="#f8fafc" font-family="Arial,sans-serif" font-size="10" font-weight="bold">Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)}</text>
-
-    <g transform="translate(${W - 30 - scalePx}, ${H - 15})">
-      <line x1="0" y1="0" x2="${scalePx}" y2="0" stroke="#334155" stroke-width="2"/>
-      <line x1="0" y1="-4" x2="0" y2="4" stroke="#334155" stroke-width="2"/>
-      <line x1="${scalePx}" y1="-4" x2="${scalePx}" y2="4" stroke="#334155" stroke-width="2"/>
-      <text x="${scalePx / 2}" y="-4" text-anchor="middle" fill="#334155" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${gridStepM}m</text>
-    </g>
-    <text x="${W - 165 - scalePx}" y="${H - 12}" fill="#059669" font-family="Arial,sans-serif" font-size="9" font-weight="bold">● 50m Geofence Zone</text>
+    ${driftBadges.join('')}
+    <rect x="8" y="${H - 22}" width="230" height="16" rx="4" fill="rgba(15,23,42,0.82)"/>
+    <text x="14" y="${H - 11}" fill="#ffffff" font-family="Arial,sans-serif" font-size="9.5" font-weight="bold">Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)} · © OpenStreetMap</text>
   </svg>`;
 
   return new Response(svg, {
@@ -2670,25 +2635,29 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
 function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
-  const qrPts: { lat: number; lng: number }[] = [];
-  const scanPts: { lat: number; lng: number; drift?: number }[] = [];
+  const qrPts: { lat: number; lng: number; id: string }[] = [];
+  const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number }[] = [];
 
   checkpoints.forEach((cp) => {
     const lat = Number(cp.lat ?? cp.latitude);
     const lng = Number(cp.lng ?? cp.longitude);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
-      qrPts.push({ lat, lng });
+      qrPts.push({ lat, lng, id: String(cp.checkpoint_id || '') });
     }
   });
+
+  const qrIndexById = new Map<string, number>(qrPts.map((q, idx) => [q.id, idx]));
 
   scans.forEach((sc) => {
     const lat = Number(sc.guard_lat ?? sc.guard_latitude ?? sc.latitude ?? sc.lat);
     const lng = Number(sc.guard_lng ?? sc.guard_longitude ?? sc.longitude ?? sc.lng);
     if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0 && lng !== 0) {
+      const matchedIdx = qrIndexById.has(String(sc.checkpoint_id)) ? qrIndexById.get(String(sc.checkpoint_id))! : -1;
       scanPts.push({
         lat,
         lng,
         drift: sc.distance_meters != null ? Number(sc.distance_meters) : undefined,
+        qrIdx: matchedIdx,
       });
     }
   });
@@ -2698,14 +2667,50 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   }
 
   const allPts = [...qrPts, ...scanPts];
-  const centerLat = (allPts.reduce((s, p) => s + p.lat, 0) / allPts.length).toFixed(6);
-  const centerLng = (allPts.reduce((s, p) => s + p.lng, 0) / allPts.length).toFixed(6);
+  const minLat = Math.min(...allPts.map((p) => p.lat));
+  const maxLat = Math.max(...allPts.map((p) => p.lat));
+  const minLng = Math.min(...allPts.map((p) => p.lng));
+  const maxLng = Math.max(...allPts.map((p) => p.lng));
+  const centerLat = (minLat + maxLat) / 2;
+  const centerLng = (minLng + maxLng) / 2;
 
-  const qrParam = qrPts.slice(0, 25).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
-  const capParam = scanPts.slice(0, 25).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)}`).join(';');
+  // Auto-select optimal OpenStreetMap zoom (13 to 17) so all route checkpoints fit cleanly inside 660x300
+  const spanDeg = Math.max(maxLat - minLat, maxLng - minLng);
+  let zoom = 17;
+  if (spanDeg > 0.08) zoom = 12;
+  else if (spanDeg > 0.04) zoom = 13;
+  else if (spanDeg > 0.02) zoom = 14;
+  else if (spanDeg > 0.009) zoom = 15;
+  else if (spanDeg > 0.004) zoom = 16;
 
-  const mapImgUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}`;
-  const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat},${centerLng}`;
+  // Compute exact 3x2 OpenStreetMap tile grid centered on (centerLat, centerLng)
+  const n = Math.pow(2, zoom);
+  const exactTileX = ((centerLng + 180) / 360) * n;
+  const rad = (centerLat * Math.PI) / 180;
+  const exactTileY = ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n;
+
+  const centerTileX = Math.floor(exactTileX);
+  const centerTileY = Math.floor(exactTileY);
+
+  // Build 3 columns (centerTileX - 1 .. centerTileX + 1) x 2 rows (centerTileY .. centerTileY + 1) = 660x440 cropped to 660x300
+  const startTileX = centerTileX - 1;
+  const startTileY = exactTileY - centerTileY < 0.5 ? centerTileY - 1 : centerTileY;
+
+  const tileRowsHtml = [0, 1].map((dy) => {
+    const ty = startTileY + dy;
+    const cols = [0, 1, 2].map((dx) => {
+      const tx = startTileX + dx;
+      const sub = ['a', 'b', 'c'][(tx + ty) % 3];
+      return `<td style="padding:0;margin:0;border:0;width:220px;height:150px;line-height:0;"><img src="https://${sub}.tile.openstreetmap.org/${zoom}/${tx}/${ty}.png" width="220" height="150" style="display:block;width:220px;height:150px;border:0;" alt="" /></td>`;
+    }).join('');
+    return `<tr>${cols}</tr>`;
+  }).join('');
+
+  const qrParam = qrPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
+  const capParam = scanPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)},${p.qrIdx}`).join(';');
+
+  const overlayUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}&z=${zoom}&stx=${startTileX}&sty=${startTileY}`;
+  const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat.toFixed(6)},${centerLng.toFixed(6)}`;
 
   return `
     <div style="margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;background:#ffffff;">
@@ -2717,8 +2722,13 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
         <span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#2563eb;color:#fff;font-weight:bold;margin:0 8px;">Cap #</span> Guard Capture (${scanPts.length})
         <a href="${gmapsRouteUrl}" target="_blank" style="float:right;color:#2563eb;font-weight:bold;text-decoration:none;">Open in Google Maps ↗</a>
       </div>
-      <div style="padding:10px;text-align:center;background:#f1f5f9;">
-        <img src="${mapImgUrl}" alt="Patrol Route GPS Map" width="660" height="300" style="width:100%;max-width:660px;height:auto;border-radius:8px;border:1px solid #cbd5e1;display:block;margin:0 auto;" />
+      <div style="padding:10px;background:#f1f5f9;overflow-x:auto;">
+        <div style="width:660px;height:300px;margin:0 auto;border-radius:8px;overflow:hidden;border:1px solid #cbd5e1;background:#e2e8f0;">
+          <table cellpadding="0" cellspacing="0" border="0" style="width:660px;height:300px;border-collapse:collapse;table-layout:fixed;">
+            ${tileRowsHtml}
+          </table>
+          <img src="${overlayUrl}" width="660" height="300" alt="Patrol Route GPS Overlay" style="display:block;width:660px;height:300px;margin-top:-300px;position:relative;" />
+        </div>
       </div>
     </div>
   `;
