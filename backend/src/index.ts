@@ -510,7 +510,7 @@ function extractGuardCoordsFromScan(scan: any): { lat: number; lng: number } {
 //   bought, not allocated -> 403
 // ==========================================
 
-// Public static map renderer for email clients (Gmail image proxy fetches this URL directly)
+// Public static map renderer for email clients (100% pure vector SVG so Gmail's image proxy renders every element cleanly)
 app.get('/api/v1/public/route-map.svg', async (c) => {
   const parsePts = (raw: string | undefined) =>
     String(raw || '')
@@ -529,97 +529,135 @@ app.get('/api/v1/public/route-map.svg', async (c) => {
 
   const W = 660, H = 300;
   if (all.length === 0) {
-    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#f1f5f9"/><text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-family="Arial,sans-serif" font-size="14">No GPS coordinates available</text></svg>`;
-    return new Response(emptySvg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } });
+    const emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#f8fafc"/><text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-family="Arial,sans-serif" font-size="14">No GPS coordinates available</text></svg>`;
+    return new Response(emptySvg, { headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=86400' } });
   }
 
   const centerLat = all.reduce((s, p) => s + p.lat, 0) / all.length;
   const centerLng = all.reduce((s, p) => s + p.lng, 0) / all.length;
 
-  // Web Mercator projection at zoom 17 so real CartoDB street map tiles align 1:1 with GPS pins!
-  const zoom = 17;
-  const n = Math.pow(2, zoom);
-  const lngToWorldX = (lng: number) => ((lng + 180) / 360) * n * 256;
-  const latToWorldY = (lat: number) => {
-    const rad = (lat * Math.PI) / 180;
-    return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n * 256;
-  };
+  // Convert lat/lng to local meters relative to center for true spatial proportions
+  const metersPerDegLat = 111320;
+  const metersPerDegLng = 111320 * Math.cos((centerLat * Math.PI) / 180);
 
-  const cWorldX = lngToWorldX(centerLng);
-  const cWorldY = latToWorldY(centerLat);
-  const topLeftWorldX = cWorldX - W / 2;
-  const topLeftWorldY = cWorldY - H / 2;
+  const toMeters = (p: { lat: number; lng: number }) => ({
+    mx: (p.lng - centerLng) * metersPerDegLng,
+    my: (p.lat - centerLat) * metersPerDegLat,
+  });
 
-  const toScreenX = (lng: number) => Math.round(lngToWorldX(lng) - topLeftWorldX);
-  const toScreenY = (lat: number) => Math.round(latToWorldY(lat) - topLeftWorldY);
+  const qrM = qrPts.map((p) => ({ ...p, ...toMeters(p) }));
+  const capM = capPts.map((p) => ({ ...p, ...toMeters(p) }));
+  const allM = [...qrM, ...capM];
 
-  // Fetch surrounding 256x256 CartoDB Voyager street tiles and embed as base64 data URIs
-  const minTileX = Math.floor(topLeftWorldX / 256);
-  const maxTileX = Math.floor((topLeftWorldX + W) / 256);
-  const minTileY = Math.floor(topLeftWorldY / 256);
-  const maxTileY = Math.floor((topLeftWorldY + H) / 256);
+  const maxExtentM = Math.max(
+    75,
+    ...allM.map((p) => Math.max(Math.abs(p.mx), Math.abs(p.my)) * 1.45)
+  );
+  const pxPerMeter = Math.min((W - 140) / (2 * maxExtentM), (H - 90) / (2 * maxExtentM));
 
-  const tilePromises: Promise<string>[] = [];
-  for (let tx = minTileX; tx <= maxTileX; tx++) {
-    for (let ty = minTileY; ty <= maxTileY; ty++) {
-      const drawX = Math.round(tx * 256 - topLeftWorldX);
-      const drawY = Math.round(ty * 256 - topLeftWorldY);
-      const tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}`;
-      tilePromises.push(
-        fetch(tileUrl, { headers: { 'User-Agent': 'RakshakSecurityMap/1.0' } })
-          .then(async (res) => {
-            if (!res.ok) return '';
-            const buf = await res.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let bin = '';
-            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-            return `<image href="data:image/png;base64,${btoa(bin)}" x="${drawX}" y="${drawY}" width="256" height="256" />`;
-          })
-          .catch(() => '')
-      );
+  const toX = (mx: number) => Math.round(W / 2 + mx * pxPerMeter);
+  const toY = (my: number) => Math.round(H / 2 - my * pxPerMeter);
+
+  // Coordinate grid lines (25m / 50m / 100m intervals)
+  const gridStepM = maxExtentM > 300 ? 100 : maxExtentM > 120 ? 50 : 25;
+  let gridSvg = '';
+  for (let gx = -Math.ceil(maxExtentM / gridStepM) * gridStepM; gx <= maxExtentM; gx += gridStepM) {
+    const sx = toX(gx);
+    if (sx >= 16 && sx <= W - 16) {
+      gridSvg += `<line x1="${sx}" y1="16" x2="${sx}" y2="${H - 28}" stroke="${gx === 0 ? '#94a3b8' : '#cbd5e1'}" stroke-width="${gx === 0 ? 1.2 : 0.8}" stroke-dasharray="${gx === 0 ? 'none' : '4,4'}"/>`;
     }
   }
-  const tileImages = (await Promise.all(tilePromises)).join('');
+  for (let gy = -Math.ceil(maxExtentM / gridStepM) * gridStepM; gy <= maxExtentM; gy += gridStepM) {
+    const sy = toY(gy);
+    if (sy >= 16 && sy <= H - 28) {
+      gridSvg += `<line x1="16" y1="${sy}" x2="${W - 16}" y2="${sy}" stroke="${gy === 0 ? '#94a3b8' : '#cbd5e1'}" stroke-width="${gy === 0 ? 1.2 : 0.8}" stroke-dasharray="${gy === 0 ? 'none' : '4,4'}"/>`;
+    }
+  }
 
-  const qrPolyline = qrPts.map((p) => `${toScreenX(p.lng)},${toScreenY(p.lat)}`).join(' ');
-  const capPolyline = capPts.map((p) => `${toScreenX(p.lng)},${toScreenY(p.lat)}`).join(' ');
-
-  // Draw dashed drift lines connecting matching QR and Guard Capture points
-  const driftLines = qrPts.map((qp, idx) => {
-    const cp = capPts[idx];
-    if (!cp) return '';
-    return `<line x1="${toScreenX(qp.lng)}" y1="${toScreenY(qp.lat)}" x2="${toScreenX(cp.lng)}" y2="${toScreenY(cp.lat)}" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,3" />`;
+  // 50m allowed geofence tolerance rings around every expected QR checkpoint
+  const ringRadiusPx = Math.max(18, Math.round(50 * pxPerMeter));
+  const geofenceRings = qrM.map((p) => {
+    const x = toX(p.mx), y = toY(p.my);
+    return `<circle cx="${x}" cy="${y}" r="${ringRadiusPx}" fill="rgba(16,185,129,0.08)" stroke="#10b981" stroke-width="1.2" stroke-dasharray="4,3"/>`;
   }).join('');
 
-  const qrMarkers = qrPts.map((p, idx) => {
-    const x = toScreenX(p.lng), y = toScreenY(p.lat);
+  const qrPolyline = qrM.map((p) => `${toX(p.mx)},${toY(p.my)}`).join(' ');
+  const capPolyline = capM.map((p) => `${toX(p.mx)},${toY(p.my)}`).join(' ');
+
+  // Drift lines & exact meter labels between QR and Guard Capture points
+  const driftSvg = qrM.map((qp, idx) => {
+    const cp = capM[idx];
+    if (!cp) return '';
+    const x1 = toX(qp.mx), y1 = toY(qp.my);
+    const x2 = toX(cp.mx), y2 = toY(cp.my);
+    const distM = Math.round(Math.hypot(cp.mx - qp.mx, cp.my - qp.my));
+    const midX = Math.round((x1 + x2) / 2);
+    const midY = Math.round((y1 + y2) / 2) + 14;
+    return `
+      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#f59e0b" stroke-width="2.2" stroke-dasharray="4,3" />
+      <rect x="${midX - 20}" y="${midY - 10}" width="40" height="14" rx="4" fill="#fef3c7" stroke="#f59e0b" stroke-width="1"/>
+      <text x="${midX}" y="${midY}" text-anchor="middle" fill="#92400e" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${distM}m</text>
+    `;
+  }).join('');
+
+  const qrMarkers = qrM.map((p, idx) => {
+    const x = toX(p.mx), y = toY(p.my);
     return `<g transform="translate(${x},${y})">
-      <circle r="13" fill="#059669" stroke="#ffffff" stroke-width="2.5"/>
-      <text y="4" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">QR${idx + 1}</text>
+      <circle r="14" fill="#059669" stroke="#ffffff" stroke-width="2.5"/>
+      <text y="3.5" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">QR${idx + 1}</text>
     </g>`;
   }).join('');
 
-  const capMarkers = capPts.map((p, idx) => {
-    const x = toScreenX(p.lng), y = toScreenY(p.lat);
+  const capMarkers = capM.map((p, idx) => {
+    const x = toX(p.mx), y = toY(p.my);
     const far = p.drift > 50;
     const fill = far ? '#dc2626' : '#2563eb';
     return `<g transform="translate(${x},${y})">
-      <rect x="-20" y="-28" width="40" height="17" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
-      <text y="-16" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap${idx + 1}</text>
-      <circle r="4" fill="${fill}" stroke="#ffffff" stroke-width="1.5"/>
+      <rect x="-21" y="-29" width="42" height="17" rx="5" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
+      <text y="-17" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="9" font-weight="bold">Cap${idx + 1}</text>
+      <circle r="4.5" fill="${fill}" stroke="#ffffff" stroke-width="1.5"/>
     </g>`;
   }).join('');
 
+  // Scale bar width in pixels for gridStepM
+  const scalePx = Math.max(36, Math.round(gridStepM * pxPerMeter));
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-    <rect width="${W}" height="${H}" fill="#e2e8f0"/>
-    ${tileImages}
-    ${qrPts.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="3" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
-    ${capPts.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="3" points="${capPolyline}" />` : ''}
-    ${driftLines}
+    <defs>
+      <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#f8fafc"/>
+        <stop offset="100%" stop-color="#eef2f6"/>
+      </linearGradient>
+    </defs>
+    <rect width="${W}" height="${H}" fill="url(#bgGrad)"/>
+    <rect x="16" y="16" width="${W - 32}" height="${H - 44}" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+    ${gridSvg}
+    ${geofenceRings}
+    ${qrM.length > 1 ? `<polyline fill="none" stroke="#059669" stroke-width="2.5" stroke-dasharray="6,4" points="${qrPolyline}" />` : ''}
+    ${capM.length > 1 ? `<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="${capPolyline}" />` : ''}
+    ${driftSvg}
     ${qrMarkers}
     ${capMarkers}
-    <rect x="8" y="${H - 24}" width="210" height="18" rx="4" fill="rgba(15,23,42,0.75)"/>
-    <text x="14" y="${H - 12}" fill="#ffffff" font-family="Arial,sans-serif" font-size="10" font-weight="bold">Center: ${centerLat}, ${centerLng}</text>
+
+    <!-- Compass Rose (Top Right) -->
+    <g transform="translate(${W - 44}, 44)">
+      <circle r="16" fill="#0f172a" opacity="0.88"/>
+      <text y="-4" text-anchor="middle" fill="#38bdf8" font-family="Arial,sans-serif" font-size="9" font-weight="bold">N</text>
+      <polygon points="0,-13 -3,-6 3,-6" fill="#38bdf8"/>
+      <text y="10" text-anchor="middle" fill="#94a3b8" font-family="Arial,sans-serif" font-size="7">GPS</text>
+    </g>
+
+    <!-- Bottom Status & Scale Bar -->
+    <rect x="16" y="${H - 24}" width="250" height="18" rx="4" fill="#0f172a"/>
+    <text x="24" y="${H - 12}" fill="#f8fafc" font-family="Arial,sans-serif" font-size="10" font-weight="bold">Center: ${centerLat.toFixed(5)}, ${centerLng.toFixed(5)}</text>
+
+    <g transform="translate(${W - 30 - scalePx}, ${H - 15})">
+      <line x1="0" y1="0" x2="${scalePx}" y2="0" stroke="#334155" stroke-width="2"/>
+      <line x1="0" y1="-4" x2="0" y2="4" stroke="#334155" stroke-width="2"/>
+      <line x1="${scalePx}" y1="-4" x2="${scalePx}" y2="4" stroke="#334155" stroke-width="2"/>
+      <text x="${scalePx / 2}" y="-4" text-anchor="middle" fill="#334155" font-family="Arial,sans-serif" font-size="9" font-weight="bold">${gridStepM}m</text>
+    </g>
+    <text x="${W - 165 - scalePx}" y="${H - 12}" fill="#059669" font-family="Arial,sans-serif" font-size="9" font-weight="bold">● 50m Geofence Zone</text>
   </svg>`;
 
   return new Response(svg, {
