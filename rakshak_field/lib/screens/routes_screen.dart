@@ -98,6 +98,9 @@ class _RoutesScreenState extends State<RoutesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final completedCount = _routes.where((r) => r['status'] == 'DONE').length;
+    final activeCount = _routes.where((r) => r['status'] == 'IN_PROGRESS' || r['status'] == 'PAUSED').length;
+
     return Scaffold(
       appBar: AppBar(
         surfaceTintColor: Colors.transparent,
@@ -142,6 +145,42 @@ class _RoutesScreenState extends State<RoutesScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFFFFFFFF), Color(0xFFF0F6FF)],
+                      ),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFFE2EAF4)),
+                      boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 18, offset: const Offset(0, 5))],
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(child: _RouteSummaryMetric(label: 'Assigned routes', value: '${_routes.length}', icon: Icons.route_rounded, color: const Color(0xFF245BDB))),
+                        Container(width: 1, height: 42, color: const Color(0xFFE2EAF4)),
+                        const SizedBox(width: 12),
+                        Expanded(child: _RouteSummaryMetric(label: 'Completed today', value: '$completedCount', icon: Icons.check_circle_outline_rounded, color: const Color(0xFF12805C))),
+                        Container(width: 1, height: 42, color: const Color(0xFFE2EAF4)),
+                        const SizedBox(width: 12),
+                        Expanded(child: _RouteSummaryMetric(label: 'In progress', value: '$activeCount', icon: Icons.timelapse_rounded, color: const Color(0xFFB7791F))),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_error != null && _routes.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+                    child: Container(
+                      padding: const EdgeInsets.all(11),
+                      decoration: BoxDecoration(color: const Color(0xFFFFF7E8), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFF4D7A0))),
+                      child: Row(children: [const Icon(Icons.cloud_off_rounded, size: 17, color: Color(0xFF9A6700)), const SizedBox(width: 8), Expanded(child: Text('Showing last synced routes. ${_error!}', style: const TextStyle(fontSize: 11, color: Color(0xFF8A5A00))))]),
+                    ),
+                  ),
                 if (Session.can('report_incident') && Session.formFields.where((f) => f != 'group').isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(14, 12, 14, 2),
@@ -223,6 +262,27 @@ class _RoutesScreenState extends State<RoutesScreen> {
   }
 }
 
+class _RouteSummaryMetric extends StatelessWidget {
+  final String label;
+  final String value;
+  final IconData icon;
+  final Color color;
+
+  const _RouteSummaryMetric({required this.label, required this.value, required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [Icon(icon, size: 14, color: color), const SizedBox(width: 5), Expanded(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, color: Color(0xFF718198))))]),
+        const SizedBox(height: 6),
+        Text(value, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w900, color: Color(0xFF172B4D), letterSpacing: -.5)),
+      ],
+    );
+  }
+}
+
 class _RouteCard extends StatelessWidget {
   final Map<String, dynamic> route;
   final VoidCallback onTap;
@@ -289,41 +349,61 @@ class _RouteCard extends StatelessWidget {
       detail = '$total checkpoint${total == 1 ? '' : 's'}';
     }
 
+    final double progress = total <= 0 ? 0.0 : (done / total).clamp(0.0, 1.0).toDouble();
     return Material(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(18),
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.grey.shade200),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE3EAF4)),
+            boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.035), blurRadius: 14, offset: const Offset(0, 4))],
           ),
           child: Row(
             children: [
-              Icon(icon, color: color, size: 30),
-              const SizedBox(width: 12),
+              Container(
+                height: 46,
+                width: 46,
+                decoration: BoxDecoration(color: color.withOpacity(.10), borderRadius: BorderRadius.circular(14)),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(width: 13),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(route['name'].toString(),
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 2),
-                    Text(detail, style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                    Row(
+                      children: [
+                        Expanded(child: Text(route['name'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF172B4D)))),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                          decoration: BoxDecoration(color: color.withOpacity(.10), borderRadius: BorderRadius.circular(30)),
+                          child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 10)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, height: 1.3, color: Color(0xFF718198))),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(20), child: LinearProgressIndicator(value: progress, minHeight: 5, backgroundColor: const Color(0xFFEAF0F7), valueColor: AlwaysStoppedAnimation<Color>(color)))),
+                        const SizedBox(width: 9),
+                        Text('$done/$total', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF52647C))),
+                      ],
+                    ),
                   ],
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 12)),
-              ),
+              const SizedBox(width: 7),
+              const Icon(Icons.chevron_right_rounded, color: Color(0xFF9AA8BA), size: 21),
             ],
           ),
         ),

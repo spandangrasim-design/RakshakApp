@@ -45,6 +45,19 @@ class RakshakTheme {
         ),
         iconTheme: IconThemeData(color: navy),
       ),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: blue,
+        foregroundColor: Colors.white,
+        elevation: 2,
+        focusElevation: 3,
+        hoverElevation: 3,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      textSelectionTheme: const TextSelectionThemeData(
+        cursorColor: blue,
+        selectionColor: Color(0x33245BDB),
+        selectionHandleColor: blue,
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0xFFFBFCFE),

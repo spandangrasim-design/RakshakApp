@@ -1,49 +1,69 @@
-# Rakshak light-premium redesign notes
+# Rakshak light-premium redesign — page-level pass
 
 ## Visual direction
 
-- Light canvas with white surfaces, soft borders, restrained shadows, and clear spacing.
-- Rakshak blue for primary actions and active navigation; deep navy for headings and structure.
-- Rounded, high-contrast cards and consistent form controls.
-- Camera and QR scanning views retain dark surfaces where contrast is important for the scanner experience.
+- Light canvas, crisp white surfaces, soft blue-tinted page headers, restrained shadows, and clearer spacing.
+- Rakshak blue for primary actions and active states; deep navy for structural emphasis and headings.
+- Consistent typography hierarchy, pill-style state labels, improved tables, clearer data density, and refined form controls.
+- Mobile interfaces prioritise large operational touch targets and clear patrol progress.
+- Camera and QR scanning views retain dark surfaces where contrast is important.
 
-## Updated areas
+## Web administration console (`frontend/`)
 
-### Web administration console (`frontend/`)
+The active administration console is `frontend/`. This pass adds `src/rakshak-pages.css`, imported by `src/main.tsx`, and scoped page classes so the redesign reaches the actual inner pages rather than only the login and shell.
 
-- Added a shared light-premium design layer in `src/index.css`.
-- Refined the application shell: sidebar, brand block, navigation links, sticky top bar, and page canvas.
-- Redesigned the administrator login experience with brand-led panel, clearer credential fields, and mobile layout.
-- Added scoped dashboard hooks to keep future page-level polish consistent.
+Updated pages:
 
-### Guard mobile app (`rakshak_mobile/`)
+- **Overview:** elevated KPI cards, calmer hierarchy, and consistent dashboard surfaces.
+- **Incident queue:** redesigned page header, KPI tiles, search/filter area, case table headings, row spacing, and pagination surface.
+- **Incident dispatch detail:** light branded case header, clearer case identity and priority treatment, and refined classification/resolution cards.
+- **Patrol audit/reports:** upgraded KPI cards, filter controls, tables, and audit surfaces.
+- **Workforce / guards:** redesigned page header, workforce metrics, group filters, search toolbar, and personnel table.
+- **Routes & QR manager:** cleaner round-builder panels, checkpoint sections, and rounds table.
+- **Daily shift reports:** stronger reporting header, scheduled report cards, delivery settings, dispatch log, and sticky save area.
+- **Integrations:** wider settings layout, lighter title panel, and cleaner integration cards.
+- **Industries / entitlements:** clearer industry selector, branding editor, and module configuration cards.
 
-- Added `lib/rakshak_theme.dart` as the shared Material 3 light theme.
-- Redesigned the employee login screen and added the Rakshak logo asset.
-- Switched operational app bars to light surfaces while preserving the dark camera/scanner screens.
-- Standardised the main app canvas and common buttons, inputs, snackbars, and navigation styling through the app theme.
+## Guard mobile app (`rakshak_mobile/`)
 
-### Field app (`rakshak_field/`)
+- Kept the shared Material 3 light theme and refined floating-action and text-selection treatments.
+- Redesigned the dashboard officer identity panel and shift control panel.
+- Rebuilt action tiles with clearer icon hierarchy, supporting text, and affordance.
+- Improved incident ticket tabs and cards.
+- Refreshed activity-log summary metrics and scan history surfaces.
+- Refined patrol route selection chips and checkpoint card surfaces.
 
-- Added the same Material 3 light theme and brand asset.
-- Redesigned the first-run site join/onboarding experience.
-- Refined the route-list app bar and common controls through the shared theme.
+## Field app (`rakshak_field/`)
+
+- Retained the shared light theme and onboarding identity.
+- Added a route overview panel with assigned, completed, and in-progress counts.
+- Refined route cards with status pills, checkpoint progress bars, and clearer supporting details.
+- Upgraded the active-run progress panel with verified checkpoint count, percentage, and paused/in-progress states.
 
 ## Functionality intentionally preserved
 
-The redesign was limited to presentation, theme, and asset registration. Existing API clients, service classes, request paths, local storage, offline queue, authentication flows, permission checks, tenant/industry selection, and role-based module gating were left in place.
+The redesign changes presentation and derived display-only values. Existing API clients, request paths, authentication flows, token handling, offline queue, route/incident actions, QR verification, local storage, tenant/industry selection, server permission checks, and role/module gates were not intentionally changed. No backend or SQL files were edited in this page-level pass.
 
 ## Validation performed
 
-- TypeScript/TSX syntax parsing completed for all 21 files under `frontend/src` with no syntax diagnostics.
-- Basic delimiter-balance validation completed for all 36 Dart files.
-- Full frontend build could not be completed in this environment because `npm ci` could not fetch packages from the npm registry (network resolution error).
-- Flutter/Dart SDKs are not installed in this environment, so `flutter analyze` and platform builds could not be run here. Run the commands in the root README on your development machine before deployment.
+- TypeScript/TSX syntax parsing: all 21 files under `frontend/src` parsed with zero syntax diagnostics.
+- CSS parsing: `src/rakshak-pages.css` parsed with zero syntax errors.
+- Dart delimiter-balance scan: all Dart source files in both Flutter projects were checked; a delimiter scan is not a substitute for `dart analyze`.
+- Full frontend dependency build was not available because this environment has no installed `node_modules` and package registry access is unavailable.
+- Flutter/Dart SDKs are not installed in this environment, so `flutter analyze`, Android builds, and iOS builds could not be run here.
+
+Run the following on your development machine before replacing the existing deployment:
+
+```bash
+cd frontend && npm ci && npm run build
+cd ../rakshak_mobile && flutter pub get && flutter analyze && flutter build apk --release
+cd ../rakshak_field && flutter pub get && flutter analyze && flutter build apk --release
+```
 
 ## Credential handling
 
-The source upload included a root `.env` with environment credentials. To avoid redistributing secrets, the redesigned archive omits `.env` and `frontend/.env.production`, and includes only placeholder templates. Restore values locally from your secret manager. Rotate any production credentials from the uploaded `.env` if they are active and you consider the upload exposure outside your intended security boundary.
+The original source upload contained environment credentials. The redesigned archive excludes populated `.env` files and includes placeholder templates only. Restore secrets locally from your secret manager. Rotate any production credentials that were present in the uploaded archive if they are active.
 
 ## Repository note
 
-The separate `rakshak_admin/` directory is an untouched Vite/React starter template according to its own README. The active administration console in this repository is `frontend/`, which is the web app updated in this redesign. The backend folder and SQL scripts were also left unchanged.
+`rakshak_admin/` is a separate starter template and was left unchanged; the active administration console is `frontend/`. Backend services and SQL scripts were also left unchanged.

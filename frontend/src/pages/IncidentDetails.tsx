@@ -484,7 +484,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const initialPhotoUrl = getSecureMediaUrl(incident.photo_url);
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] font-sans text-xs text-slate-800 pb-12">
+    <div className="rk-page rk-page-incident-details min-h-screen bg-[#f8fafc] font-sans text-xs text-slate-800 pb-12">
       {/* Clean Rakshak SOC Command Header Bar */}
       <div className="bg-slate-900 text-white px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">

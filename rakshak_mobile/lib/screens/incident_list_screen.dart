@@ -104,11 +104,12 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
           surfaceTintColor: Colors.transparent,
           elevation: 0,
           bottom: TabBar(
-            indicatorColor: const Color(0xFF245BDB),
-            indicatorWeight: 3,
+            indicator: BoxDecoration(color: const Color(0xFFEDF4FF), borderRadius: BorderRadius.circular(12)),
+            indicatorPadding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
+            dividerColor: Colors.transparent,
             labelColor: const Color(0xFF245BDB),
             unselectedLabelColor: const Color(0xFF7B8AA0),
-            labelStyle: const TextStyle(fontWeight: FontWeight.bold),
+            labelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
             tabs: [
               Tab(text: 'Active (${activeIncidents.length})'),
               Tab(text: 'Resolved (${resolvedIncidents.length})'),
@@ -172,7 +173,7 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
     return RefreshIndicator(
       onRefresh: _loadAllIncidents,
       child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 80),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
         itemCount: incidents.length,
         itemBuilder: (context, index) {
           final incident = incidents[index] as Map<String, dynamic>;
@@ -189,16 +190,16 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
                   .toString();
 
           return Container(
-            margin: const EdgeInsets.only(bottom: 12),
+            margin: const EdgeInsets.only(bottom: 14),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
+              gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFCFDFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFFE3EAF4)),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.02),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
+                  color: const Color(0xFF17345F).withOpacity(.045),
+                  blurRadius: 16,
+                  offset: const Offset(0, 5),
                 ),
               ],
             ),

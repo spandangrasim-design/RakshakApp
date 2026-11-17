@@ -380,93 +380,166 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Welcome Profile Card
+                    // Premium officer identity panel
                     Container(
-                      padding: const EdgeInsets.all(18),
+                      padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFF17345F), Color(0xFF245BDB)],
+                        ),
+                        borderRadius: BorderRadius.circular(22),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.03),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
+                            color: const Color(0xFF245BDB).withOpacity(0.18),
+                            blurRadius: 24,
+                            offset: const Offset(0, 10),
                           ),
                         ],
                       ),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          CircleAvatar(
-                            radius: 26,
-                            backgroundColor: const Color(0xFF1E3A8A).withOpacity(0.1),
-                            child: const Icon(Icons.shield_outlined, size: 28, color: Color(0xFF1E3A8A)),
+                          Row(
+                            children: [
+                              Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.14),
+                                  borderRadius: BorderRadius.circular(15),
+                                  border: Border.all(color: Colors.white.withOpacity(0.22)),
+                                ),
+                                child: const Icon(Icons.shield_rounded, size: 26, color: Colors.white),
+                              ),
+                              const SizedBox(width: 13),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'WELCOME BACK',
+                                      style: TextStyle(
+                                        color: Colors.white.withOpacity(0.72),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 1.25,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      _guardName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: Colors.white),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(30),
+                                  border: Border.all(color: Colors.white.withOpacity(0.2)),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.verified_user_outlined, size: 13, color: Colors.white),
+                                    SizedBox(width: 5),
+                                    Text('RAKSHAK', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800, letterSpacing: .7)),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'On-Duty Security Officer',
-                                  style: TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.w600),
+                          const SizedBox(height: 18),
+                          Row(
+                            children: [
+                              Icon(Icons.badge_outlined, size: 15, color: Colors.white.withOpacity(.75)),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  _guardId.isNotEmpty ? 'Officer ID  $_guardId' : 'Security Operations',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: Colors.white.withOpacity(.82), fontSize: 11, fontWeight: FontWeight.w600),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  _guardName,
-                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-                                ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                MaterialLocalizations.of(context).formatShortDate(DateTime.now()),
+                                style: TextStyle(color: Colors.white.withOpacity(.72), fontSize: 11, fontWeight: FontWeight.w600),
+                              ),
+                            ],
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 14),
 
-                    // Shift Status Banner
+                    // Shift control panel
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: _isShiftActive ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _isShiftActive ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
-                        ),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFE3EAF4)),
+                        boxShadow: [
+                          BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 16, offset: const Offset(0, 5)),
+                        ],
                       ),
                       child: Row(
                         children: [
-                          Icon(
-                            _isShiftActive ? Icons.check_circle : Icons.pause_circle_filled,
-                            color: _isShiftActive ? Colors.green.shade700 : Colors.amber.shade800,
+                          Container(
+                            height: 42,
+                            width: 42,
+                            decoration: BoxDecoration(
+                              color: _isShiftActive ? const Color(0xFFEAF8F1) : const Color(0xFFFFF6E5),
+                              borderRadius: BorderRadius.circular(13),
+                            ),
+                            child: Icon(
+                              _isShiftActive ? Icons.check_circle_rounded : Icons.pause_circle_filled_rounded,
+                              color: _isShiftActive ? const Color(0xFF12805C) : const Color(0xFFB7791F),
+                            ),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Text(
-                              _isShiftActive ? 'Active Patrol Shift' : 'Off-Duty (No Active Shift)',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w700,
-                                color: _isShiftActive ? Colors.green.shade900 : Colors.amber.shade900,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _isShiftActive ? 'You are on duty' : 'You are off duty',
+                                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF172B4D)),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _isShiftActive ? 'Your patrol shift is active' : 'Start your shift to begin patrol operations',
+                                  style: const TextStyle(fontSize: 11, color: Color(0xFF718198)),
+                                ),
+                              ],
                             ),
                           ),
-                          ElevatedButton(
+                          const SizedBox(width: 8),
+                          FilledButton(
                             onPressed: _isShiftLoading ? null : _toggleShift,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _isShiftActive ? Colors.red.shade600 : const Color(0xFF1E3A8A),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _isShiftActive ? const Color(0xFFB42318) : const Color(0xFF245BDB),
                               foregroundColor: Colors.white,
                               elevation: 0,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                             ),
                             child: _isShiftLoading
                                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : Text(_isShiftActive ? 'End Shift' : 'Start Shift', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                : Text(_isShiftActive ? 'End Shift' : 'Start Shift', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 22),
 
                     // Active Tickets Preview (Only renders if tickets module is licensed)
                     if (canViewTickets && !_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty) ...[
@@ -508,10 +581,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
 
                     const Text(
-                      'Patrol Actions',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                      'Operations',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF172B4D), letterSpacing: -.3),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 3),
+                    const Text(
+                      'Quick access to your assigned security activities',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF718198), fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 13),
 
                     // Dynamic Grid: Contains only active, licensed cards
                     GridView.count(
@@ -520,7 +598,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       crossAxisCount: 2,
                       crossAxisSpacing: 14,
                       mainAxisSpacing: 14,
-                      childAspectRatio: 1.15,
+                      childAspectRatio: 1.02,
                       children: activeCards,
                     ),
                   ],
@@ -542,39 +620,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }) {
     return Material(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(19),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(19),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(15),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
+            borderRadius: BorderRadius.circular(19),
+            border: Border.all(color: const Color(0xFFE3EAF4)),
             boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.02),
-                blurRadius: 8,
-                offset: const Offset(0, 3),
-              ),
+              BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 16, offset: const Offset(0, 5)),
             ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              CircleAvatar(
-                radius: 21,
-                backgroundColor: color.withOpacity(0.12),
-                child: Icon(icon, color: color, size: 22),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                    width: 43,
+                    height: 43,
+                    decoration: BoxDecoration(color: color.withOpacity(.10), borderRadius: BorderRadius.circular(14)),
+                    child: Icon(icon, color: color, size: 23),
+                  ),
+                  Container(
+                    width: 27,
+                    height: 27,
+                    decoration: BoxDecoration(color: const Color(0xFFF4F7FC), borderRadius: BorderRadius.circular(9)),
+                    child: const Icon(Icons.arrow_outward_rounded, size: 15, color: Color(0xFF718198)),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              Text(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF0F172A)),
+              const SizedBox(height: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: Color(0xFF172B4D))),
+                  const SizedBox(height: 3),
+                  Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10.5, height: 1.3, color: Color(0xFF718198))),
+                ],
               ),
-              const SizedBox(height: 2),
-              Text(subtitle, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
             ],
           ),
         ),

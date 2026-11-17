@@ -673,7 +673,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                 if (_assignedRoutes.length > 1)
                   Container(
                     width: double.infinity,
-                    color: const Color(0xFF0F172A),
+                    color: const Color(0xFFF1F6FC),
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 12),
                     child: SingleChildScrollView(
@@ -698,14 +698,12 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 14, vertical: 9),
                                 decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? const Color(0xFF2563EB)
-                                      : const Color(0xFF1E293B),
-                                  borderRadius: BorderRadius.circular(10),
+                                  color: isSelected ? const Color(0xFF245BDB) : Colors.white,
+                                  borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
                                     color: isSelected
-                                        ? Colors.white
-                                        : const Color(0xFF475569),
+                                        ? const Color(0xFF245BDB)
+                                        : const Color(0xFFE0E8F2),
                                     width: isSelected ? 1.5 : 1,
                                   ),
                                 ),
@@ -719,7 +717,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                       size: 15,
                                       color: isSelected
                                           ? Colors.white
-                                          : const Color(0xFF94A3B8),
+                                          : const Color(0xFF718198),
                                     ),
                                     const SizedBox(width: 6),
                                     Text(
@@ -727,7 +725,7 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                       style: TextStyle(
                                         color: isSelected
                                             ? Colors.white
-                                            : const Color(0xFFE2E8F0),
+                                            : const Color(0xFF52647C),
                                         fontWeight: isSelected
                                             ? FontWeight.bold
                                             : FontWeight.w500,
@@ -747,10 +745,14 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(20),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF1E3A8A),
-                    borderRadius:
-                        BorderRadius.vertical(bottom: Radius.circular(24)),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF17345F), Color(0xFF245BDB)],
+                    ),
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
+                    boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.13), blurRadius: 18, offset: const Offset(0, 7))],
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -857,15 +859,16 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
                                 color: isUnlocked || isDone
                                     ? Colors.white
                                     : Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(14),
+                                borderRadius: BorderRadius.circular(17),
                                 border: Border.all(
                                   color: isDone
                                       ? Colors.green.shade400
                                       : isUnlocked
                                           ? Colors.blue.shade200
                                           : Colors.grey.shade300,
-                                  width: isDone || isUnlocked ? 1.5 : 1,
+                                  width: isDone || isUnlocked ? 1.4 : 1,
                                 ),
+                                boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.035), blurRadius: 13, offset: const Offset(0, 4))],
                               ),
                               child: Row(
                                 children: [

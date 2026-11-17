@@ -782,7 +782,7 @@ export const ReportsPage: React.FC = () => {
   const totalScansCount = filteredRuns.reduce((acc, r) => acc + r.scans.length, 0);
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans text-slate-800">
+    <div className="rk-page rk-page-reports min-h-screen bg-[#f8fafc] p-6 font-sans text-slate-800">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Top Header & Filters */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
