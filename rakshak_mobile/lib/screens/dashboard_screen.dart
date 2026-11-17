@@ -341,11 +341,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ];
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFF5F8FC),
       appBar: AppBar(
-        title: const Text('Rakshak Patrol', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF1E3A8A),
-        foregroundColor: Colors.white,
+        title: const Text('Rakshak Patrol', style: TextStyle(fontWeight: FontWeight.w800)),
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF172B4D),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
         actions: [
           if (canViewTickets)
             IconButton(

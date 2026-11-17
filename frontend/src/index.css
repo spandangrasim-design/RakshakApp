@@ -65,3 +65,104 @@
     break-inside: avoid !important;
   }
 }
+
+
+/* Rakshak Light Premium design system */
+:root {
+  color-scheme: light;
+  --rk-ink: #14243b;
+  --rk-muted: #6b7b91;
+  --rk-line: #e7edf5;
+  --rk-canvas: #f5f8fc;
+  --rk-blue: #245bdb;
+  --rk-blue-soft: #edf4ff;
+  --rk-shadow: 0 8px 24px -16px rgba(20, 43, 77, .24), 0 1px 2px rgba(20, 43, 77, .04);
+}
+
+html { background: var(--rk-canvas); }
+body {
+  background:
+    radial-gradient(ellipse at 15% -10%, rgba(37, 99, 235, .055), transparent 35%),
+    var(--rk-canvas);
+  color: var(--rk-ink);
+  letter-spacing: -0.008em;
+}
+
+.rakshak-shell { min-height: 100vh; }
+.rakshak-sidebar {
+  background: rgba(255,255,255,.96) !important;
+  border-color: #e8eef6 !important;
+  box-shadow: 8px 0 28px -28px rgba(16, 42, 84, .30);
+}
+.rakshak-brand { min-height: 76px; border-color: var(--rk-line) !important; }
+.rakshak-nav-link {
+  min-height: 42px;
+  border-radius: 12px !important;
+  letter-spacing: -.01em;
+}
+.rakshak-nav-link[aria-current="page"] { box-shadow: inset 0 0 0 1px rgba(36,91,219,.08); }
+.rakshak-topbar {
+  height: 68px !important;
+  background: rgba(255,255,255,.90) !important;
+  border-color: var(--rk-line) !important;
+  box-shadow: 0 4px 18px -18px rgba(20,43,77,.38);
+}
+.rakshak-main { min-height: calc(100vh - 68px); }
+
+.card {
+  border-color: #e7edf5 !important;
+  border-radius: 18px !important;
+  box-shadow: var(--rk-shadow) !important;
+}
+.card-hover:hover {
+  border-color: #c8d9f5 !important;
+  box-shadow: 0 16px 34px -22px rgba(36,91,219,.34), 0 2px 5px rgba(20,43,77,.05) !important;
+}
+
+/* Keep existing Tailwind-driven screens, but give common controls one consistent finish. */
+input:not([type="checkbox"]):not([type="radio"]),
+select, textarea {
+  border-color: #dce5f0;
+  border-radius: 11px;
+  color: #172b45;
+  box-shadow: 0 1px 2px rgba(20,43,77,.025);
+}
+input:not([type="checkbox"]):not([type="radio"]):focus,
+select:focus, textarea:focus {
+  border-color: #7aa4f5;
+  box-shadow: 0 0 0 3px rgba(36,91,219,.11);
+  outline: none;
+}
+button { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible { outline-color: #4b83ee; }
+
+.rakshak-login {
+  background:
+    radial-gradient(circle at 18% 16%, rgba(65, 125, 240, .10), transparent 28%),
+    radial-gradient(circle at 90% 82%, rgba(22, 163, 153, .07), transparent 24%),
+    #f5f8fc;
+}
+.rakshak-login-panel {
+  background: linear-gradient(145deg, #10294d 0%, #173c70 56%, #2052a2 100%);
+}
+.rakshak-login-panel::before,
+.rakshak-login-panel::after {
+  content: '';
+  position: absolute;
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 9999px;
+  pointer-events: none;
+}
+.rakshak-login-panel::before { width: 520px; height: 520px; right: -245px; top: -240px; }
+.rakshak-login-panel::after { width: 390px; height: 390px; right: -180px; top: -175px; }
+.rakshak-login-card {
+  border: 1px solid rgba(222,231,243,.95);
+  border-radius: 24px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 24px 70px -42px rgba(20,43,77,.34), 0 2px 7px rgba(20,43,77,.04);
+}
+
+@media (max-width: 767px) {
+  .rakshak-main { min-height: calc(100vh - 64px); }
+  .card { border-radius: 15px !important; }
+}

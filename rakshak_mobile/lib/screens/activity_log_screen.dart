@@ -88,18 +88,19 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFF5F8FC),
       appBar: AppBar(
         title: const Text('Activity Log', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF1E3A8A),
-        foregroundColor: Colors.white,
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF172B4D),
+        surfaceTintColor: Colors.transparent,
         actions: [
           IconButton(
             icon: _isSyncing
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                    child: CircularProgressIndicator(color: const Color(0xFF245BDB), strokeWidth: 2),
                   )
                 : const Icon(Icons.sync),
             tooltip: 'Sync Offline Scans',

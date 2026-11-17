@@ -271,14 +271,15 @@ class _IncidentThreadScreenState extends State<IncidentThreadScreen> {
     final isResolved = (incident!['status'] ?? '').toString().toUpperCase() == 'RESOLVED';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF1F5F9),
+      backgroundColor: const Color(0xFFF5F8FC),
       appBar: AppBar(
         title: Text(
           incident!['title'] ?? 'Incident Thread',
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
-        backgroundColor: const Color(0xFF1E3A8A),
-        foregroundColor: Colors.white,
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF172B4D),
+        surfaceTintColor: Colors.transparent,
       ),
       body: Column(
         children: [

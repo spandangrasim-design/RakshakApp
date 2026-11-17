@@ -4,6 +4,7 @@ import 'api.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/routes_screen.dart';
 import 'session.dart';
+import 'rakshak_theme.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -31,12 +32,7 @@ class RakshakFieldApp extends StatelessWidget {
       title: 'Rakshak Field',
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
-        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
-        appBarTheme: const AppBarTheme(centerTitle: false),
-      ),
+      theme: RakshakTheme.light(),
       home: Session.signedIn ? const RoutesScreen() : const OnboardingScreen(),
     );
   }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'screens/login_screen.dart';
+import 'rakshak_theme.dart';
 import 'services/sync_service.dart'; // Add this import
 
 void main() {
@@ -20,10 +21,7 @@ class RakshakApp extends StatelessWidget {
     return MaterialApp(
       title: 'Rakshak Patrol',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
-      ),
+      theme: RakshakTheme.light(),
       home: const LoginScreen(),
     );
   }

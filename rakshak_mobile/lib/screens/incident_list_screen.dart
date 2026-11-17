@@ -93,20 +93,21 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        backgroundColor: const Color(0xFFF8FAFC),
+        backgroundColor: const Color(0xFFF5F8FC),
         appBar: AppBar(
           title: const Text(
             'Incident Tickets',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
           ),
-          backgroundColor: const Color(0xFF1E3A8A),
-          foregroundColor: Colors.white,
+          backgroundColor: Colors.white,
+          foregroundColor: const Color(0xFF172B4D),
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
           bottom: TabBar(
-            indicatorColor: Colors.white,
+            indicatorColor: const Color(0xFF245BDB),
             indicatorWeight: 3,
-            labelColor: Colors.white,
-            unselectedLabelColor: Colors.white70,
+            labelColor: const Color(0xFF245BDB),
+            unselectedLabelColor: const Color(0xFF7B8AA0),
             labelStyle: const TextStyle(fontWeight: FontWeight.bold),
             tabs: [
               Tab(text: 'Active (${activeIncidents.length})'),

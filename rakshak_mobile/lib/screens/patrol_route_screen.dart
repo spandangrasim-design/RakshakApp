@@ -624,12 +624,13 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
     final isRoundFinished = totalStops > 0 && verifiedCount == totalStops;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFF5F8FC),
       appBar: AppBar(
         title: const Text('Patrol Routes',
             style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF1E3A8A),
-        foregroundColor: Colors.white,
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF172B4D),
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
         actions: [
           IconButton(

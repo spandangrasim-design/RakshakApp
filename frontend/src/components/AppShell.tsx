@@ -135,7 +135,7 @@ export const AppShell: React.FC<{
                     key={i.to}
                     to={i.to}
                     title={compact ? i.label : undefined}
-                    className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                    className={`rakshak-nav-link group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                       active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                     } ${compact ? 'justify-center' : ''}`}
                   >
@@ -156,7 +156,7 @@ export const AppShell: React.FC<{
   const brand = (compact: boolean) => (
     <div
       title={`${brandInfo.name}${brandInfo.address ? ' · ' + brandInfo.address : ''} — Powered by Spandan IT Professionals`}
-      className={`group relative flex h-16 items-center gap-3 border-b border-slate-100 px-3.5 ${compact ? 'justify-center' : ''}`}
+      className={`rakshak-brand group relative flex h-16 items-center gap-3 border-b border-slate-100 px-3.5 ${compact ? 'justify-center' : ''}`}
     >
       <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xs">
         {brandInfo.logoUrl ? (
@@ -187,9 +187,9 @@ export const AppShell: React.FC<{
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800">
+    <div className="rakshak-shell min-h-screen bg-slate-50 text-slate-800">
       {/* Desktop sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200 bg-white transition-[width] duration-300 md:flex ${collapsed ? 'w-[76px]' : 'w-64'}`}>
+      <aside className={`rakshak-sidebar fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-slate-200 bg-white transition-[width] duration-300 md:flex ${collapsed ? 'w-[76px]' : 'w-64'}`}>
         {brand(collapsed)}
         {renderNav(collapsed)}
 
@@ -244,7 +244,7 @@ export const AppShell: React.FC<{
 
       <div className={`transition-[padding] duration-300 ${collapsed ? 'md:pl-[76px]' : 'md:pl-64'}`}>
         {/* Top bar */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md md:px-6 print:hidden">
+        <header className="rakshak-topbar sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md md:px-6 print:hidden">
           <div className="flex min-w-0 items-center gap-3">
             <button onClick={() => setDrawer(true)} className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden" aria-label="Open menu">
               <Menu className="h-5 w-5" />
@@ -292,7 +292,7 @@ export const AppShell: React.FC<{
           </div>
         </header>
 
-        <main key={path} className="animate-fade-in">{children}</main>
+        <main key={path} className="rakshak-main animate-fade-in">{children}</main>
       </div>
     </div>
   );

@@ -17,6 +17,13 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   String? _errorMessage;
 
+  @override
+  void dispose() {
+    _employeeCodeController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   void _handleLogin() async {
     setState(() {
       _isLoading = true;
@@ -52,98 +59,119 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA), // Clean light grey background
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Placeholder for Rakshak Logo
-              const Icon(Icons.security, size: 80, color: Color(0xFF1E3A8A)),
-              const SizedBox(height: 16),
-              const Text(
-                'Rakshak',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1E3A8A),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 28, 22, 28),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFFE5ECF4)),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x12243B5B), blurRadius: 34, offset: Offset(0, 16)),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Sign in to start your shift',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, color: Colors.black54),
-              ),
-              const SizedBox(height: 48),
-
-              // Error Message Box
-              if (_errorMessage != null)
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    border: Border.all(color: Colors.red.shade200),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _errorMessage!,
-                    style: TextStyle(color: Colors.red.shade800),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-
-              // Input Fields
-              TextField(
-                controller: _employeeCodeController,
-                decoration: InputDecoration(
-                  labelText: 'Employee Code (e.g. G-101)',
-                  prefixIcon: const Icon(Icons.badge),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  filled: true,
-                  fillColor: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: 'Password',
-                  prefixIcon: const Icon(Icons.lock),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  filled: true,
-                  fillColor: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 32),
-
-              // Login Button
-              ElevatedButton(
-                onPressed: _isLoading ? null : _handleLogin,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1E3A8A), // Deep Blue
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: _isLoading
-                    ? const SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                      )
-                    : const Text(
-                        'Secure Login',
-                        style: TextStyle(fontSize: 18, color: Colors.white),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 92,
+                        height: 92,
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(color: const Color(0xFFE8EEF6)),
+                        ),
+                        child: Image.asset('assets/branding/rakshak-logo.png', fit: BoxFit.contain),
                       ),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Welcome to Rakshak',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF172B4D), letterSpacing: -0.5),
+                    ),
+                    const SizedBox(height: 7),
+                    const Text(
+                      'Sign in to securely start your shift.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, color: Color(0xFF718198), height: 1.5),
+                    ),
+                    const SizedBox(height: 28),
+                    if (_errorMessage != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        margin: const EdgeInsets.only(bottom: 18),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF2F1),
+                          border: Border.all(color: const Color(0xFFF2C6C2)),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          _errorMessage!,
+                          style: const TextStyle(color: Color(0xFFB42318), fontSize: 13, fontWeight: FontWeight.w600),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ],
+                    const Text('Employee code', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF334761))),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _employeeCodeController,
+                      textCapitalization: TextCapitalization.characters,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. G-101',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    const Text('Password', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFF334761))),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) {
+                        if (!_isLoading) _handleLogin();
+                      },
+                      decoration: const InputDecoration(
+                        hintText: 'Enter your password',
+                        prefixIcon: Icon(Icons.lock_outline_rounded),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      height: 52,
+                      child: ElevatedButton.icon(
+                        onPressed: _isLoading ? null : _handleLogin,
+                        icon: _isLoading
+                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                            : const Icon(Icons.verified_user_outlined, size: 19),
+                        label: Text(_isLoading ? 'Signing in…' : 'Secure sign in'),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    const Divider(color: Color(0xFFEAF0F6)),
+                    const SizedBox(height: 14),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.shield_outlined, size: 15, color: Color(0xFF7B8AA0)),
+                        SizedBox(width: 6),
+                        Text('Authorised personnel only', style: TextStyle(fontSize: 11, color: Color(0xFF8795A8), fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         ),
       ),
