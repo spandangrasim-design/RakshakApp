@@ -1,0 +1,11 @@
+# Keep CameraX & ML Kit Barcode Scanning classes from AGP 9.x R8 stripping
+-keep class androidx.camera.** { *; }
+-keep interface androidx.camera.** { *; }
+-keepclassmembers class * extends androidx.camera.core.impl.Config$Option { *; }
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode_bundled.** { *; }
+-keep class com.google.android.gms.vision.** { *; }
+-keep class dev.steenbakker.mobile_scanner.** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn androidx.camera.**

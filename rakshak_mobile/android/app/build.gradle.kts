@@ -48,6 +48,8 @@ android {
 
     buildTypes {
         release {
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Real release key when provided; otherwise falls back to debug so local builds still work.
             signingConfig = if (keystorePropsFile.exists()) signingConfigs.getByName("release")
                             else signingConfigs.getByName("debug")
