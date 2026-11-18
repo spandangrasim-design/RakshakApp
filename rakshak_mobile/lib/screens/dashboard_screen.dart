@@ -18,6 +18,9 @@ import 'activity_log_screen.dart';
 import 'mobile_admin_access_screen.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/home_incidents_preview.dart';
+import '../theme/app_theme.dart';
+import '../widgets/responsive.dart';
+import '../widgets/ui_kit.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -340,26 +343,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
     ];
 
+    final scanOk = _lastScanVerified;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F8FC),
       appBar: AppBar(
-        title: const Text('Rakshak Patrol', style: TextStyle(fontWeight: FontWeight.w800)),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF172B4D),
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
+        titleSpacing: 16,
+        title: Row(children: [
+          Container(
+            width: 34, height: 34,
+            decoration: BoxDecoration(color: AppColors.brand, borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.shield_outlined, size: 20, color: Colors.white),
+          ),
+          const SizedBox(width: 10),
+          const Text('Rakshak'),
+        ]),
         actions: [
           if (canViewTickets)
-            IconButton(
-              icon: const Icon(Icons.assignment_outlined),
-              tooltip: 'My Incidents',
-              onPressed: _navigateToIncidentList,
-            ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: _handleLogout,
-          ),
+            IconButton(icon: const Icon(Icons.assignment_outlined), tooltip: 'My incidents', onPressed: _navigateToIncidentList),
+          IconButton(icon: const Icon(Icons.logout), tooltip: 'Log out', onPressed: _handleLogout),
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
@@ -368,246 +370,123 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Expanded(
             child: RefreshIndicator(
               onRefresh: () async {
-                await Future.wait([
-                  _syncActiveShiftWithServer(),
-                  _syncAppPermissionsWithServer(),
-                ]);
+                await Future.wait([_syncActiveShiftWithServer(), _syncAppPermissionsWithServer()]);
                 if (mounted) setState(() => _incidentsRefreshTick++);
               },
-              child: SingleChildScrollView(
+              child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Premium officer identity panel
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color(0xFF17345F), Color(0xFF245BDB)],
-                        ),
-                        borderRadius: BorderRadius.circular(22),
-                        boxShadow: [
-                          BoxShadow(
-                            color: const Color(0xFF245BDB).withOpacity(0.18),
-                            blurRadius: 24,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
+                padding: EdgeInsets.zero,
+                children: [
+                  ResponsiveBody(
+                    maxWidth: 760,
+                    child: Padding(
+                      padding: pagePadding(context),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 48,
-                                height: 48,
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.14),
-                                  borderRadius: BorderRadius.circular(15),
-                                  border: Border.all(color: Colors.white.withOpacity(0.22)),
-                                ),
-                                child: const Icon(Icons.shield_rounded, size: 26, color: Colors.white),
-                              ),
-                              const SizedBox(width: 13),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'WELCOME BACK',
-                                      style: TextStyle(
-                                        color: Colors.white.withOpacity(0.72),
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w800,
-                                        letterSpacing: 1.25,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      _guardName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: Colors.white),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(30),
-                                  border: Border.all(color: Colors.white.withOpacity(0.2)),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.verified_user_outlined, size: 13, color: Colors.white),
-                                    SizedBox(width: 5),
-                                    Text('RAKSHAK', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800, letterSpacing: .7)),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 18),
-                          Row(
-                            children: [
-                              Icon(Icons.badge_outlined, size: 15, color: Colors.white.withOpacity(.75)),
-                              const SizedBox(width: 7),
-                              Expanded(
-                                child: Text(
-                                  _guardId.isNotEmpty ? 'Officer ID  $_guardId' : 'Security Operations',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(color: Colors.white.withOpacity(.82), fontSize: 11, fontWeight: FontWeight.w600),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                MaterialLocalizations.of(context).formatShortDate(DateTime.now()),
-                                style: TextStyle(color: Colors.white.withOpacity(.72), fontSize: 11, fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-
-                    // Shift control panel
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFFE3EAF4)),
-                        boxShadow: [
-                          BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 16, offset: const Offset(0, 5)),
-                        ],
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            height: 42,
-                            width: 42,
-                            decoration: BoxDecoration(
-                              color: _isShiftActive ? const Color(0xFFEAF8F1) : const Color(0xFFFFF6E5),
-                              borderRadius: BorderRadius.circular(13),
-                            ),
-                            child: Icon(
-                              _isShiftActive ? Icons.check_circle_rounded : Icons.pause_circle_filled_rounded,
-                              color: _isShiftActive ? const Color(0xFF12805C) : const Color(0xFFB7791F),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _isShiftActive ? 'You are on duty' : 'You are off duty',
-                                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF172B4D)),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  _isShiftActive ? 'Your patrol shift is active' : 'Start your shift to begin patrol operations',
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF718198)),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: _isShiftLoading ? null : _toggleShift,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: _isShiftActive ? const Color(0xFFB42318) : const Color(0xFF245BDB),
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            child: _isShiftLoading
-                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : Text(_isShiftActive ? 'End Shift' : 'Start Shift', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 22),
-
-                    // Active Tickets Preview (Only renders if tickets module is licensed)
-                    if (canViewTickets && !_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty) ...[
-                      HomeIncidentsPreview(
-                        guardId: _guardId,
-                        token: _token,
-                        guardName: _guardName,
-                        refreshTick: _incidentsRefreshTick,
-                      ),
-                      const SizedBox(height: 22),
-                    ],
-
-                    if (_lastScanVerified != null) ...[
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 20),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: _lastScanVerified! ? Colors.green.shade50 : Colors.orange.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: _lastScanVerified! ? Colors.green.shade200 : Colors.orange.shade300),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              _lastScanVerified! ? Icons.verified_user : Icons.warning_amber_rounded,
-                              color: _lastScanVerified! ? Colors.green.shade700 : Colors.orange.shade800,
-                              size: 28,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                _lastScanVerified! ? 'Checkpoint verified successfully.' : 'Geofence warning: location audit flagged.',
-                                style: TextStyle(fontWeight: FontWeight.bold, color: _lastScanVerified! ? Colors.green.shade900 : Colors.orange.shade900),
-                              ),
-                            ),
+                          _buildShiftHero(),
+                          const SizedBox(height: 20),
+                          if (scanOk != null) ...[
+                            _buildScanBanner(scanOk),
+                            const SizedBox(height: 20),
                           ],
-                        ),
+                          if (activeCards.isNotEmpty) ...[
+                            const SectionTitle('Quick actions'),
+                            AdaptiveGrid(children: activeCards),
+                            const SizedBox(height: 24),
+                          ],
+                          if (canViewTickets && !_isLoadingPrefs && _guardId.isNotEmpty && _token.isNotEmpty)
+                            HomeIncidentsPreview(
+                              guardId: _guardId,
+                              token: _token,
+                              guardName: _guardName,
+                              refreshTick: _incidentsRefreshTick,
+                            ),
+                        ],
                       ),
-                    ],
-
-                    const Text(
-                      'Operations',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF172B4D), letterSpacing: -.3),
                     ),
-                    const SizedBox(height: 3),
-                    const Text(
-                      'Quick access to your assigned security activities',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF718198), fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 13),
-
-                    // Dynamic Grid: Contains only active, licensed cards
-                    GridView.count(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 14,
-                      mainAxisSpacing: 14,
-                      childAspectRatio: 1.02,
-                      children: activeCards,
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  /// Greeting + shift state + one big Start/End button — the thing a guard needs first.
+  Widget _buildShiftHero() {
+    final on = _isShiftActive;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: on ? const [Color(0xFF047857), Color(0xFF065F46)] : const [AppColors.brand, AppColors.brandDark],
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: (on ? AppColors.ok : AppColors.brand).withAlpha(60), blurRadius: 24, offset: const Offset(0, 12))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(color: Colors.white.withAlpha(36), borderRadius: BorderRadius.circular(99)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(on ? Icons.radio_button_checked : Icons.pause_circle_outline, size: 14, color: Colors.white),
+                const SizedBox(width: 6),
+                Text(on ? 'On duty' : 'Off duty', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12)),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          Text('Hello, $_guardName', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 2),
+          Text(on ? 'Your patrol shift is running.' : 'Start your shift to begin patrolling.', style: TextStyle(color: Colors.white.withAlpha(215))),
+          const SizedBox(height: 18),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isShiftLoading ? null : _toggleShift,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: on ? AppColors.danger : AppColors.brand,
+                minimumSize: const Size.fromHeight(52),
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+              ),
+              icon: _isShiftLoading
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(on ? Icons.stop_circle_outlined : Icons.play_circle_outline),
+              label: Text(on ? 'End shift' : 'Start shift'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScanBanner(bool ok) {
+    final color = ok ? AppColors.ok : AppColors.warn;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: ok ? AppColors.okSoft : AppColors.warnSoft,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withAlpha(70)),
+      ),
+      child: Row(children: [
+        Icon(ok ? Icons.verified_user : Icons.warning_amber_rounded, color: color, size: 26),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            ok ? 'Checkpoint verified successfully.' : 'Geofence warning: location audit flagged.',
+            style: TextStyle(fontWeight: FontWeight.w700, color: color),
+          ),
+        ),
+      ]),
     );
   }
 
@@ -618,56 +497,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required Color color,
     required VoidCallback onTap,
   }) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(19),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(19),
-        child: Container(
-          padding: const EdgeInsets.all(15),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(19),
-            border: Border.all(color: const Color(0xFFE3EAF4)),
-            boxShadow: [
-              BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 16, offset: const Offset(0, 5)),
-            ],
+    return AppCard(
+      onTap: onTap,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(color: color.withAlpha(30), borderRadius: BorderRadius.circular(14)),
+            child: Icon(icon, color: color, size: 24),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(
-                    width: 43,
-                    height: 43,
-                    decoration: BoxDecoration(color: color.withOpacity(.10), borderRadius: BorderRadius.circular(14)),
-                    child: Icon(icon, color: color, size: 23),
-                  ),
-                  Container(
-                    width: 27,
-                    height: 27,
-                    decoration: BoxDecoration(color: const Color(0xFFF4F7FC), borderRadius: BorderRadius.circular(9)),
-                    child: const Icon(Icons.arrow_outward_rounded, size: 15, color: Color(0xFF718198)),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: Color(0xFF172B4D))),
-                  const SizedBox(height: 3),
-                  Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10.5, height: 1.3, color: Color(0xFF718198))),
-                ],
-              ),
-            ],
-          ),
-        ),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+            const SizedBox(height: 2),
+            Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: AppColors.inkSoft)),
+          ]),
+        ],
       ),
     );
   }

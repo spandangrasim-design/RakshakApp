@@ -417,7 +417,7 @@ const QRGenerator: React.FC = () => {
   };
 
   return (
-    <div className="rk-page rk-page-qr p-8 max-w-6xl mx-auto text-slate-800">
+    <div className="p-8 max-w-6xl mx-auto text-slate-800">
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-3">
           <Shield className="h-8 w-8 text-blue-600" />

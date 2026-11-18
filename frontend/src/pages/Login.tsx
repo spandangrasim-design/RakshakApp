@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Lock, User, Shield } from 'lucide-react';
+import { Lock, User, Shield, Eye, EyeOff, QrCode, Siren, BarChart3 } from 'lucide-react';
 
 interface LoginProps {
   onLoginSuccess?: (token: string, userData: any, modules?: any) => void;
 }
 
+/** Split layout: brand panel (lg+) + form. On phones the form fills the screen with a compact brand header. */
 const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [adminId, setAdminId] = useState('');
   const [password, setPassword] = useState('');
+  const [show, setShow] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
@@ -18,25 +20,17 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-
     const baseUrl = import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev';
-
     try {
-      const response = await axios.post(`${baseUrl}/api/v1/auth/login`, {
-        employee_code: adminId,
-        password: password
-      });
-
+      const response = await axios.post(`${baseUrl}/api/v1/auth/login`, { employee_code: adminId, password });
       const token = response.data.access_token;
       const userData = response.data.guard || { full_name: 'Admin', employee_code: adminId };
       const visibleModules = response.data.visible_modules || {};
 
-      // The web console is for the two admin tiers. Field users use the mobile app.
       if (userData.tier === 'USER') {
         setError('This console is for administrators. Please use the Rakshak mobile app.');
         return;
       }
-
       if (onLoginSuccess) {
         onLoginSuccess(token, userData, visibleModules);
       } else {
@@ -44,11 +38,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         localStorage.setItem('user', JSON.stringify(userData));
         localStorage.setItem('visible_modules', JSON.stringify(visibleModules));
       }
-
-      // Route dynamically: if Patrol is disabled for this tenant, land on /guards
-      const defaultRoute =
-        userData.tier === 'SUPER_ADMIN' ? '/platform' : '/overview';
-      navigate(defaultRoute);
+      navigate(userData.tier === 'SUPER_ADMIN' ? '/platform' : '/overview');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Invalid Employee Code or Password');
     } finally {
@@ -56,125 +46,74 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const points = [
+    { icon: <QrCode className="h-5 w-5" />, t: 'QR checkpoint patrols', d: 'Every round verified by location and time.' },
+    { icon: <Siren className="h-5 w-5" />, t: 'Incidents in real time', d: 'Raised, assigned and closed in one queue.' },
+    { icon: <BarChart3 className="h-5 w-5" />, t: 'Daily reports', d: 'Shift summaries delivered automatically.' },
+  ];
+
   return (
-    <div className="rakshak-login min-h-screen p-4 text-slate-800 sm:p-6 lg:p-8">
-      <main className="mx-auto grid min-h-[calc(100vh-2rem)] w-full max-w-7xl overflow-hidden rounded-[30px] border border-white/80 bg-white/50 shadow-[0_30px_90px_-55px_rgba(15,35,70,.35)] lg:min-h-[calc(100vh-4rem)] lg:grid-cols-[1.02fr_.98fr]">
-        <section className="rakshak-login-panel relative hidden flex-col justify-between overflow-hidden p-10 text-white lg:flex xl:p-14">
-          <div className="relative z-10 flex items-center gap-4">
-            <div className="flex h-[62px] w-[62px] items-center justify-center overflow-hidden rounded-2xl bg-white p-1.5 shadow-lg shadow-black/10">
-              <img src="/branding/rakshak-logo.png" alt="Rakshak" className="h-full w-full object-contain" />
+    <div className="grid min-h-screen bg-white lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+      {/* Brand panel — desktop only */}
+      <aside className="relative hidden overflow-hidden bg-gradient-to-br from-brand-700 via-brand-800 to-brand-900 p-12 text-white lg:flex lg:flex-col lg:justify-between">
+        <div className="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-white/10 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-brand-400/20 blur-3xl" />
+        <div className="relative flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/25"><Shield className="h-6 w-6" /></div>
+          <span className="text-xl font-extrabold tracking-tight">Rakshak</span>
+        </div>
+        <div className="relative max-w-md">
+          <h2 className="text-4xl font-extrabold leading-tight tracking-tight">Know every round happened. Every time.</h2>
+          <p className="mt-3 text-brand-100">Patrol and incident management for your plant, built for the people on the ground.</p>
+          <ul className="mt-8 space-y-4">
+            {points.map((p) => (
+              <li key={p.t} className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/12 ring-1 ring-white/20">{p.icon}</span>
+                <span><span className="block text-sm font-bold">{p.t}</span><span className="block text-sm text-brand-100">{p.d}</span></span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <p className="relative text-xs text-brand-200">Enterprise Security Infrastructure by Spandan IT Professionals</p>
+      </aside>
+
+      {/* Form */}
+      <main className="flex items-center justify-center px-5 py-10 sm:px-8">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 flex flex-col items-center text-center lg:items-start lg:text-left">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-800 text-white shadow-lift lg:hidden"><Shield className="h-7 w-7" /></div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 sm:text-3xl">Welcome back</h1>
+            <p className="mt-1 text-sm text-slate-500">Sign in to the Rakshak admin console</p>
+          </div>
+
+          {error && <div role="alert" className="mb-4 rounded-xl border border-rose-100 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label htmlFor="adminId" className="label">Employee code</label>
+              <div className="relative">
+                <User className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" />
+                <input id="adminId" type="text" autoComplete="username" autoCapitalize="none" placeholder="e.g. ADM-001" value={adminId} onChange={(e) => setAdminId(e.target.value)} required className="field pl-11" />
+              </div>
             </div>
             <div>
-              <div className="text-xl font-extrabold tracking-tight">Rakshak</div>
-              <div className="mt-0.5 text-xs font-medium tracking-wide text-blue-100/80">SECURITY OPERATIONS PLATFORM</div>
-            </div>
-          </div>
-
-          <div className="relative z-10 max-w-xl py-12">
-            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-blue-50 backdrop-blur-sm">
-              <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,.85)]" />
-              One view for every operation
-            </div>
-            <h1 className="text-4xl font-extrabold leading-[1.12] tracking-tight xl:text-5xl">Stay aware.<br />Stay in control.</h1>
-            <p className="mt-5 max-w-md text-base leading-7 text-blue-100/80">Coordinate patrol activity, people and incident response from one clear operational workspace.</p>
-            <div className="mt-10 grid max-w-lg grid-cols-3 gap-3">
-              {[
-                { value: '01', label: 'Patrol visibility' },
-                { value: '02', label: 'Incident response' },
-                { value: '03', label: 'Team oversight' },
-              ].map((item) => (
-                <div key={item.value} className="rounded-2xl border border-white/15 bg-white/[.08] p-3 backdrop-blur-sm">
-                  <div className="text-xs font-bold tracking-widest text-blue-200">{item.value}</div>
-                  <div className="mt-2 text-xs font-semibold leading-5 text-white">{item.label}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="relative z-10 flex items-center justify-between border-t border-white/15 pt-5 text-xs text-blue-100/65">
-            <span>Secure access for authorised administrators</span>
-            <span>Rakshak · Spandan IT</span>
-          </div>
-          <div className="pointer-events-none absolute -bottom-36 -left-28 h-[420px] w-[420px] rounded-full border border-white/10" />
-          <div className="pointer-events-none absolute -bottom-24 -left-16 h-[300px] w-[300px] rounded-full border border-white/10" />
-        </section>
-
-        <section className="flex items-center justify-center bg-white px-5 py-10 sm:px-10 lg:px-12 xl:px-16">
-          <div className="w-full max-w-[430px]">
-            <div className="mb-9 flex items-center gap-3 lg:hidden">
-              <img src="/branding/rakshak-logo.png" alt="Rakshak" className="h-12 w-12 rounded-xl object-contain" />
-              <div>
-                <div className="text-lg font-extrabold tracking-tight text-slate-900">Rakshak</div>
-                <div className="text-[10px] font-bold tracking-[.14em] text-slate-400">SECURITY OPERATIONS</div>
+              <label htmlFor="password" className="label">Password</label>
+              <div className="relative">
+                <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" />
+                <input id="password" type={show ? 'text' : 'password'} autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} required className="field pl-11 pr-12" />
+                <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'} className="absolute right-1.5 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+                  {show ? <EyeOff className="h-[18px] w-[18px]" /> : <Eye className="h-[18px] w-[18px]" />}
+                </button>
               </div>
             </div>
-            <div className="mb-8">
-              <div className="mb-3 inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[.13em] text-blue-700">Administrator access</div>
-              <h2 className="text-3xl font-extrabold tracking-tight text-slate-950">Welcome back</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-500">Sign in with your administrator credentials to continue.</p>
-            </div>
+            <button type="submit" disabled={isLoading} className="btn-primary w-full !min-h-[48px] text-base">{isLoading ? 'Signing in…' : 'Sign in'}</button>
+          </form>
 
-            {error && (
-              <div className="mb-5 flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-sm text-rose-700" role="alert">
-                <Shield className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleLogin} className="space-y-5">
-              <div>
-                <label htmlFor="admin-code" className="mb-2 block text-xs font-bold tracking-wide text-slate-700">Employee code</label>
-                <div className="relative">
-                  <User className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" />
-                  <input
-                    id="admin-code"
-                    type="text"
-                    placeholder="Enter your employee code"
-                    autoComplete="username"
-                    value={adminId}
-                    onChange={(e) => setAdminId(e.target.value)}
-                    required
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-3.5 pl-11 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-500/10"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <label htmlFor="admin-password" className="block text-xs font-bold tracking-wide text-slate-700">Password</label>
-                  <span className="text-[11px] font-medium text-slate-400">Secure sign in</span>
-                </div>
-                <div className="relative">
-                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-400" />
-                  <input
-                    id="admin-password"
-                    type="password"
-                    placeholder="Enter your password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-3.5 pl-11 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-500/10"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition hover:-translate-y-0.5 hover:bg-blue-700 hover:shadow-blue-600/25 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0"
-              >
-                {isLoading ? 'Signing in…' : 'Sign in to Rakshak'}
-                {!isLoading && <Shield className="h-4 w-4" />}
-              </button>
-            </form>
-
-            <div className="mt-10 border-t border-slate-100 pt-5 text-center">
-              <div className="text-[11px] leading-5 text-slate-400">Enterprise security infrastructure by</div>
-              <a href="https://spandanit.com" target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs font-extrabold tracking-tight text-slate-700 transition hover:text-blue-700">Spandan IT Professionals</a>
-            </div>
-          </div>
-        </section>
+          <p className="mt-8 border-t border-slate-100 pt-4 text-center text-xs text-slate-500 lg:text-left">
+            Enterprise Security Infrastructure by <span className="font-bold text-slate-800">Spandan IT Professionals</span>
+            <br /><a href="https://spandanit.com" target="_blank" rel="noopener noreferrer" className="font-bold text-brand-600 hover:underline">www.spandanit.com</a>
+          </p>
+        </div>
       </main>
     </div>
   );

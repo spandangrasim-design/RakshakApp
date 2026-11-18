@@ -433,45 +433,15 @@ class _RunScreenState extends State<RunScreen> {
                         ),
                       ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 13, 14, 7),
-                      child: Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(colors: [Color(0xFFFFFFFF), Color(0xFFF1F6FF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: const Color(0xFFE2EAF4)),
-                          boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.045), blurRadius: 16, offset: const Offset(0, 5))],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Expanded(child: Text('PATROL PROGRESS', style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.w900, color: Color(0xFF718198)))),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                                  decoration: BoxDecoration(color: _paused ? const Color(0xFFEAF1FF) : const Color(0xFFE9F8F1), borderRadius: BorderRadius.circular(30)),
-                                  child: Text(_paused ? 'PAUSED' : (allScanned ? 'READY TO FINISH' : 'IN PROGRESS'), style: TextStyle(fontSize: 9, letterSpacing: .4, fontWeight: FontWeight.w900, color: _paused ? const Color(0xFF245BDB) : const Color(0xFF12805C))),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 7),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text('$done', style: const TextStyle(fontSize: 29, fontWeight: FontWeight.w900, color: Color(0xFF172B4D), letterSpacing: -1)),
-                                Padding(padding: const EdgeInsets.only(left: 5, bottom: 5), child: Text('of $total checkpoints verified', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF718198)))),
-                                const Spacer(),
-                                Text('${total == 0 ? 0 : ((done / total) * 100).round()}%', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900, color: Color(0xFF245BDB))),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(20),
-                              child: LinearProgressIndicator(value: total == 0 ? 0 : done / total, minHeight: 8, backgroundColor: const Color(0xFFE5ECF4), valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF245BDB))),
-                            ),
-                          ],
-                        ),
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('$done of $total checkpoints scanned',
+                              style: const TextStyle(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 8),
+                          LinearProgressIndicator(value: total == 0 ? 0 : done / total, minHeight: 8),
+                        ],
                       ),
                     ),
                     if (_busy) const LinearProgressIndicator(),

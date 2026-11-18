@@ -400,7 +400,7 @@ export const DailyReportsPage: React.FC = () => {
   }
 
   return (
-    <div className="rk-page rk-page-daily-reports mx-auto max-w-5xl space-y-5 p-4 md:p-6">
+    <div className="mx-auto max-w-5xl space-y-5 p-4 md:p-6">
       {/* Clean Header Card */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div>

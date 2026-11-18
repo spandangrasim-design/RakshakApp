@@ -3,17 +3,21 @@
 @tailwind utilities;
 
 @layer base {
-  html { scroll-behavior: smooth; }
-  body { @apply bg-slate-50 text-slate-800 antialiased; }
-  ::selection { background: #bfdbfe; }
-  /* slim, quiet scrollbars */
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body { @apply bg-slate-50 text-slate-800 antialiased; overflow-x: hidden; }
+  ::selection { background: #bdd2ff; }
   * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
   *::-webkit-scrollbar { width: 8px; height: 8px; }
   *::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-  *:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+  *:focus-visible { outline: 2px solid #3b63f0; outline-offset: 2px; }
+  /* 16px inputs stop iOS Safari zooming the page when a field is focused */
+  input, select, textarea { font-size: max(16px, 1em); }
+  @media (min-width: 768px) { input, select, textarea { font-size: inherit; } }
+  img, video, canvas, svg { max-width: 100%; }
 }
 
 @layer components {
+  /* ---------- surfaces ---------- */
   .card { @apply rounded-2xl border border-slate-200 bg-white shadow-soft; }
   .card-hover { @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-lift hover:border-brand-200; }
   .skeleton { @apply relative overflow-hidden rounded-lg bg-slate-200/70; }
@@ -22,147 +26,72 @@
     @apply absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/60 to-transparent;
     animation: shimmer 1.4s infinite;
   }
+
+  /* ---------- page layout: fluid padding + readable max width ---------- */
+  .page { @apply mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 lg:px-8 lg:py-8; }
+  .page-narrow { @apply mx-auto w-full max-w-3xl px-4 py-5 sm:px-6; }
+
+  /* ---------- buttons (44px tap target on touch screens) ---------- */
+  .btn {
+    @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition
+           disabled:cursor-not-allowed disabled:opacity-60 md:min-h-[40px];
+  }
+  .btn-primary { @apply btn bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:scale-[.98]; }
+  .btn-soft    { @apply btn bg-brand-50 text-brand-700 hover:bg-brand-100; }
+  .btn-ghost   { @apply btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50; }
+  .btn-danger  { @apply btn bg-rose-600 text-white hover:bg-rose-700; }
+
+  /* ---------- form fields ---------- */
+  .field {
+    @apply min-h-[44px] w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition
+           placeholder:text-slate-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-100 md:min-h-[40px];
+  }
+  .label { @apply mb-1.5 block text-xs font-semibold text-slate-600; }
+
+  /* ---------- status badges ---------- */
+  .badge { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold; }
+  .badge-ok     { @apply badge bg-emerald-50 text-emerald-700; }
+  .badge-warn   { @apply badge bg-amber-50 text-amber-700; }
+  .badge-danger { @apply badge bg-rose-50 text-rose-700; }
+  .badge-info   { @apply badge bg-brand-50 text-brand-700; }
+  .badge-mute   { @apply badge bg-slate-100 text-slate-600; }
+
+  /* ---------- tables: scroll sideways inside their own box, never push the page ---------- */
+  .table-wrap { @apply w-full overflow-x-auto rounded-2xl border border-slate-200 bg-white; }
+  .table-wrap table { @apply w-full min-w-[640px] text-left text-sm; }
+  .table-wrap th { @apply whitespace-nowrap bg-slate-50 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500; }
+  .table-wrap td { @apply border-t border-slate-100 px-4 py-3; }
+  .table-wrap tbody tr:hover { @apply bg-slate-50/70; }
+
+  /* ---------- fluid grids: columns appear as the screen allows ---------- */
+  .grid-auto-sm { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+  .grid-auto-md { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+
+  /* ---------- modal on desktop, bottom sheet on phones ---------- */
+  .sheet {
+    @apply fixed inset-x-0 bottom-0 z-50 max-h-[90vh] overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl animate-sheet-up
+           md:inset-auto md:left-1/2 md:top-1/2 md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-3xl;
+  }
+  .pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + .25rem); }
 }
 
-/* respect people who turn animations off */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 
-/* A4 Portrait Checkpoint Sheet (1 QR per A4 Page) */
+/* A4 Portrait Checkpoint Sheet (1 QR per A4 Page) — unchanged so printing keeps working */
 .qr-a4-page {
-  width: 210mm;
-  min-height: 297mm;
-  max-height: 297mm;
-  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12);
-  border-radius: 12px;
+  width: 210mm; min-height: 297mm; max-height: 297mm;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12); border-radius: 12px;
 }
-
 @media print {
-  @page {
-    size: A4 portrait;
-    margin: 0mm;
-  }
-  body {
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #ffffff !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
+  @page { size: A4 portrait; margin: 0mm; }
+  body { margin: 0 !important; padding: 0 !important; background: #ffffff !important;
+         -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   .qr-a4-page {
-    width: 210mm !important;
-    height: 297mm !important;
-    min-height: 297mm !important;
-    max-height: 297mm !important;
-    margin: 0 !important;
-    padding: 10mm !important;
-    box-shadow: none !important;
-    border-radius: 0 !important;
-    page-break-after: always !important;
-    break-after: page !important;
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
+    width: 210mm !important; height: 297mm !important; min-height: 297mm !important; max-height: 297mm !important;
+    margin: 0 !important; padding: 10mm !important; box-shadow: none !important; border-radius: 0 !important;
+    page-break-after: always !important; break-after: page !important;
+    page-break-inside: avoid !important; break-inside: avoid !important;
   }
-}
-
-
-/* Rakshak Light Premium design system */
-:root {
-  color-scheme: light;
-  --rk-ink: #14243b;
-  --rk-muted: #6b7b91;
-  --rk-line: #e7edf5;
-  --rk-canvas: #f5f8fc;
-  --rk-blue: #245bdb;
-  --rk-blue-soft: #edf4ff;
-  --rk-shadow: 0 8px 24px -16px rgba(20, 43, 77, .24), 0 1px 2px rgba(20, 43, 77, .04);
-}
-
-html { background: var(--rk-canvas); }
-body {
-  background:
-    radial-gradient(ellipse at 15% -10%, rgba(37, 99, 235, .055), transparent 35%),
-    var(--rk-canvas);
-  color: var(--rk-ink);
-  letter-spacing: -0.008em;
-}
-
-.rakshak-shell { min-height: 100vh; }
-.rakshak-sidebar {
-  background: rgba(255,255,255,.96) !important;
-  border-color: #e8eef6 !important;
-  box-shadow: 8px 0 28px -28px rgba(16, 42, 84, .30);
-}
-.rakshak-brand { min-height: 76px; border-color: var(--rk-line) !important; }
-.rakshak-nav-link {
-  min-height: 42px;
-  border-radius: 12px !important;
-  letter-spacing: -.01em;
-}
-.rakshak-nav-link[aria-current="page"] { box-shadow: inset 0 0 0 1px rgba(36,91,219,.08); }
-.rakshak-topbar {
-  height: 68px !important;
-  background: rgba(255,255,255,.90) !important;
-  border-color: var(--rk-line) !important;
-  box-shadow: 0 4px 18px -18px rgba(20,43,77,.38);
-}
-.rakshak-main { min-height: calc(100vh - 68px); }
-
-.card {
-  border-color: #e7edf5 !important;
-  border-radius: 18px !important;
-  box-shadow: var(--rk-shadow) !important;
-}
-.card-hover:hover {
-  border-color: #c8d9f5 !important;
-  box-shadow: 0 16px 34px -22px rgba(36,91,219,.34), 0 2px 5px rgba(20,43,77,.05) !important;
-}
-
-/* Keep existing Tailwind-driven screens, but give common controls one consistent finish. */
-input:not([type="checkbox"]):not([type="radio"]),
-select, textarea {
-  border-color: #dce5f0;
-  border-radius: 11px;
-  color: #172b45;
-  box-shadow: 0 1px 2px rgba(20,43,77,.025);
-}
-input:not([type="checkbox"]):not([type="radio"]):focus,
-select:focus, textarea:focus {
-  border-color: #7aa4f5;
-  box-shadow: 0 0 0 3px rgba(36,91,219,.11);
-  outline: none;
-}
-button { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, a:focus-visible { outline-color: #4b83ee; }
-
-.rakshak-login {
-  background:
-    radial-gradient(circle at 18% 16%, rgba(65, 125, 240, .10), transparent 28%),
-    radial-gradient(circle at 90% 82%, rgba(22, 163, 153, .07), transparent 24%),
-    #f5f8fc;
-}
-.rakshak-login-panel {
-  background: linear-gradient(145deg, #10294d 0%, #173c70 56%, #2052a2 100%);
-}
-.rakshak-login-panel::before,
-.rakshak-login-panel::after {
-  content: '';
-  position: absolute;
-  border: 1px solid rgba(255,255,255,.11);
-  border-radius: 9999px;
-  pointer-events: none;
-}
-.rakshak-login-panel::before { width: 520px; height: 520px; right: -245px; top: -240px; }
-.rakshak-login-panel::after { width: 390px; height: 390px; right: -180px; top: -175px; }
-.rakshak-login-card {
-  border: 1px solid rgba(222,231,243,.95);
-  border-radius: 24px;
-  background: rgba(255,255,255,.96);
-  box-shadow: 0 24px 70px -42px rgba(20,43,77,.34), 0 2px 7px rgba(20,43,77,.04);
-}
-
-@media (max-width: 767px) {
-  .rakshak-main { min-height: calc(100vh - 64px); }
-  .card { border-radius: 15px !important; }
 }

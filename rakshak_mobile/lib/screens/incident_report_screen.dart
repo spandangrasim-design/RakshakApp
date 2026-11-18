@@ -339,15 +339,14 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F8FC),
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
           'Report Security Incident',
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF172B4D),
-        surfaceTintColor: Colors.transparent,
+        backgroundColor: const Color(0xFF0F172A),
+        foregroundColor: Colors.white,
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),

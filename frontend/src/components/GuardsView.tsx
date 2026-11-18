@@ -683,7 +683,7 @@ export const GuardsView: React.FC = () => {
   );
 
   return (
-    <div className="rk-page rk-page-guards min-h-screen bg-[#f8fafc] p-6 font-sans">
+    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">

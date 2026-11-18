@@ -93,23 +93,21 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        backgroundColor: const Color(0xFFF5F8FC),
+        backgroundColor: const Color(0xFFF8FAFC),
         appBar: AppBar(
           title: const Text(
             'Incident Tickets',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
           ),
-          backgroundColor: Colors.white,
-          foregroundColor: const Color(0xFF172B4D),
-          surfaceTintColor: Colors.transparent,
+          backgroundColor: const Color(0xFF1E3A8A),
+          foregroundColor: Colors.white,
           elevation: 0,
           bottom: TabBar(
-            indicator: BoxDecoration(color: const Color(0xFFEDF4FF), borderRadius: BorderRadius.circular(12)),
-            indicatorPadding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
-            dividerColor: Colors.transparent,
-            labelColor: const Color(0xFF245BDB),
-            unselectedLabelColor: const Color(0xFF7B8AA0),
-            labelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+            indicatorColor: Colors.white,
+            indicatorWeight: 3,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            labelStyle: const TextStyle(fontWeight: FontWeight.bold),
             tabs: [
               Tab(text: 'Active (${activeIncidents.length})'),
               Tab(text: 'Resolved (${resolvedIncidents.length})'),
@@ -173,7 +171,7 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
     return RefreshIndicator(
       onRefresh: _loadAllIncidents,
       child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 80),
         itemCount: incidents.length,
         itemBuilder: (context, index) {
           final incident = incidents[index] as Map<String, dynamic>;
@@ -190,16 +188,16 @@ class _IncidentListScreenState extends State<IncidentListScreen> {
                   .toString();
 
           return Container(
-            margin: const EdgeInsets.only(bottom: 14),
+            margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFCFDFF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFFE3EAF4)),
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF17345F).withOpacity(.045),
-                  blurRadius: 16,
-                  offset: const Offset(0, 5),
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
                 ),
               ],
             ),

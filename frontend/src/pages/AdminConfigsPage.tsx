@@ -190,7 +190,7 @@ export default function AdminConfigsPage() {
   const isTelegramEnabled = configs['ENABLE_TELEGRAM'] === 'true';
 
   return (
-    <div className="rk-page rk-page-integrations min-h-screen bg-slate-50 py-10 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-slate-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         
         <div className="bg-slate-900 px-6 py-5 text-white">

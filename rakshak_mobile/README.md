@@ -17,7 +17,3 @@ samples, guidance on mobile development, and a full API reference.
 
 - How to use FlutLab? Please, view our https://flutlab.io/docs
 - Join the discussion and conversation on https://flutlab.io/residents
-
-## Light premium UI theme
-
-The app uses the shared Rakshak light theme (`lib/rakshak_theme.dart`) and bundles its brand mark at `assets/branding/rakshak-logo.png`. Run `flutter pub get` after pulling these changes so Flutter registers the asset. This is a presentation update; API, authentication, offline sync and permission behavior remain in the existing services and screens.

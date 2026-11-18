@@ -88,19 +88,18 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F8FC),
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('Activity Log', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF172B4D),
-        surfaceTintColor: Colors.transparent,
+        backgroundColor: const Color(0xFF1E3A8A),
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: _isSyncing
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(color: const Color(0xFF245BDB), strokeWidth: 2),
+                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                   )
                 : const Icon(Icons.sync),
             tooltip: 'Sync Offline Scans',
@@ -167,39 +166,55 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
   }
 
   Widget _buildSummaryCards() {
-    Widget metric({required String title, required int value, required String caption, required IconData icon, required Color color}) {
-      return Expanded(
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(colors: [Colors.white, Color(0xFFF8FAFE)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE3EAF4)),
-            boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.04), blurRadius: 15, offset: const Offset(0, 5))],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                Container(width: 34, height: 34, decoration: BoxDecoration(color: color.withOpacity(.10), borderRadius: BorderRadius.circular(11)), child: Icon(icon, color: color, size: 18)),
-                const Spacer(),
-                Text(value.toString(), style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900, color: color, letterSpacing: -.7)),
-              ]),
-              const SizedBox(height: 12),
-              Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: Color(0xFF172B4D))),
-              const SizedBox(height: 2),
-              Text(caption, style: const TextStyle(fontSize: 10, color: Color(0xFF718198))),
-            ],
-          ),
-        ),
-      );
-    }
-
     return Row(
       children: [
-        metric(title: 'Pending sync', value: _pendingScans.length, caption: 'Waiting for network', icon: Icons.cloud_upload_outlined, color: const Color(0xFFB7791F)),
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Pending Sync', style: TextStyle(color: Colors.black54, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text(
+                  '${_pendingScans.length}',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: _pendingScans.isNotEmpty ? const Color(0xFFD97706) : const Color(0xFF0F172A),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(width: 12),
-        metric(title: 'Verified scans', value: _syncedScans.length, caption: 'Uploaded successfully', icon: Icons.verified_outlined, color: const Color(0xFF12805C)),
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Verified Scans', style: TextStyle(color: Colors.black54, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text(
+                  '${_syncedScans.length}',
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -268,9 +283,8 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE3EAF4)),
-        boxShadow: [BoxShadow(color: const Color(0xFF17345F).withOpacity(.035), blurRadius: 12, offset: const Offset(0, 4))],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
       ),
       child: Row(
         children: [

@@ -172,12 +172,11 @@ class _PatrolScreenState extends State<PatrolScreen> {
     final isRoundFinished = totalStops > 0 && verifiedCount == totalStops;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F8FC),
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text('Active Patrol', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF172B4D),
-        surfaceTintColor: Colors.transparent,
+        backgroundColor: Colors.blue[900],
+        foregroundColor: Colors.white,
         elevation: 0,
         actions: [
           IconButton(

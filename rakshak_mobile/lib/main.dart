@@ -1,27 +1,25 @@
 import 'package:flutter/material.dart';
 import 'screens/login_screen.dart';
-import 'rakshak_theme.dart';
-import 'services/sync_service.dart'; // Add this import
+import 'services/sync_service.dart';
+import 'theme/app_theme.dart';
+import 'widgets/responsive.dart';
 
 void main() {
-  // Ensure native background channels are ready before the app starts
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Start the background network listener for the offline queue
   SyncService().initialize();
-
   runApp(const RakshakApp());
 }
 
 class RakshakApp extends StatelessWidget {
-  const RakshakApp({super.key}); // Updated to modern super.key syntax
+  const RakshakApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Rakshak Patrol',
       debugShowCheckedModeBanner: false,
-      theme: RakshakTheme.light(),
+      theme: AppTheme.light(),
+      builder: clampTextScale, // keeps layouts intact with very large system fonts
       home: const LoginScreen(),
     );
   }

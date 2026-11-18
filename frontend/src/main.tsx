@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import 'leaflet/dist/leaflet.css';
 import './index.css';
-import './rakshak-pages.css';
 import { installAuthFetch } from './services/api';
 import { installAlertShim } from './components/ui/Toast';
 

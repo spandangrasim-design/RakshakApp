@@ -316,7 +316,7 @@ export const IncidentsDashboard: React.FC = () => {
   };
 
   return (
-    <div className="rk-page rk-page-incidents min-h-screen bg-[#f8fafc] p-6 font-sans text-xs text-slate-800">
+    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans text-xs text-slate-800">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Top SOC Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">

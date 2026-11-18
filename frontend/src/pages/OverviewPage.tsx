@@ -164,9 +164,9 @@ export const OverviewPage: React.FC = () => {
   const openTotal = inc ? (Object.values(inc.open_by_priority) as number[]).reduce((a: number, b: number) => a + b, 0) || 1 : 1;
 
   return (
-    <div className="rk-page rk-page-overview overview-page mx-auto max-w-[1280px] space-y-6 p-4 md:p-6">
+    <div className="mx-auto max-w-[1280px] space-y-6 p-4 md:p-6">
       {/* Greeting */}
-      <div className="overview-heading flex flex-wrap items-end justify-between gap-3 animate-slide-up">
+      <div className="flex flex-wrap items-end justify-between gap-3 animate-slide-up">
         <div>
           <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">{greeting}{first ? `, ${first}` : ''} 👋</h2>
           <p className="text-sm text-slate-500">Here is what is happening across your sites right now.</p>

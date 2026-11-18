@@ -289,7 +289,7 @@ const TenantsPage: React.FC = () => {
   if (loading) return <div className="p-10 text-center text-slate-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>;
 
   return (
-    <div className="rk-page rk-page-tenants mx-auto max-w-7xl p-6">
+    <div className="mx-auto max-w-7xl p-6">
       <div className="mb-6 flex items-center gap-3">
         <Building2 className="h-6 w-6 text-blue-600" />
         <div>
