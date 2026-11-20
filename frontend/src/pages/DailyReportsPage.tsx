@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Mail, Plus, Trash2, Eye, Send, Save, X, Clock, CheckCircle2,
   AlertTriangle, Loader2, Download, MapPin, Users, Calendar, ShieldAlert,
-  FileSpreadsheet, Filter, ChevronDown, ChevronUp, RefreshCw, Check
+  FileSpreadsheet, Filter, ChevronDown, ChevronUp, RefreshCw, Check,
+  ChevronLeft, ChevronRight, Layers, SlidersHorizontal
 } from 'lucide-react';
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
@@ -389,430 +390,722 @@ export const DailyReportsPage: React.FC = () => {
     }
   };
 
+  const [workspaceView, setWorkspaceView] = useState<'dispatch' | 'automation' | 'logs'>('dispatch');
+  const [selectedReportKey, setSelectedReportKey] = useState<ReportCategory | 'ALL'>('daily');
+  const [logStatusFilter, setLogStatusFilter] = useState<'ALL' | 'SENT' | 'FAILED'>('ALL');
+  const [logPage, setLogPage] = useState<number>(1);
+  const [logPageSize, setLogPageSize] = useState<number>(20);
+
   if (loading) {
     return (
-      <div className="mx-auto max-w-5xl space-y-4 p-6">
+      <div className="mx-auto max-w-[1600px] space-y-4 p-6">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="skeleton h-32 rounded-2xl" />
+          <div key={i} className="skeleton h-28 rounded-2xl" />
         ))}
       </div>
     );
   }
 
+  const activeRuleCount = Object.values(schedules).filter((r) => r?.enabled).length;
+  const sentLogCount = log.filter((r) => r.status === 'SENT').length;
+  const failedLogCount = log.filter((r) => r.status === 'FAILED').length;
+
+  const visibleReportTypes =
+    selectedReportKey === 'ALL'
+      ? REPORT_TYPES
+      : REPORT_TYPES.filter((rt) => rt.key === selectedReportKey);
+
+  const filteredLog = log.filter((r) => {
+    if (logStatusFilter === 'SENT') return r.status === 'SENT';
+    if (logStatusFilter === 'FAILED') return r.status === 'FAILED';
+    return true;
+  });
+
+  const totalLogRecords = filteredLog.length;
+  const totalLogPages = Math.max(1, Math.ceil(totalLogRecords / logPageSize));
+  const safeLogPage = Math.min(logPage, totalLogPages);
+  const paginatedLog = filteredLog.slice((safeLogPage - 1) * logPageSize, safeLogPage * logPageSize);
+
+  const logPageNumbers: (number | 'ellipsis')[] = [];
+  if (totalLogPages <= 7) {
+    for (let i = 1; i <= totalLogPages; i++) logPageNumbers.push(i);
+  } else {
+    logPageNumbers.push(1);
+    if (safeLogPage > 3) logPageNumbers.push('ellipsis');
+    const start = Math.max(2, safeLogPage - 1);
+    const end = Math.min(totalLogPages - 1, safeLogPage + 1);
+    for (let i = start; i <= end; i++) logPageNumbers.push(i);
+    if (safeLogPage < totalLogPages - 2) logPageNumbers.push('ellipsis');
+    logPageNumbers.push(totalLogPages);
+  }
+
+  const logStartItem = totalLogRecords === 0 ? 0 : (safeLogPage - 1) * logPageSize + 1;
+  const logEndItem = Math.min(totalLogRecords, safeLogPage * logPageSize);
+
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-4 md:p-6">
-      {/* Clean Header Card */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div>
-          <h1 className="text-xl font-extrabold text-slate-900">Automated Reporting &amp; GPS Maps</h1>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Configure instant route-completion alerts, scheduled shift summaries, and Excel exports.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <label className="inline-flex cursor-pointer items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-700">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => {
-                setEnabled(e.target.checked);
-                setDirty(true);
-              }}
-              className="h-4 w-4 accent-brand-600"
-            />
-            <span>Automated Dispatch {enabled ? 'Active' : 'Paused'}</span>
-          </label>
-        </div>
-      </div>
-
-      {!gmailOn && (
-        <div className="flex items-center gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
-          <span>
-            Gmail OAuth integration is currently inactive. Connect Gmail under <strong>Integrations</strong> to enable automated email delivery.
-          </span>
-        </div>
-      )}
-
-      {/* Compact Filter Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500">
-            <Filter className="h-3.5 w-3.5 text-brand-600" />
-            Scope:
-          </span>
-          {[
-            { label: 'Today', days: 1 },
-            { label: 'Last 7 Days', days: 7 },
-            { label: 'Last 30 Days', days: 30 },
-          ].map((q) => (
-            <button
-              key={q.days}
-              type="button"
-              onClick={() => applyQuickRange(q.days)}
-              className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
-                activeQuickDays === q.days
-                  ? 'bg-brand-600 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {q.label}
-            </button>
-          ))}
-          <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => {
-                setDateFrom(e.target.value);
-                setActiveQuickDays(0);
-              }}
-              className="bg-transparent font-medium text-slate-700 outline-none"
-            />
-            <span className="text-slate-400">→</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => {
-                setDateTo(e.target.value);
-                setActiveQuickDays(0);
-              }}
-              className="bg-transparent font-medium text-slate-700 outline-none"
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={selectedGuardId}
-            onChange={(e) => setSelectedGuardId(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-brand-500 focus:bg-white"
-          >
-            <option value="">All Guards (Site-Wide)</option>
-            {guardsList.map((g) => (
-              <option key={g.guard_id} value={g.guard_id}>
-                {g.full_name} {g.employee_code ? `(${g.employee_code})` : ''}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={selectedShift}
-            onChange={(e) => setSelectedShift(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-brand-500 focus:bg-white"
-          >
-            <option value="">All Shifts</option>
-            {(shifts.length > 0 ? shifts : PRESET).map((s) => (
-              <option key={s.name} value={s.name}>
-                {s.name} ({s.start}–{s.end})
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Report Cards */}
-      <div className="space-y-3">
-        {REPORT_TYPES.map((rt) => {
-          const Icon = rt.icon;
-          const rule = schedules[rt.key] || { enabled: false, emails: '' };
-          return (
-            <div key={rt.key} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-sm font-extrabold text-slate-900">{rt.title}</h2>
-                      {rt.badge && (
-                        <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">
-                          {rt.badge}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-xs text-slate-500">{rt.subtitle}</p>
-                    <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
-                      <Clock className="h-3 w-3" />
-                      {rt.frequency}
-                    </div>
-                  </div>
-                </div>
-
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={rule.enabled}
-                    onChange={(e) => updateSchedule(rt.key, { enabled: e.target.checked })}
-                    className="h-3.5 w-3.5 accent-brand-600"
-                  />
-                  {rule.enabled ? 'Auto-Send On' : 'Off'}
-                </label>
-              </div>
-
-              <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-3.5 sm:flex-row sm:items-center">
-                <div className="flex-1">
-                  <EmailTagInput
-                    value={rule.emails}
-                    onChange={(val) => updateSchedule(rt.key, { emails: val })}
-                    placeholder="Type recipient email & press Enter (e.g. manager@site.com)..."
-                  />
-                </div>
-
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleReportAction(rt.key, 'preview')}
-                    disabled={!!actionBusy}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
-                  >
-                    {actionBusy === `${rt.key}:preview` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5 text-brand-600" />}
-                    Preview
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleReportAction(rt.key, 'download')}
-                    disabled={!!actionBusy}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
-                  >
-                    {actionBusy === `${rt.key}:download` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5 text-emerald-600" />}
-                    Excel
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleReportAction(rt.key, 'send')}
-                    disabled={!!actionBusy}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-brand-700 disabled:opacity-50"
-                  >
-                    {actionBusy === `${rt.key}:send` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    Send Now
-                  </button>
-                </div>
-              </div>
-
-              {/* Optional Per-Route Override Drawer inside Route Completion Card */}
-              {rt.key === 'route_completion' && routesList.length > 0 && (
-                <div className="mt-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowRouteOverrides((v) => !v)}
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-600 hover:underline"
-                  >
-                    <MapPin className="h-3.5 w-3.5" />
-                    {showRouteOverrides ? 'Hide' : 'Configure'} per-route recipient overrides ({routesList.length} routes)
-                    {showRouteOverrides ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                  </button>
-                  {showRouteOverrides && (
-                    <div className="mt-3 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 sm:grid-cols-2">
-                      {routesList.map((route) => (
-                        <div key={route.id} className="space-y-1">
-                          <div className="text-[11px] font-bold text-slate-700">{route.name}</div>
-                          <EmailTagInput
-                            value={routeEmailsMap[String(route.id)] || ''}
-                            onChange={(val) => updateRouteEmail(String(route.id), val)}
-                            placeholder={`Override for ${route.name}...`}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Shift Windows & Global Schedule Settings */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <div className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header with Workspace Dropdown */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
-            <h3 className="text-sm font-extrabold text-slate-900">Shift Windows &amp; Global Delivery Settings</h3>
-            <p className="text-xs text-slate-500">Define shift cutoffs, daily digest dispatch time, and fallback supervisor recipients.</p>
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              Daily Reports &amp; Automated Digests
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Generate on-demand GPS &amp; patrol reports, configure automated email schedules, or audit delivery logs.
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            {shifts.length === 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  setShifts(PRESET);
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Primary Workspace Dropdown */}
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <Layers className="h-3.5 w-3.5 text-brand-600" />
+              <span className="text-[11px] font-bold uppercase text-slate-400">Workspace:</span>
+              <select
+                value={workspaceView}
+                onChange={(e) => setWorkspaceView(e.target.value as any)}
+                className="bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+              >
+                <option value="dispatch">On-Demand Dispatch &amp; Report Rules</option>
+                <option value="automation">Shift Windows &amp; Global Schedule</option>
+                <option value="logs">Delivery History Log ({log.length})</option>
+              </select>
+            </div>
+
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => {
+                  setEnabled(e.target.checked);
                   setDirty(true);
                 }}
-                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-              >
-                Load 3-Shift Preset
-              </button>
-            )}
+                className="h-3.5 w-3.5 accent-brand-600"
+              />
+              <span>Auto-Dispatch: {enabled ? 'On' : 'Paused'}</span>
+            </label>
+
             <button
               type="button"
-              onClick={() => {
-                setShifts((p) => [...p, { name: 'Custom Shift', start: '08:00', end: '16:00' }]);
-                setDirty(true);
-              }}
-              className="inline-flex items-center gap-1 rounded-xl bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700 hover:bg-brand-100"
+              onClick={save}
+              disabled={saving || !dirty}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800 disabled:opacity-40"
             >
-              <Plus className="h-3.5 w-3.5" /> Add Shift
+              {saving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+              ) : dirty ? (
+                <Save className="h-3.5 w-3.5 text-emerald-400" />
+              ) : (
+                <Check className="h-3.5 w-3.5 text-emerald-400" />
+              )}
+              {dirty ? 'Save Changes' : 'Saved'}
             </button>
           </div>
         </div>
 
-        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs font-bold text-slate-700">Daily Consolidated Dispatch Time</label>
-            <input
-              type="time"
-              value={sendTime}
-              onChange={(e) => {
-                setSendTime(e.target.value);
-                setDirty(true);
-              }}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-            />
+        {!gmailOn && (
+          <div className="flex items-center gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>
+              Gmail OAuth integration is currently inactive. Connect Gmail under <strong>Integrations</strong> to enable automated email delivery.
+            </span>
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-bold text-slate-700">Post-Shift Buffer Delay (Minutes)</label>
-            <input
-              type="number"
-              min={0}
-              max={180}
-              value={delay}
-              onChange={(e) => {
-                setDelay(e.target.value);
-                setDirty(true);
-              }}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-            />
-          </div>
+        )}
+
+        {/* 4-Card Summary KPI Strip (Acts as Quick View Switcher) */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => setWorkspaceView('dispatch')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              workspaceView === 'dispatch'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${workspaceView === 'dispatch' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Active Report Rules
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">
+                {activeRuleCount} <span className="text-xs font-semibold opacity-60">/ {REPORT_TYPES.length}</span>
+              </div>
+            </div>
+            <SlidersHorizontal className={`h-5 w-5 ${workspaceView === 'dispatch' ? 'text-sky-400' : 'text-slate-400'}`} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setWorkspaceView('automation')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              workspaceView === 'automation'
+                ? 'border-indigo-500 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-indigo-700">Daily Digest Cutoff</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{sendTime}</div>
+            </div>
+            <Clock className="h-5 w-5 text-indigo-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setWorkspaceView('logs');
+              setLogStatusFilter('SENT');
+              setLogPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              workspaceView === 'logs' && logStatusFilter === 'SENT'
+                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-emerald-700">Delivered Reports</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{sentLogCount}</div>
+            </div>
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setWorkspaceView('logs');
+              setLogStatusFilter(failedLogCount > 0 ? 'FAILED' : 'ALL');
+              setLogPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              workspaceView === 'logs' && logStatusFilter === 'FAILED'
+                ? 'border-rose-500 bg-rose-50/70 ring-2 ring-rose-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-rose-700">Delivery Failures</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{failedLogCount}</div>
+            </div>
+            <AlertTriangle className="h-5 w-5 text-rose-600" />
+          </button>
         </div>
 
-        {shifts.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-400">
-            No shifts configured yet.
+        {/* VIEW 1: ON-DEMAND DISPATCH & REPORT CATALOG (Dropdown-Focused) */}
+        {workspaceView === 'dispatch' && (
+          <div className="space-y-4">
+            {/* Unified Report & Scope Filter Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* Report Type Selector Dropdown */}
+                <div className="flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50/50 px-3 py-1.5">
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-brand-600" />
+                  <span className="text-[11px] font-bold text-brand-700">Report Type:</span>
+                  <select
+                    value={selectedReportKey}
+                    onChange={(e) => setSelectedReportKey(e.target.value as any)}
+                    className="bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+                  >
+                    {REPORT_TYPES.map((rt) => (
+                      <option key={rt.key} value={rt.key}>
+                        {rt.title}
+                      </option>
+                    ))}
+                    <option value="ALL">Show All 7 Report Rules</option>
+                  </select>
+                </div>
+
+                <div className="mx-0.5 h-4 w-px bg-slate-200" />
+
+                {/* Date Scope Dropdown */}
+                <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5">
+                  <Filter className="h-3.5 w-3.5 text-slate-400" />
+                  <select
+                    value={activeQuickDays}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (val > 0) applyQuickRange(val);
+                      else setActiveQuickDays(0);
+                    }}
+                    className="bg-transparent text-xs font-bold text-slate-700 outline-none"
+                  >
+                    <option value={1}>Today</option>
+                    <option value={7}>Last 7 Days</option>
+                    <option value={30}>Last 30 Days</option>
+                    <option value={0}>Custom Range</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs">
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => {
+                      setDateFrom(e.target.value);
+                      setActiveQuickDays(0);
+                    }}
+                    className="bg-transparent font-medium text-slate-700 outline-none"
+                  />
+                  <span className="text-slate-400">→</span>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => {
+                      setDateTo(e.target.value);
+                      setActiveQuickDays(0);
+                    }}
+                    className="bg-transparent font-medium text-slate-700 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={selectedGuardId}
+                  onChange={(e) => setSelectedGuardId(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-brand-500 focus:bg-white"
+                >
+                  <option value="">All Guards (Site-Wide)</option>
+                  {guardsList.map((g) => (
+                    <option key={g.guard_id} value={g.guard_id}>
+                      {g.full_name} {g.employee_code ? `(${g.employee_code})` : ''}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={selectedShift}
+                  onChange={(e) => setSelectedShift(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-brand-500 focus:bg-white"
+                >
+                  <option value="">All Shifts</option>
+                  {(shifts.length > 0 ? shifts : PRESET).map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name} ({s.start}–{s.end})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Selected Report Card(s) */}
+            <div className="space-y-3">
+              {visibleReportTypes.map((rt) => {
+                const Icon = rt.icon;
+                const rule = schedules[rt.key] || { enabled: false, emails: '' };
+                return (
+                  <div
+                    key={rt.key}
+                    className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs transition hover:border-slate-300"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+                          <Icon className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-sm font-extrabold text-slate-900">{rt.title}</h2>
+                            {rt.badge && (
+                              <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">
+                                {rt.badge}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-xs text-slate-500">{rt.subtitle}</p>
+                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                            <Clock className="h-3 w-3" />
+                            Schedule: <strong className="text-slate-600">{rt.frequency}</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          onChange={(e) => updateSchedule(rt.key, { enabled: e.target.checked })}
+                          className="h-3.5 w-3.5 accent-brand-600"
+                        />
+                        {rule.enabled ? 'Auto-Send Enabled' : 'Auto-Send Off'}
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center">
+                      <div className="flex-1">
+                        <EmailTagInput
+                          value={rule.emails}
+                          onChange={(val) => updateSchedule(rt.key, { emails: val })}
+                          placeholder="Type recipient email & press Enter (e.g. manager@site.com)..."
+                        />
+                      </div>
+
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleReportAction(rt.key, 'preview')}
+                          disabled={!!actionBusy}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+                        >
+                          {actionBusy === `${rt.key}:preview` ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Eye className="h-3.5 w-3.5 text-brand-600" />
+                          )}
+                          Preview
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleReportAction(rt.key, 'download')}
+                          disabled={!!actionBusy}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100"
+                        >
+                          {actionBusy === `${rt.key}:download` ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5" />
+                          )}
+                          Export Excel
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleReportAction(rt.key, 'send')}
+                          disabled={!!actionBusy}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-50"
+                        >
+                          {actionBusy === `${rt.key}:send` ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                          ) : (
+                            <Send className="h-3.5 w-3.5 text-emerald-400" />
+                          )}
+                          Send Now
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Optional Per-Route Override Drawer inside Route Completion Card */}
+                    {rt.key === 'route_completion' && routesList.length > 0 && (
+                      <div className="mt-3 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowRouteOverrides((v) => !v)}
+                          className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-600 hover:underline"
+                        >
+                          <MapPin className="h-3.5 w-3.5" />
+                          {showRouteOverrides ? 'Hide' : 'Configure'} per-route recipient overrides ({routesList.length} routes)
+                          {showRouteOverrides ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                        </button>
+                        {showRouteOverrides && (
+                          <div className="mt-3 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {routesList.map((route) => (
+                              <div key={route.id} className="space-y-1">
+                                <div className="text-[11px] font-bold text-slate-700">{route.name}</div>
+                                <EmailTagInput
+                                  value={routeEmailsMap[String(route.id)] || ''}
+                                  onChange={(val) => updateRouteEmail(String(route.id), val)}
+                                  placeholder={`Override for ${route.name}...`}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        ) : (
-          <div className="space-y-2">
-            {shifts.map((s, i) => (
-              <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-                <input
-                  value={s.name}
-                  onChange={(e) => updateShift(i, { name: e.target.value })}
-                  placeholder="Shift name"
-                  className="min-w-[8rem] flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold outline-none focus:border-brand-500"
-                />
-                <input
-                  type="time"
-                  value={s.start}
-                  onChange={(e) => updateShift(i, { start: e.target.value })}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                />
-                <span className="text-xs text-slate-400">to</span>
-                <input
-                  type="time"
-                  value={s.end}
-                  onChange={(e) => updateShift(i, { end: e.target.value })}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                />
+        )}
+
+        {/* VIEW 2: SHIFT WINDOWS & GLOBAL DELIVERY SETTINGS */}
+        {workspaceView === 'automation' && (
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Shift Windows &amp; Global Delivery Settings</h3>
+                <p className="text-xs text-slate-500">
+                  Define shift cutoffs, daily digest dispatch time, and fallback supervisor recipients.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {shifts.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShifts(PRESET);
+                      setDirty(true);
+                    }}
+                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                  >
+                    Load 3-Shift Preset
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
-                    setShifts((p) => p.filter((_, idx) => idx !== i));
+                    setShifts((p) => [...p, { name: 'Custom Shift', start: '08:00', end: '16:00' }]);
                     setDirty(true);
                   }}
-                  className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                  className="inline-flex items-center gap-1 rounded-xl bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700 hover:bg-brand-100"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Plus className="h-3.5 w-3.5" /> Add Shift
                 </button>
               </div>
-            ))}
-          </div>
-        )}
+            </div>
 
-        <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
-          <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
-            <input
-              type="checkbox"
-              checked={toSupervisor}
-              onChange={(e) => {
-                setToSupervisor(e.target.checked);
-                setDirty(true);
-              }}
-              className="h-4 w-4 accent-brand-600"
-            />
-            Also copy each guard&apos;s assigned supervisor on shift &amp; route-completion reports
-          </label>
-          <div>
-            <div className="mb-1 text-xs font-bold text-slate-600">Fallback Recipient Email(s)</div>
-            <EmailTagInput
-              value={emails}
-              onChange={(val) => {
-                setEmails(val);
-                setDirty(true);
-              }}
-              placeholder="admin@company.com..."
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* Sticky Save Bar */}
-      <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || !dirty}
-          className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700 disabled:opacity-40"
-        >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : dirty ? <Save className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-          {dirty ? 'Save Automation Settings' : 'Settings Saved'}
-        </button>
-        <span className="text-xs text-slate-500">
-          Daily dispatch time set to <strong>{sendTime}</strong>
-        </span>
-        {dirty && <span className="ml-auto text-xs font-bold text-amber-600">Unsaved changes</span>}
-      </div>
-
-      {/* Dispatch Log */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-extrabold text-slate-900">Automated &amp; Manual Dispatch Log</h3>
-          <button
-            type="button"
-            onClick={loadLog}
-            className="inline-flex items-center gap-1 text-xs font-bold text-brand-600 hover:underline"
-          >
-            <RefreshCw className="h-3.5 w-3.5" /> Refresh
-          </button>
-        </div>
-        {log.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">
-            No reports dispatched yet.
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {log.map((r, i) => (
-              <div key={i} className="flex flex-wrap items-center gap-3 py-2.5">
-                <CheckCircle2 className={`h-4 w-4 ${r.status === 'SENT' ? 'text-emerald-500' : 'text-slate-300'}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-bold text-slate-900">
-                    {r.guard_name && r.guard_name !== 'Unknown' ? r.guard_name : r.shift_name}{' '}
-                    <span className="font-medium text-slate-400">
-                      · {r.shift_name} · {r.report_date}
-                    </span>
-                  </div>
-                  <div className="truncate text-xs text-slate-400">{r.error ? r.error : r.recipients || '—'}</div>
-                </div>
-                <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${STATUS[r.status] || STATUS.PENDING}`}>
-                  {r.status}
-                </span>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Daily Consolidated Dispatch Time</label>
+                <input
+                  type="time"
+                  value={sendTime}
+                  onChange={(e) => {
+                    setSendTime(e.target.value);
+                    setDirty(true);
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
+                />
               </div>
-            ))}
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Post-Shift Buffer Delay (Minutes)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={180}
+                  value={delay}
+                  onChange={(e) => {
+                    setDelay(e.target.value);
+                    setDirty(true);
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
+                />
+              </div>
+            </div>
+
+            {shifts.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
+                No shifts configured yet. Click &ldquo;Load 3-Shift Preset&rdquo; or &ldquo;Add Shift&rdquo;.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
+                {shifts.map((s, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <input
+                      value={s.name}
+                      onChange={(e) => updateShift(i, { name: e.target.value })}
+                      placeholder="Shift name"
+                      className="min-w-[7rem] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold outline-none focus:border-brand-500"
+                    />
+                    <input
+                      type="time"
+                      value={s.start}
+                      onChange={(e) => updateShift(i, { start: e.target.value })}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                    />
+                    <span className="text-xs text-slate-400">–</span>
+                    <input
+                      type="time"
+                      value={s.end}
+                      onChange={(e) => updateShift(i, { end: e.target.value })}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShifts((p) => p.filter((_, idx) => idx !== i));
+                        setDirty(true);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-3 border-t border-slate-100 pt-4">
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={toSupervisor}
+                  onChange={(e) => {
+                    setToSupervisor(e.target.checked);
+                    setDirty(true);
+                  }}
+                  className="h-4 w-4 accent-brand-600"
+                />
+                Also copy each guard&apos;s assigned supervisor on shift &amp; route-completion reports
+              </label>
+              <div>
+                <div className="mb-1 text-xs font-bold text-slate-600">Fallback Recipient Email(s)</div>
+                <EmailTagInput
+                  value={emails}
+                  onChange={(val) => {
+                    setEmails(val);
+                    setDirty(true);
+                  }}
+                  placeholder="admin@company.com..."
+                />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* VIEW 3: PAGINATED DELIVERY HISTORY TABLE */}
+        {workspaceView === 'logs' && (
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3.5">
+              <div className="flex items-center gap-1.5">
+                {(['ALL', 'SENT', 'FAILED'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => {
+                      setLogStatusFilter(st);
+                      setLogPage(1);
+                    }}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                      logStatusFilter === st
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {st === 'ALL' ? 'All Dispatches' : st === 'SENT' ? 'Sent' : 'Failed'}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={loadLog}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> Refresh Log
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <th className="py-3.5 pl-5 pr-3">Report / Guard</th>
+                    <th className="w-[150px] px-3 py-3.5">Shift / Type</th>
+                    <th className="w-[130px] px-3 py-3.5">Report Date</th>
+                    <th className="px-3 py-3.5">Recipients / Delivery Note</th>
+                    <th className="w-[115px] py-3.5 pl-3 pr-5 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedLog.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-12 text-center text-sm text-slate-400">
+                        No dispatch log entries match this filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedLog.map((r, i) => (
+                      <tr key={i} className="transition-colors hover:bg-slate-50/90">
+                        <td className="py-3.5 pl-5 pr-3 font-bold text-slate-900">
+                          {r.guard_name && r.guard_name !== 'Unknown' ? r.guard_name : r.shift_name}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3.5 text-slate-600">{r.shift_name}</td>
+                        <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-600">
+                          {r.report_date}
+                        </td>
+                        <td className="max-w-md truncate px-3 py-3.5 text-slate-500">
+                          {r.error ? <span className="text-rose-600 font-semibold">{r.error}</span> : r.recipients || '—'}
+                        </td>
+                        <td className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right">
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                              STATUS[r.status] || STATUS.PENDING
+                            }`}
+                          >
+                            {r.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Numbered Pagination Footer */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+              <div className="flex items-center gap-3 text-xs text-slate-600">
+                <span>
+                  Showing <strong className="font-mono text-slate-900">{logStartItem}</strong>–
+                  <strong className="font-mono text-slate-900">{logEndItem}</strong> of{' '}
+                  <strong className="font-mono text-slate-900">{totalLogRecords}</strong> dispatches
+                </span>
+
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">Per page:</span>
+                  <select
+                    value={logPageSize}
+                    onChange={(e) => {
+                      setLogPageSize(Number(e.target.value));
+                      setLogPage(1);
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                  >
+                    <option value={20}>20</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={safeLogPage <= 1}
+                  onClick={() => setLogPage((p) => Math.max(1, p - 1))}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                </button>
+
+                {logPageNumbers.map((pNum, idx) =>
+                  pNum === 'ellipsis' ? (
+                    <span key={`el-${idx}`} className="px-2 text-slate-400">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={pNum}
+                      type="button"
+                      onClick={() => setLogPage(pNum)}
+                      className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
+                        safeLogPage === pNum
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {pNum}
+                    </button>
+                  )
+                )}
+
+                <button
+                  type="button"
+                  disabled={safeLogPage >= totalLogPages}
+                  onClick={() => setLogPage((p) => Math.min(totalLogPages, p + 1))}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                >
+                  Next <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
-      </section>
+      </div>
 
       {/* Clean Email & GPS Map Preview Modal */}
       {preview && (
