@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2, Plus, Save, Ban, CheckCircle2, UserPlus, Loader2,
   UploadCloud, Trash2, RefreshCw, AlertCircle, MapPin,
+  Search, Layers, ShieldCheck, X
 } from 'lucide-react';
 
 const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
@@ -288,251 +289,528 @@ const TenantsPage: React.FC = () => {
 
   if (loading) return <div className="p-10 text-center text-slate-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>;
 
+  const [tenantWorkspace, setTenantWorkspace] = useState<'all' | 'modules' | 'branding' | 'security'>('all');
+  const [tenantSearch, setTenantSearch] = useState<string>('');
+  const [tenantStatusFilter, setTenantStatusFilter] = useState<'ALL' | 'ACTIVE' | 'SUSPENDED'>('ALL');
+
+  const activeTenantsCount = tenants.filter((t) => t.status === 'ACTIVE').length;
+  const suspendedTenantsCount = tenants.filter((t) => t.status !== 'ACTIVE').length;
+  const enabledModulesCount = CATALOG.filter((m) => isOn(draft, m.path)).length;
+
+  const filteredTenants = tenants.filter((t) => {
+    if (tenantStatusFilter === 'ACTIVE' && t.status !== 'ACTIVE') return false;
+    if (tenantStatusFilter === 'SUSPENDED' && t.status === 'ACTIVE') return false;
+    if (tenantSearch.trim()) {
+      const q = tenantSearch.trim().toLowerCase();
+      if (!t.name.toLowerCase().includes(q) && !t.id.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
   return (
-    <div className="mx-auto max-w-7xl p-6">
-      <div className="mb-6 flex items-center gap-3">
-        <Building2 className="h-6 w-6 text-blue-600" />
-        <div>
-          <h1 className="text-xl font-black text-slate-900">Industries, Branding &amp; Entitlements</h1>
-          <p className="text-xs text-slate-500">
-            Configure custom logos and module licences per industry. Logos propagate automatically across headers, reports, mobile apps, and QR A4 PDFs.
-          </p>
-        </div>
-      </div>
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <div className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header with Industry & Section Dropdowns */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div>
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              Industries, Branding &amp; Entitlements
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Manage plant tenants, custom logos, module licences, and Industry Admin credentials.
+            </p>
+          </div>
 
-      {keyWarning && (
-        <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
-          Security warning: {keyWarning}
-        </div>
-      )}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {tenants.length > 0 && (
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <Building2 className="h-3.5 w-3.5 text-brand-600" />
+                <span className="text-[11px] font-bold uppercase text-slate-400">Tenant:</span>
+                <select
+                  value={selectedId || ''}
+                  onChange={(e) => {
+                    const found = tenants.find((t) => t.id === e.target.value);
+                    if (found) select(found);
+                  }}
+                  className="max-w-[200px] truncate bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+                >
+                  {tenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-      {pwLeft !== null && pwLeft > 0 && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          <span><strong>{pwLeft}</strong> account(s) still store a plain-text password.</span>
-          <button onClick={securePasswords} disabled={pwBusy}
-            className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50">
-            {pwBusy ? 'Securing…' : 'Secure passwords now'}
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <Layers className="h-3.5 w-3.5 text-brand-600" />
+              <span className="text-[11px] font-bold uppercase text-slate-400">Section:</span>
+              <select
+                value={tenantWorkspace}
+                onChange={(e) => setTenantWorkspace(e.target.value as any)}
+                className="bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+              >
+                <option value="all">All Settings</option>
+                <option value="modules">Module &amp; Feature Licences ({enabledModulesCount}/{CATALOG.length})</option>
+                <option value="branding">Branding &amp; Site Address</option>
+                <option value="security">Admins &amp; QR Key Rotation</option>
+              </select>
+            </div>
+
+            {selected && (
+              <button
+                type="button"
+                onClick={save}
+                disabled={!dirty || saving}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800 disabled:opacity-40"
+              >
+                <Save className="h-3.5 w-3.5 text-emerald-400" />
+                {saving ? 'Saving…' : dirty ? 'Save Changes' : 'Saved'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 4-Card Summary KPI Strip */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => setTenantStatusFilter('ALL')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              tenantStatusFilter === 'ALL'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${tenantStatusFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Total Industries
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">{tenants.length}</div>
+            </div>
+            <Building2 className={`h-5 w-5 ${tenantStatusFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTenantStatusFilter('ACTIVE')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              tenantStatusFilter === 'ACTIVE'
+                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-emerald-700">Active Tenants</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{activeTenantsCount}</div>
+            </div>
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTenantStatusFilter('SUSPENDED')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              tenantStatusFilter === 'SUSPENDED'
+                ? 'border-rose-500 bg-rose-50/70 ring-2 ring-rose-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-rose-700">Suspended</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{suspendedTenantsCount}</div>
+            </div>
+            <Ban className="h-5 w-5 text-rose-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTenantWorkspace('modules')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              tenantWorkspace === 'modules'
+                ? 'border-indigo-500 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-indigo-700">Licensed Modules</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">
+                {enabledModulesCount} <span className="text-xs font-semibold text-slate-400">/ {CATALOG.length}</span>
+              </div>
+            </div>
+            <ShieldCheck className="h-5 w-5 text-indigo-600" />
           </button>
         </div>
-      )}
 
-      {msg && <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800">{msg}</div>}
+        {keyWarning && (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3.5 text-xs font-bold text-rose-800">
+            Security warning: {keyWarning}
+          </div>
+        )}
 
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        {/* Tenant list */}
-        <aside className="space-y-3">
-          <form onSubmit={createTenant} className="flex gap-2">
-            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New industry name"
-              className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-            <button className="rounded-lg bg-blue-600 px-3 text-white hover:bg-blue-700" title="Create"><Plus className="h-4 w-4" /></button>
-          </form>
-          <ul className="space-y-1.5">
-            {tenants.map((t) => (
-              <li key={t.id}>
-                <button onClick={() => select(t)}
-                  className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
-                    t.id === selectedId ? 'border-blue-300 bg-blue-50 font-bold text-blue-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1">
-                      {t.logo_url ? (
-                        <img src={t.logo_url} alt={t.name} className="h-full w-full object-contain" />
-                      ) : (
-                        <Building2 className="h-4 w-4 text-slate-400" />
-                      )}
-                    </div>
-                    <span className="truncate">{t.name}</span>
-                  </div>
-                  {t.status !== 'ACTIVE' && <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">Suspended</span>}
-                </button>
-              </li>
-            ))}
-            {tenants.length === 0 && <li className="text-xs text-slate-400">No industries yet.</li>}
-          </ul>
-        </aside>
+        {pwLeft !== null && pwLeft > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900">
+            <span><strong>{pwLeft}</strong> account(s) still store a plain-text password.</span>
+            <button
+              type="button"
+              onClick={securePasswords}
+              disabled={pwBusy}
+              className="rounded-xl bg-amber-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {pwBusy ? 'Securing…' : 'Secure passwords now'}
+            </button>
+          </div>
+        )}
 
-        {/* Entitlements & Branding editor */}
-        {selected ? (
-          <section className="space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1.5">
-                  {logoPreview ? (
-                    <img src={logoPreview} alt={selected.name} className="h-full w-full object-contain" />
-                  ) : (
-                    <Building2 className="h-6 w-6 text-blue-600" />
-                  )}
-                </div>
-                <div>
-                  <div className="text-base font-black text-slate-900">{selected.name}</div>
-                  <div className="font-mono text-[11px] text-slate-400">{selected.id}</div>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                {selected.status === 'ACTIVE'
-                  ? <button onClick={() => setStatus('SUSPENDED')} className="flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50"><Ban className="h-3.5 w-3.5" />Suspend</button>
-                  : <button onClick={() => setStatus('ACTIVE')} className="flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50"><CheckCircle2 className="h-3.5 w-3.5" />Reactivate</button>}
-                <button onClick={save} disabled={!dirty || saving}
-                  className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-40">
-                  <Save className="h-3.5 w-3.5" />{saving ? 'Saving…' : 'Save changes'}
-                </button>
-              </div>
+        {msg && (
+          <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3.5 text-xs font-bold text-blue-800">
+            {msg}
+          </div>
+        )}
+
+        <div className="grid gap-5 lg:grid-cols-[310px_1fr]">
+          {/* Searchable Tenant Directory Sidebar */}
+          <aside className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs self-start">
+            <div className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+              Create New Industry
             </div>
-
-            {/* INDUSTRY LOGO UPLOAD & ADDRESS CARD */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
-              <div className="text-sm font-black text-slate-900">Industry Branding &amp; Site Address</div>
-
+            <form onSubmit={createTenant} className="flex gap-2">
               <input
-                ref={fileInputRef}
-                type="file"
-                accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleLogoFile(f);
-                  e.target.value = '';
-                }}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="New industry name..."
+                className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
               />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-3 text-white transition hover:bg-slate-800"
+                title="Create Industry"
+              >
+                <Plus className="h-4 w-4 text-emerald-400" />
+              </button>
+            </form>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Industry Logo (PNG, JPG, SVG · Max 5MB)
-                  </label>
-                  {logoPreview ? (
-                    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1.5">
-                          <img src={logoPreview} alt="Preview" className="max-h-12 w-auto object-contain" />
-                        </div>
-                        <div className="text-xs">
-                          <div className="font-bold text-emerald-700">Active Logo</div>
-                          <div className="text-[11px] text-slate-500">Shown on Header, PDF &amp; QR Sheets</div>
-                        </div>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" /> Replace
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setLogoPreview(null); setLogoBase64(null); }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" /> Remove
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-                      onDragLeave={() => setDragging(false)}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        setDragging(false);
-                        const f = e.dataTransfer.files?.[0];
-                        if (f) handleLogoFile(f);
-                      }}
-                      onClick={() => fileInputRef.current?.click()}
-                      className={`cursor-pointer rounded-xl border-2 border-dashed p-4 text-center transition ${
-                        dragging ? 'border-blue-600 bg-blue-50/50' : 'border-slate-300 bg-slate-50/50 hover:border-blue-500'
+            <div className="border-t border-slate-100 pt-3">
+              <div className="mb-2 flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 focus-within:border-brand-500 focus-within:bg-white">
+                <Search className="mr-1.5 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={tenantSearch}
+                  onChange={(e) => setTenantSearch(e.target.value)}
+                  placeholder="Filter industries..."
+                  className="w-full bg-transparent text-xs outline-none"
+                />
+                {tenantSearch && (
+                  <button type="button" onClick={() => setTenantSearch('')} className="text-slate-400 hover:text-slate-700">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <ul className="max-h-[540px] space-y-1.5 overflow-y-auto pr-0.5">
+                {filteredTenants.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      onClick={() => select(t)}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left text-xs transition ${
+                        t.id === selectedId
+                          ? 'border-slate-900 bg-slate-900 font-bold text-white shadow-xs'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                       }`}
                     >
-                      <UploadCloud className="mx-auto mb-1 h-7 w-7 text-blue-600" />
-                      <div className="text-xs font-bold text-slate-800">
-                        Drag &amp; drop logo here, or <span className="text-blue-600 underline">browse</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400">PNG, JPG, SVG up to 5MB</div>
-                    </div>
-                  )}
-                  {logoError && (
-                    <div className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-rose-600">
-                      <AlertCircle className="h-3.5 w-3.5" /> {logoError}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Facility / Plant Address
-                  </label>
-                  <div className="relative">
-                    <MapPin className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                    <textarea
-                      rows={3}
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      placeholder="e.g. Grasim Chemical Division, Plot 14, GIDC Industrial Estate"
-                      className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-blue-500"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              {CATALOG.map((m) => {
-                const on = isOn(draft, m.path);
-                return (
-                  <div key={m.path} className={`rounded-xl border p-4 ${on ? 'border-blue-200 bg-white' : 'border-slate-200 bg-slate-50'}`}>
-                    <label className="flex cursor-pointer items-center justify-between">
-                      <span className="text-sm font-black text-slate-900">{m.label}</span>
-                      <input type="checkbox" checked={on} onChange={() => toggle(`${m.path}.enabled`, true)} className="h-4 w-4 accent-blue-600" />
-                    </label>
-                    {on && m.path === 'module_patrol' && getPath(draft, 'module_patrol.allow_guest_enrollment') && (
-                      <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                        <label className="text-xs font-bold text-emerald-900">Site code for the Field app (6–12 letters/digits)</label>
-                        <div className="mt-1 flex gap-2">
-                          <input value={joinCode} onChange={(e) => setJoinCode(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
-                            placeholder="e.g. K7QM42XA" className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 font-mono text-sm uppercase outline-none focus:border-emerald-500" />
-                          <button type="button" onClick={makeCode} className="rounded-lg border border-emerald-300 px-3 text-xs font-bold text-emerald-800 hover:bg-emerald-100">Generate</button>
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1">
+                          {t.logo_url ? (
+                            <img src={t.logo_url} alt={t.name} className="h-full w-full object-contain" />
+                          ) : (
+                            <Building2 className="h-4 w-4 text-slate-400" />
+                          )}
                         </div>
-                        <p className="mt-1 text-[11px] text-emerald-800">Guards need this code to join. Without a code, nobody can join this industry.</p>
+                        <span className="truncate">{t.name}</span>
                       </div>
-                    )}
-                    {on && m.children.length > 0 && (
-                      <ul className="mt-3 space-y-1.5 border-t pt-3">
-                        {m.children.map((c) => (
-                          <li key={c.path}>
-                            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
-                              <input type="checkbox" checked={getPath(draft, c.path)} onChange={() => toggle(c.path, false)} className="h-3.5 w-3.5 accent-blue-600" />
-                              {c.label}
-                            </label>
-                          </li>
-                        ))}
-                      </ul>
+                      {t.status !== 'ACTIVE' && (
+                        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+                          Suspended
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+                {filteredTenants.length === 0 && (
+                  <li className="py-4 text-center text-xs text-slate-400">No matching industries.</li>
+                )}
+              </ul>
+            </div>
+          </aside>
+
+          {/* Entitlements & Branding Editor */}
+          {selected ? (
+            <section className="space-y-5">
+              {/* Selected Tenant Header Banner */}
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1.5">
+                    {logoPreview ? (
+                      <img src={logoPreview} alt={selected.name} className="h-full w-full object-contain" />
+                    ) : (
+                      <Building2 className="h-6 w-6 text-brand-600" />
                     )}
                   </div>
-                );
-              })}
-            </div>
-
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="text-sm font-black text-slate-900">QR code security</div>
-              <p className="mt-1 text-xs text-slate-500">After rotating the QR_SECRET on the server, re-sign all checkpoints so older QR codes stop working.</p>
-              <button onClick={resignCheckpoints} disabled={resigning}
-                className="mt-3 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50 disabled:opacity-50">
-                {resigning ? 'Re-signing…' : 'Re-sign all QR codes'}
-              </button>
-            </div>
-
-            <form onSubmit={createAdmin} className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900"><UserPlus className="h-4 w-4 text-blue-600" />Create Industry Admin (CSO / Plant Head)</div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <input required placeholder="Full name" value={admin.full_name} onChange={(e) => setAdmin({ ...admin, full_name: e.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-                <input required placeholder="Employee code (login)" value={admin.employee_code} onChange={(e) => setAdmin({ ...admin, employee_code: e.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500" />
-                <input required type="password" minLength={8} placeholder="Password (8+ chars)" value={admin.password} onChange={(e) => setAdmin({ ...admin, password: e.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500" />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-extrabold text-slate-900">{selected.name}</span>
+                      <span
+                        className={`rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                          selected.status === 'ACTIVE'
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-rose-200 bg-rose-50 text-rose-700'
+                        }`}
+                      >
+                        {selected.status}
+                      </span>
+                    </div>
+                    <div className="font-mono text-[11px] text-slate-400">{selected.id}</div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  {selected.status === 'ACTIVE' ? (
+                    <button
+                      type="button"
+                      onClick={() => setStatus('SUSPENDED')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                    >
+                      <Ban className="h-3.5 w-3.5" /> Suspend Tenant
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setStatus('ACTIVE')}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Reactivate Tenant
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={save}
+                    disabled={!dirty || saving}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:opacity-40"
+                  >
+                    <Save className="h-3.5 w-3.5" /> {saving ? 'Saving…' : 'Save Changes'}
+                  </button>
+                </div>
               </div>
-              <button className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-700">Create admin</button>
-            </form>
-          </section>
-        ) : (
-          <div className="text-sm text-slate-400">Create an industry to begin.</div>
-        )}
+
+              {/* SECTION 1: INDUSTRY LOGO UPLOAD & ADDRESS CARD */}
+              {(tenantWorkspace === 'all' || tenantWorkspace === 'branding') && (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+                  <div className="text-sm font-extrabold text-slate-900">Industry Branding &amp; Site Address</div>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleLogoFile(f);
+                      e.target.value = '';
+                    }}
+                  />
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Industry Logo (PNG, JPG, SVG · Max 5MB)
+                      </label>
+                      {logoPreview ? (
+                        <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white p-1.5">
+                              <img src={logoPreview} alt="Preview" className="max-h-12 w-auto object-contain" />
+                            </div>
+                            <div className="text-xs">
+                              <div className="font-bold text-emerald-700">Active Logo</div>
+                              <div className="text-[11px] text-slate-500">Shown on Header, PDF &amp; QR Sheets</div>
+                            </div>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => fileInputRef.current?.click()}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" /> Replace
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setLogoPreview(null); setLogoBase64(null); }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> Remove
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                          onDragLeave={() => setDragging(false)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDragging(false);
+                            const f = e.dataTransfer.files?.[0];
+                            if (f) handleLogoFile(f);
+                          }}
+                          onClick={() => fileInputRef.current?.click()}
+                          className={`cursor-pointer rounded-xl border-2 border-dashed p-4 text-center transition ${
+                            dragging ? 'border-brand-600 bg-brand-50/50' : 'border-slate-300 bg-slate-50/50 hover:border-brand-500'
+                          }`}
+                        >
+                          <UploadCloud className="mx-auto mb-1 h-7 w-7 text-brand-600" />
+                          <div className="text-xs font-bold text-slate-800">
+                            Drag &amp; drop logo here, or <span className="text-brand-600 underline">browse</span>
+                          </div>
+                          <div className="text-[11px] text-slate-400">PNG, JPG, SVG up to 5MB</div>
+                        </div>
+                      )}
+                      {logoError && (
+                        <div className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-rose-600">
+                          <AlertCircle className="h-3.5 w-3.5" /> {logoError}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Facility / Plant Address
+                      </label>
+                      <div className="relative">
+                        <MapPin className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                        <textarea
+                          rows={3}
+                          value={address}
+                          onChange={(e) => setAddress(e.target.value)}
+                          placeholder="e.g. Grasim Chemical Division, Plot 14, GIDC Industrial Estate"
+                          className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-brand-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION 2: MODULE ENTITLEMENTS GRID */}
+              {(tenantWorkspace === 'all' || tenantWorkspace === 'modules') && (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {CATALOG.map((m) => {
+                    const on = isOn(draft, m.path);
+                    return (
+                      <div key={m.path} className={`rounded-2xl border p-4 shadow-xs transition ${on ? 'border-blue-200 bg-white' : 'border-slate-200 bg-slate-50/80'}`}>
+                        <label className="flex cursor-pointer items-center justify-between">
+                          <span className="text-sm font-extrabold text-slate-900">{m.label}</span>
+                          <input type="checkbox" checked={on} onChange={() => toggle(`${m.path}.enabled`, true)} className="h-4 w-4 accent-brand-600" />
+                        </label>
+                        {on && m.path === 'module_patrol' && getPath(draft, 'module_patrol.allow_guest_enrollment') && (
+                          <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                            <label className="text-xs font-bold text-emerald-900">Site code for the Field app (6–12 chars)</label>
+                            <div className="mt-1 flex gap-2">
+                              <input
+                                value={joinCode}
+                                onChange={(e) => setJoinCode(e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 12))}
+                                placeholder="e.g. K7QM42XA"
+                                className="min-w-0 flex-1 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 font-mono text-xs uppercase outline-none focus:border-emerald-500"
+                              />
+                              <button type="button" onClick={makeCode} className="rounded-lg border border-emerald-300 px-2.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100">
+                                Generate
+                              </button>
+                            </div>
+                            <p className="mt-1 text-[11px] text-emerald-800">Guards need this code to join this industry.</p>
+                          </div>
+                        )}
+                        {on && m.children.length > 0 && (
+                          <ul className="mt-3 space-y-1.5 border-t border-slate-100 pt-3">
+                            {m.children.map((c) => (
+                              <li key={c.path}>
+                                <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
+                                  <input type="checkbox" checked={getPath(draft, c.path)} onChange={() => toggle(c.path, false)} className="h-3.5 w-3.5 accent-brand-600" />
+                                  {c.label}
+                                </label>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* SECTION 3: ADMIN ACCOUNT CREATION & QR KEY ROTATION */}
+              {(tenantWorkspace === 'all' || tenantWorkspace === 'security') && (
+                <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+                    <div className="text-sm font-extrabold text-slate-900">QR Code Security</div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      After rotating <code className="font-mono text-slate-700">QR_SECRET</code> on the server, re-sign all checkpoints so older QR codes stop working.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={resignCheckpoints}
+                      disabled={resigning}
+                      className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                    >
+                      {resigning ? 'Re-signing…' : 'Re-sign All QR Codes'}
+                    </button>
+                  </div>
+
+                  <form onSubmit={createAdmin} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+                    <div className="mb-3 flex items-center gap-2 text-sm font-extrabold text-slate-900">
+                      <UserPlus className="h-4 w-4 text-brand-600" />
+                      Create Industry Admin (CSO / Plant Head)
+                    </div>
+                    <div className="grid gap-2.5 sm:grid-cols-3">
+                      <input
+                        required
+                        placeholder="Full name"
+                        value={admin.full_name}
+                        onChange={(e) => setAdmin({ ...admin, full_name: e.target.value })}
+                        className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                      />
+                      <input
+                        required
+                        placeholder="Employee code (login)"
+                        value={admin.employee_code}
+                        onChange={(e) => setAdmin({ ...admin, employee_code: e.target.value })}
+                        className="rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
+                      />
+                      <input
+                        required
+                        type="password"
+                        minLength={8}
+                        placeholder="Password (8+ chars)"
+                        value={admin.password}
+                        onChange={(e) => setAdmin({ ...admin, password: e.target.value })}
+                        className="rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-brand-500"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="mt-3.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
+                    >
+                      Create Industry Admin
+                    </button>
+                  </form>
+                </div>
+              )}
+            </section>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-12 text-center text-sm text-slate-400">
+              Create an industry in the left panel to configure its branding and module licences.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
