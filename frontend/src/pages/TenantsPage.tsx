@@ -287,11 +287,11 @@ const TenantsPage: React.FC = () => {
     else flash(d.message);
   };
 
-  if (loading) return <div className="p-10 text-center text-slate-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>;
-
   const [tenantWorkspace, setTenantWorkspace] = useState<'all' | 'modules' | 'branding' | 'security'>('all');
   const [tenantSearch, setTenantSearch] = useState<string>('');
   const [tenantStatusFilter, setTenantStatusFilter] = useState<'ALL' | 'ACTIVE' | 'SUSPENDED'>('ALL');
+
+  if (loading) return <div className="p-10 text-center text-slate-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>;
 
   const activeTenantsCount = tenants.filter((t) => t.status === 'ACTIVE').length;
   const suspendedTenantsCount = tenants.filter((t) => t.status !== 'ACTIVE').length;
