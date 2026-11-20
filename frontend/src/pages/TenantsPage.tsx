@@ -631,7 +631,7 @@ const TenantsPage: React.FC = () => {
                         rows={3}
                         value={address}
                         onChange={(e) => setAddress(e.target.value)}
-                        placeholder="e.g. Grasim Chemical Division, Plot 14, GIDC Industrial Estate"
+                        placeholder="e.g., Plot 14, Sector 4, Industrial Estate"
                         className="w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-xs outline-none focus:border-brand-500"
                       />
                     </div>
@@ -791,7 +791,7 @@ const TenantsPage: React.FC = () => {
                   autoFocus
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g., Grasim Chemical Division - Dahej"
+                  placeholder="e.g., Chemical Manufacturing Unit - Site A"
                   className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-semibold outline-none focus:border-brand-500"
                 />
               </div>
