@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
+  ChevronLeft,
   ChevronRight,
   UserCheck,
   Shield,
@@ -14,7 +15,9 @@ import {
   Timer,
   Navigation,
   X,
-  Radio
+  Radio,
+  FileSpreadsheet,
+  Search
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
@@ -757,13 +760,59 @@ export const ReportsPage: React.FC = () => {
     XLSX.writeFile(wb, `Master_Patrol_Report_${dateTag}.xlsx`);
   };
 
-    const filteredRuns = useMemo(() => {
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'COMPLETED' | 'ACTIVE' | 'PENDING'>('ALL');
+  const [guardSearch, setGuardSearch] = useState<string>('');
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+
+  const scopeRuns = useMemo(() => {
     return allPatrolRuns.filter((run) => {
       if (selectedRouteFilter !== 'ALL' && run.roundId !== selectedRouteFilter) return false;
       if (selectedDate !== 'ALL' && run.dateKey !== selectedDate) return false;
       return true;
     });
   }, [allPatrolRuns, selectedRouteFilter, selectedDate]);
+
+  const filteredRuns = useMemo(() => {
+    return scopeRuns.filter((run) => {
+      if (statusFilter === 'COMPLETED' && run.status !== 'COMPLETED') return false;
+      if (statusFilter === 'ACTIVE' && !['IN_PROGRESS', 'PAUSED', 'PARTIAL'].includes(run.status)) return false;
+      if (statusFilter === 'PENDING' && run.status !== 'PENDING') return false;
+      if (guardSearch.trim()) {
+        const q = guardSearch.trim().toLowerCase();
+        const hay = `${run.guardName || ''} ${run.guardCode || ''} ${run.roundName || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [scopeRuns, statusFilter, guardSearch]);
+
+  const totalRecords = filteredRuns.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paginatedRuns = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filteredRuns.slice(start, start + pageSize);
+  }, [filteredRuns, safePage, pageSize]);
+
+  const pageNumbers = useMemo(() => {
+    const pages: (number | 'ellipsis')[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (safePage > 3) pages.push('ellipsis');
+      const start = Math.max(2, safePage - 1);
+      const end = Math.min(totalPages - 1, safePage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (safePage < totalPages - 2) pages.push('ellipsis');
+      pages.push(totalPages);
+    }
+    return pages;
+  }, [safePage, totalPages]);
+
+  const startItem = totalRecords === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const endItem = Math.min(totalRecords, safePage * pageSize);
 
   useEffect(() => {
     if (filteredRuns.length > 0 && (!selectedRunId || !filteredRuns.some((r) => r.runId === selectedRunId))) {
@@ -777,31 +826,152 @@ export const ReportsPage: React.FC = () => {
     [filteredRuns, selectedRunId]
   );
 
-  const completedCount = filteredRuns.filter((r) => r.status === 'COMPLETED').length;
-  const inProgressCount = filteredRuns.filter((r) => r.status === 'IN_PROGRESS').length;
-  const totalScansCount = filteredRuns.reduce((acc, r) => acc + r.scans.length, 0);
+  const completedCount = scopeRuns.filter((r) => r.status === 'COMPLETED').length;
+  const inProgressCount = scopeRuns.filter((r) => ['IN_PROGRESS', 'PAUSED', 'PARTIAL'].includes(r.status)).length;
+  const totalScansCount = scopeRuns.reduce((acc, r) => acc + r.scans.length, 0);
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans text-slate-800">
-      <div className="max-w-7xl mx-auto space-y-6">
-        {/* Top Header & Filters */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <div className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Patrol Audit & Live Route Tracking
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              Patrol Audit &amp; Live Route Tracking
             </h1>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="mt-0.5 text-xs text-slate-500">
               Compare expected QR checkpoint locations against actual guard capture GPS coordinates and live walking trails.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
-              <Layers className="w-3.5 h-3.5 text-slate-400" />
+            <button
+              type="button"
+              onClick={exportMasterExcel}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+              Export Excel
+            </button>
+
+            <button
+              type="button"
+              onClick={fetchAllReportsData}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-sky-400 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* Full-Dataset Summary KPI Strip (Clickable Quick Filters) */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('ALL');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'ALL'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${statusFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Total Patrol Sessions
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">{scopeRuns.length}</div>
+            </div>
+            <Layers className={`h-5 w-5 ${statusFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('COMPLETED');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'COMPLETED'
+                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-emerald-700">Completed Runs</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{completedCount}</div>
+            </div>
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('ACTIVE');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'ACTIVE'
+                ? 'border-amber-500 bg-amber-50/70 ring-2 ring-amber-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-amber-700">Active / Partial Runs</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{inProgressCount}</div>
+            </div>
+            <Clock className="h-5 w-5 text-amber-600" />
+          </button>
+
+          <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4">
+            <div>
+              <div className="text-[11px] font-bold uppercase text-blue-700">Total QR Scans</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{totalScansCount}</div>
+            </div>
+            <Shield className="h-5 w-5 text-blue-600" />
+          </div>
+        </div>
+
+        {/* Clean Filter & Search Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {([
+              { key: 'ALL', label: 'All Sessions' },
+              { key: 'COMPLETED', label: 'Completed' },
+              { key: 'ACTIVE', label: 'In Progress / Partial' },
+              { key: 'PENDING', label: 'Not Started' },
+            ] as const).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setStatusFilter(tab.key);
+                  setPage(1);
+                }}
+                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  statusFilter === tab.key
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Layers className="h-3.5 w-3.5 text-slate-400" />
               <select
                 value={selectedRouteFilter}
-                onChange={(e) => setSelectedRouteFilter(e.target.value)}
-                className="text-xs font-semibold text-slate-700 bg-transparent outline-none"
+                onChange={(e) => {
+                  setSelectedRouteFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="bg-transparent text-xs font-bold text-slate-700 outline-none"
               >
                 <option value="ALL">All Patrol Routes</option>
                 {rounds.map((r) => (
@@ -812,12 +982,15 @@ export const ReportsPage: React.FC = () => {
               </select>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
-              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+            <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Calendar className="h-3.5 w-3.5 text-slate-400" />
               <select
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="text-xs font-semibold text-slate-700 bg-transparent outline-none"
+                onChange={(e) => {
+                  setSelectedDate(e.target.value);
+                  setPage(1);
+                }}
+                className="bg-transparent text-xs font-bold text-slate-700 outline-none"
               >
                 <option value="ALL">All Dates</option>
                 {availableDates.map((d) => (
@@ -827,131 +1000,100 @@ export const ReportsPage: React.FC = () => {
                 ))}
               </select>
             </div>
+          </div>
 
-            <button
-              onClick={fetchAllReportsData}
-              className="inline-flex items-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-bold shadow-sm transition"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Refresh
-            </button>
+          <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 focus-within:border-brand-500 focus-within:bg-white">
+            <Search className="mr-2 h-3.5 w-3.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Filter guard, ID, or route..."
+              value={guardSearch}
+              onChange={(e) => {
+                setGuardSearch(e.target.value);
+                setPage(1);
+              }}
+              className="w-48 bg-transparent text-xs text-slate-800 outline-none sm:w-56"
+            />
+            {guardSearch && (
+              <button type="button" onClick={() => setGuardSearch('')} className="text-slate-400 hover:text-slate-700">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Summary KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">
-                Completed Patrol Runs
-              </div>
-              <div className="text-2xl font-black text-slate-900 mt-1">{completedCount}</div>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5" />
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-amber-600">
-                Partial / In-Progress Runs
-              </div>
-              <div className="text-2xl font-black text-slate-900 mt-1">{inProgressCount}</div>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-              <Clock className="w-5 h-5" />
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-blue-600">
-                Total QR Stops Verified
-              </div>
-              <div className="text-2xl font-black text-slate-900 mt-1">{totalScansCount}</div>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-              <Shield className="w-5 h-5" />
-            </div>
-          </div>
-        </div>
-
-        {/* Patrol Runs Table */}
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
-              Patrol Sessions ({filteredRuns.length} Runs)
-            </span>
-          </div>
-
+        {/* Wide Proportional Patrol Runs Table */}
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="px-4 py-3">Route / Site Name</th>
-                  <th className="px-4 py-3">Date & Session</th>
-                  <th className="px-4 py-3">Guard</th>
-                  <th className="px-4 py-3">Start Time</th>
-                  <th className="px-4 py-3">End Time</th>
-                  <th className="px-4 py-3">Total Time Taken</th>
-                  <th className="px-4 py-3">Stops Progress</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+            <table className="w-full min-w-[1060px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <th className="py-3.5 pl-5 pr-3">Route / Site Name</th>
+                  <th className="w-[155px] px-3 py-3.5">Date &amp; Session</th>
+                  <th className="w-[180px] px-3 py-3.5">Guard</th>
+                  <th className="w-[115px] px-3 py-3.5">Start Time</th>
+                  <th className="w-[140px] px-3 py-3.5">End Time</th>
+                  <th className="w-[130px] px-3 py-3.5">Duration</th>
+                  <th className="w-[125px] px-3 py-3.5">Stops</th>
+                  <th className="w-[130px] px-3 py-3.5">Status</th>
+                  <th className="w-[180px] py-3.5 pl-3 pr-5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
+                  Array.from({ length: 6 }).map((_, idx) => (
+                    <tr key={idx}>
+                      <td colSpan={9} className="px-5 py-3.5">
+                        <div className="h-5 w-full animate-pulse rounded-lg bg-slate-100" />
+                      </td>
+                    </tr>
+                  ))
+                ) : paginatedRuns.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-10 text-slate-400">
-                      Loading patrol runs...
-                    </td>
-                  </tr>
-                ) : filteredRuns.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="text-center py-10 text-slate-400">
+                    <td colSpan={9} className="py-12 text-center text-sm text-slate-400">
                       No patrol sessions found for the selected filter.
                     </td>
                   </tr>
                 ) : (
-                  filteredRuns.map((run) => {
+                  paginatedRuns.map((run) => {
                     const isSelected = inspectedRun?.runId === run.runId;
                     return (
                       <tr
                         key={run.runId}
                         onClick={() => setSelectedRunId(run.runId)}
                         className={`cursor-pointer transition ${
-                          isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                          isSelected ? 'bg-blue-50/70' : 'hover:bg-slate-50/90'
                         }`}
                       >
-                        <td className="px-4 py-3.5">
+                        <td className="py-3.5 pl-5 pr-3">
                           <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900 text-sm">{run.roundName}</span>
-                            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold text-[10px]">
+                            <span className="text-sm font-bold text-slate-900">{run.roundName}</span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
                               {run.totalRouteStops} {run.totalRouteStops === 1 ? 'stop' : 'stops'}
                             </span>
                           </div>
                         </td>
 
-                        <td className="px-4 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                           {run.status === 'PENDING' ? (
-                            <span className="text-slate-400 italic">No scans yet</span>
+                            <span className="italic text-slate-400">No scans yet</span>
                           ) : (
                             <div>
                               <div className="font-bold text-slate-800">{run.displayDate}</div>
-                              <div className="text-[10px] text-blue-600 font-semibold">
+                              <div className="text-[10px] font-semibold text-blue-600">
                                 Patrol Run #{run.runNumber}
                               </div>
                             </div>
                           )}
                         </td>
 
-                        <td className="px-4 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                           <div className="flex items-center gap-1.5">
-                            <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                            <UserCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                             <div>
                               <div className="font-semibold text-slate-800">{run.guardName}</div>
                               {run.guardCode && (
-                                <div className="text-[10px] text-slate-400 font-mono">
+                                <div className="font-mono text-[10px] text-slate-400">
                                   ID: {run.guardCode}
                                 </div>
                               )}
@@ -959,11 +1101,11 @@ export const ReportsPage: React.FC = () => {
                           </div>
                         </td>
 
-                        <td className="px-4 py-3.5 font-mono text-slate-700">
+                        <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-700">
                           {run.startTime ? new Date(run.startTime).toLocaleTimeString() : '—'}
                         </td>
 
-                        <td className="px-4 py-3.5 font-mono text-slate-700">
+                        <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-700">
                           {run.endTime
                             ? run.status === 'COMPLETED'
                               ? new Date(run.endTime).toLocaleTimeString()
@@ -971,78 +1113,80 @@ export const ReportsPage: React.FC = () => {
                             : '—'}
                         </td>
 
-                        <td className="px-4 py-3.5">
-                          <span className="inline-flex items-center gap-1 font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
-                            <Timer className="w-3 h-3 text-blue-600" />
+                        <td className="whitespace-nowrap px-3 py-3.5">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-800">
+                            <Timer className="h-3 w-3 text-blue-600" />
                             {run.durationText}
                           </span>
                         </td>
 
-                        <td className="px-4 py-3.5">
-                          <span className="font-bold text-slate-800">
+                        <td className="whitespace-nowrap px-3 py-3.5">
+                          <span className="font-mono font-bold text-slate-800">
                             {run.verifiedStopsCount} / {run.totalRouteStops}
                           </span>
-                          <span className="text-slate-400 ml-1">captured</span>
+                          <span className="ml-1 text-slate-400">stops</span>
                         </td>
 
-                        <td className="px-4 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                           {run.status === 'COMPLETED' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
                               COMPLETED
                             </span>
                           )}
                           {run.status === 'PAUSED' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 font-bold text-[10px]">
+                            <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-[10px] font-extrabold text-sky-700">
                               PAUSED
                             </span>
                           )}
                           {run.status === 'PARTIAL' && (
                             <div className="flex flex-col gap-0.5">
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-800 font-bold text-[10px]">
+                              <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2.5 py-0.5 text-[10px] font-extrabold text-orange-700">
                                 PARTIALLY ENDED
                               </span>
                               {run.handoverNote && (
-                                <span className="text-[9px] text-orange-600 font-medium">
+                                <span className="text-[9px] font-medium text-orange-600">
                                   {run.handoverNote}
                                 </span>
                               )}
                             </div>
                           )}
                           {run.status === 'IN_PROGRESS' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px]">
-                              IN_PROGRESS
+                            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-extrabold text-amber-800">
+                              IN PROGRESS
                             </span>
                           )}
                           {run.status === 'PENDING' && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold text-[10px]">
+                            <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-extrabold text-slate-500">
                               NOT STARTED
                             </span>
                           )}
                         </td>
 
-                        <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                        <td className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setMapModalRun(run);
                               }}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-bold transition"
+                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100"
                             >
-                              <Navigation className="w-3 h-3" /> Live Map
+                              <Navigation className="h-3 w-3" /> Live Map
                             </button>
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedRunId(run.runId);
                               }}
-                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold transition ${
+                              className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-bold transition ${
                                 isSelected
-                                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                  : 'border-blue-200 text-blue-600 hover:bg-blue-50'
+                                  ? 'border-slate-900 bg-slate-900 text-white shadow-xs'
+                                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
                               }`}
                             >
-                              Inspect <ChevronRight className="w-3.5 h-3.5" />
+                              Inspect <ChevronRight className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </td>
@@ -1052,6 +1196,75 @@ export const ReportsPage: React.FC = () => {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Numbered Pagination Footer */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+            <div className="flex items-center gap-3 text-xs text-slate-600">
+              <span>
+                Showing <strong className="font-mono text-slate-900">{startItem}</strong>–
+                <strong className="font-mono text-slate-900">{endItem}</strong> of{' '}
+                <strong className="font-mono text-slate-900">{totalRecords}</strong> patrol sessions
+              </span>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">Per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                >
+                  <option value={20}>20</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={safePage <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Prev
+              </button>
+
+              {pageNumbers.map((pNum, idx) =>
+                pNum === 'ellipsis' ? (
+                  <span key={`el-${idx}`} className="px-2 text-slate-400">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={pNum}
+                    type="button"
+                    onClick={() => setPage(pNum)}
+                    className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
+                      safePage === pNum
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {pNum}
+                  </button>
+                )
+              )}
+
+              <button
+                type="button"
+                disabled={safePage >= totalPages || loading}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+              >
+                Next <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
 
