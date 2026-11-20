@@ -375,7 +375,7 @@ export const IncidentsDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
-      <div className="mx-auto max-w-6xl space-y-5">
+      <div className="mx-auto max-w-[1600px] space-y-5">
         {/* Tactical Calm Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
@@ -588,17 +588,17 @@ export const IncidentsDashboard: React.FC = () => {
         {/* Clean Paginated Incidents Table */}
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
+            <table className="w-full min-w-[980px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                  <th className="px-4 py-3">Case ID</th>
-                  <th className="px-4 py-3">Priority</th>
-                  <th className="px-4 py-3">Incident Summary</th>
-                  <th className="px-4 py-3">Reported By</th>
-                  <th className="px-4 py-3">Response Group</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Reported At</th>
-                  <th className="px-4 py-3 text-right">Evidence</th>
+                <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <th className="w-[125px] py-3.5 pl-5 pr-3">Case ID</th>
+                  <th className="w-[135px] px-3 py-3.5">Priority</th>
+                  <th className="px-4 py-3.5">Incident Summary</th>
+                  <th className="w-[165px] px-3 py-3.5">Reported By</th>
+                  <th className="w-[205px] px-3 py-3.5">Response Group</th>
+                  <th className="w-[115px] px-3 py-3.5">Status</th>
+                  <th className="w-[145px] px-3 py-3.5">Reported At</th>
+                  <th className="w-[100px] py-3.5 pl-3 pr-5 text-right">Evidence</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -628,24 +628,24 @@ export const IncidentsDashboard: React.FC = () => {
                         onClick={() => targetId && navigate(`/incidents/${encodeURIComponent(targetId)}`)}
                         className="group cursor-pointer transition hover:bg-slate-50/90"
                       >
-                        <td className="whitespace-nowrap px-4 py-3.5 font-mono text-xs font-extrabold text-brand-700">
+                        <td className="whitespace-nowrap py-3.5 pl-5 pr-3 font-mono text-xs font-extrabold text-brand-700">
                           <span className="inline-flex items-center gap-1">
                             {caseCode}
                             <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
                           </span>
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3.5">{renderPriorityBadge(item.priority)}</td>
-                        <td className="max-w-xs px-4 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">{renderPriorityBadge(item.priority)}</td>
+                        <td className="max-w-md xl:max-w-xl px-4 py-3.5">
                           <div className="truncate font-bold text-slate-900">{item.title || 'Patrol Incident'}</div>
                           <div className="truncate text-[11px] text-slate-500">{item.description}</div>
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3.5 font-semibold text-slate-700">
+                        <td className="whitespace-nowrap px-3 py-3.5 font-semibold text-slate-700">
                           {resolveCallerName(item)}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3.5 text-slate-600">
+                        <td className="whitespace-nowrap px-3 py-3.5 text-slate-600">
                           {item.assignment_group || 'Security Operations L1'}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                           <span
                             className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
                               isResolved
@@ -656,7 +656,7 @@ export const IncidentsDashboard: React.FC = () => {
                             {item.status || 'OPEN'}
                           </span>
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3.5 font-mono text-[11px] text-slate-500">
+                        <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-500">
                           {item.reported_at
                             ? new Date(item.reported_at).toLocaleString([], {
                                 month: 'short',
@@ -667,7 +667,7 @@ export const IncidentsDashboard: React.FC = () => {
                             : '—'}
                         </td>
                         <td
-                          className="whitespace-nowrap px-4 py-3.5 text-right"
+                          className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right"
                           onClick={(e) => e.stopPropagation()}
                         >
                           {item.photo_url ? (
