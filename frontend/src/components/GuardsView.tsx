@@ -15,7 +15,10 @@ import {
   Mail,
   Trash2,
   FolderPlus,
-  Sliders
+  Sliders,
+  ChevronLeft,
+  ChevronRight,
+  UserCheck
 } from 'lucide-react';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
@@ -682,148 +685,277 @@ export const GuardsView: React.FC = () => {
     </div>
   );
 
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE' | 'ADMINS'>('ALL');
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+
+  const displayedGuards = filteredGuards.filter((g) => {
+    if (statusFilter === 'ACTIVE') return g.is_active;
+    if (statusFilter === 'INACTIVE') return !g.is_active;
+    if (statusFilter === 'ADMINS') return g.tier === 'SUPER_ADMIN' || g.tier === 'INDUSTRY_ADMIN';
+    return true;
+  });
+
+  const adminCount = guards.filter((g) => g.tier === 'SUPER_ADMIN' || g.tier === 'INDUSTRY_ADMIN').length;
+  const totalRecords = displayedGuards.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paginatedGuards = displayedGuards.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  const pageNumbers: (number | 'ellipsis')[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pageNumbers.push(i);
+  } else {
+    pageNumbers.push(1);
+    if (safePage > 3) pageNumbers.push('ellipsis');
+    const start = Math.max(2, safePage - 1);
+    const end = Math.min(totalPages - 1, safePage + 1);
+    for (let i = start; i <= end; i++) pageNumbers.push(i);
+    if (safePage < totalPages - 2) pageNumbers.push('ellipsis');
+    pageNumbers.push(totalPages);
+  }
+
+  const startItem = totalRecords === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const endItem = Math.min(totalRecords, safePage * pageSize);
+
   return (
-    <div className="min-h-screen bg-[#f8fafc] p-6 font-sans">
-      <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <div className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Security Workforce, Assignment Groups & App Access
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              People, Assignment Groups &amp; App Access
             </h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Manage personnel, custom Assignment Groups, patrol routes, and granular Mobile App feature permissions.
+            <p className="mt-0.5 text-xs text-slate-500">
+              Manage security personnel, custom response units, patrol routes, and granular mobile app permissions.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <button
-              onClick={() => setShowManageGroupsModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-slate-800 transition"
+              type="button"
+              onClick={fetchData}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
             >
-              <Users className="w-4 h-4 text-emerald-400" /> Manage Assignment Groups ({availableGroups.length})
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-brand-600' : ''}`} />
+              Refresh
             </button>
             <button
-              onClick={() => setShowAddModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-blue-700 transition"
+              type="button"
+              onClick={() => setShowManageGroupsModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 transition hover:bg-slate-100"
             >
-              <Plus className="w-4 h-4" /> Add Security Personnel
+              <Users className="h-4 w-4 text-emerald-600" />
+              Response Groups ({availableGroups.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4 text-emerald-400" />
+              Add Personnel
             </button>
           </div>
         </div>
 
-        {/* Metric Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Security Staff</div>
-            <div className="text-3xl font-black text-slate-900 mt-2">{totalGuards}</div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-            <div className="text-xs font-bold uppercase tracking-wider text-emerald-600">Active On-Duty Staff</div>
-            <div className="text-3xl font-black text-emerald-600 mt-2">{activeStaff}</div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-            <div className="text-xs font-bold uppercase tracking-wider text-blue-600">Active Assignment Groups</div>
-            <div className="text-3xl font-black text-blue-600 mt-2">{availableGroups.length}</div>
-          </div>
-        </div>
-
-        {/* Assignment Group Filter Pills */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Clickable Summary KPI Strip */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <button
-            onClick={() => setSelectedGroupFilter('ALL')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
-              selectedGroupFilter === 'ALL'
-                ? 'bg-slate-900 text-white shadow-xs'
-                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            type="button"
+            onClick={() => {
+              setStatusFilter('ALL');
+              setSelectedGroupFilter('ALL');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'ALL' && selectedGroupFilter === 'ALL'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
             }`}
           >
-            All Units ({guards.length})
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${statusFilter === 'ALL' && selectedGroupFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Total Workforce
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">{totalGuards}</div>
+            </div>
+            <Users className={`h-5 w-5 ${statusFilter === 'ALL' && selectedGroupFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
           </button>
-          {availableGroups.map((grp) => {
-            const count = guards.filter((g) => getGuardGroups(g).includes(grp)).length;
-            const active = selectedGroupFilter === grp;
-            return (
+
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('ACTIVE');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'ACTIVE'
+                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-emerald-700">Active On-Duty</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{activeStaff}</div>
+            </div>
+            <UserCheck className="h-5 w-5 text-emerald-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('ADMINS');
+              setPage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              statusFilter === 'ADMINS'
+                ? 'border-indigo-500 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-indigo-700">Console Admins</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{adminCount}</div>
+            </div>
+            <ShieldCheck className="h-5 w-5 text-indigo-600" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowManageGroupsModal(true)}
+            className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300"
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-blue-700">Response Units</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{availableGroups.length}</div>
+            </div>
+            <Sliders className="h-5 w-5 text-blue-600" />
+          </button>
+        </div>
+
+        {/* Clean Filter & Search Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {([
+              { key: 'ALL', label: 'All Staff' },
+              { key: 'ACTIVE', label: 'Active' },
+              { key: 'ADMINS', label: 'Admins' },
+              { key: 'INACTIVE', label: 'Deactivated' },
+            ] as const).map((tab) => (
               <button
-                key={grp}
-                onClick={() => setSelectedGroupFilter(grp)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
-                  active
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setStatusFilter(tab.key);
+                  setPage(1);
+                }}
+                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  statusFilter === tab.key
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
-                {grp} ({count})
+                {tab.label}
               </button>
-            );
-          })}
-        </div>
+            ))}
 
-        {/* Search Bar */}
-        <div className="flex items-center justify-between gap-4 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5">
+              <Users className="h-3.5 w-3.5 text-slate-400" />
+              <select
+                value={selectedGroupFilter}
+                onChange={(e) => {
+                  setSelectedGroupFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="bg-transparent text-xs font-bold text-slate-700 outline-none"
+              >
+                <option value="ALL">All Units ({guards.length})</option>
+                {availableGroups.map((grp) => {
+                  const count = guards.filter((g) => getGuardGroups(g).includes(grp)).length;
+                  return (
+                    <option key={grp} value={grp}>
+                      {grp} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {isSuper && tenants.length > 0 && (
+              <select
+                value={selectedTenantFilter}
+                onChange={(e) => {
+                  setSelectedTenantFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 outline-none"
+                title="Filter by industry"
+              >
+                <option value="ALL">All industries ({guards.length})</option>
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({guards.filter((g) => g.tenant_id === t.id).length})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 focus-within:border-brand-500 focus-within:bg-white">
+            <Search className="mr-2 h-3.5 w-3.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Search by name, employee code, email, group, or site..."
+              placeholder="Search name, code, email, or site..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg outline-none focus:border-blue-500"
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
+              className="w-48 bg-transparent text-xs text-slate-800 outline-none sm:w-64"
             />
+            {searchQuery && (
+              <button type="button" onClick={() => setSearchQuery('')} className="text-slate-400 hover:text-slate-700">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
-          {isSuper && tenants.length > 0 && (
-            <select
-              value={selectedTenantFilter}
-              onChange={(e) => setSelectedTenantFilter(e.target.value)}
-              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 outline-none focus:border-blue-500"
-              title="Filter by industry"
-            >
-              <option value="ALL">All industries ({guards.length})</option>
-              {tenants.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name} ({guards.filter((g) => g.tenant_id === t.id).length})
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            onClick={fetchData}
-            title="Refresh"
-            className="p-2 text-slate-500 hover:text-slate-800 transition"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
         </div>
 
-        {/* Personnel Hierarchy Table */}
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        {/* Wide Proportional Personnel Hierarchy Table */}
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="px-4 py-3.5">Staff Member & Contact</th>
-                  <th className="px-4 py-3.5">Role & Access State</th>
-                  <th className="px-4 py-3.5">Assignment Groups</th>
-                  <th className="px-4 py-3.5">Site & Shift</th>
-                  <th className="px-4 py-3.5">Assigned Patrol Routes</th>
-                  <th className="px-4 py-3.5">Status</th>
-                  <th className="px-4 py-3.5 text-right">Actions</th>
+            <table className="w-full min-w-[1120px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <th className="w-[250px] py-3.5 pl-5 pr-3">Staff Member &amp; Contact</th>
+                  <th className="w-[195px] px-3 py-3.5">Role &amp; Access</th>
+                  <th className="w-[210px] px-3 py-3.5">Assignment Groups</th>
+                  <th className="w-[175px] px-3 py-3.5">Site &amp; Shift</th>
+                  <th className="px-3 py-3.5">Assigned Patrol Routes</th>
+                  <th className="w-[105px] px-3 py-3.5">Status</th>
+                  <th className="w-[265px] py-3.5 pl-3 pr-5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
+                  Array.from({ length: 6 }).map((_, idx) => (
+                    <tr key={idx}>
+                      <td colSpan={7} className="px-5 py-3.5">
+                        <div className="h-6 w-full animate-pulse rounded-lg bg-slate-100" />
+                      </td>
+                    </tr>
+                  ))
+                ) : paginatedGuards.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-10 text-slate-400">
-                      Loading personnel records...
-                    </td>
-                  </tr>
-                ) : filteredGuards.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="text-center py-10 text-slate-400">
-                      No matching records found.
+                    <td colSpan={7} className="py-12 text-center text-sm text-slate-400">
+                      No matching personnel records found.
                     </td>
                   </tr>
                 ) : (
-                  filteredGuards.map((guard) => {
+                  paginatedGuards.map((guard) => {
                     const assignedList =
                       guard.assigned_rounds && guard.assigned_rounds.length > 0
                         ? guard.assigned_rounds
@@ -837,46 +969,42 @@ export const GuardsView: React.FC = () => {
                       'incident_option_1_severity','incident_option_2_category','incident_option_3_group',
                       'incident_option_4_title','incident_option_5_description','incident_option_6_photo',
                     ].filter((k) => isLicensed(k) && (perms as any)[k]).length;
-                    const isRestrictedForm =
-                      !(isLicensed('incident_option_1_severity') && perms.incident_option_1_severity) &&
-                      !(isLicensed('incident_option_2_category') && perms.incident_option_2_category) &&
-                      !(isLicensed('incident_option_3_group') && perms.incident_option_3_group);
 
                     return (
-                      <tr key={guard.guard_id} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="px-4 py-3">
+                      <tr key={guard.guard_id} className="transition-colors hover:bg-slate-50/90">
+                        <td className="py-3.5 pl-5 pr-3">
                           <div className="flex items-center gap-3">
                             {guard.selfie_url ? (
                               <div
                                 onClick={() => setSelectedPhoto({ url: guard.selfie_url!, name: guard.full_name, phone: guard.phone, code: guard.employee_code })}
-                                className="relative group cursor-pointer shrink-0"
+                                className="group relative shrink-0 cursor-pointer"
                                 title="Click to verify field registration photo"
                               >
                                 <img
                                   src={guard.selfie_url}
                                   alt={guard.full_name}
-                                  className="h-10 w-10 rounded-full object-cover border-2 border-slate-200 group-hover:border-blue-500 shadow-sm transition"
+                                  className="h-10 w-10 rounded-full border-2 border-slate-200 object-cover shadow-xs transition group-hover:border-blue-500"
                                 />
-                                <div className="absolute inset-0 rounded-full bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[9px] font-bold">
+                                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/30 text-[9px] font-bold text-white opacity-0 transition-opacity group-hover:opacity-100">
                                   View
                                 </div>
                               </div>
                             ) : (
-                              <div className="h-10 w-10 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold flex items-center justify-center text-xs shrink-0">
+                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-xs font-extrabold text-slate-700">
                                 {guard.full_name.charAt(0).toUpperCase()}
                               </div>
                             )}
-                            <div>
-                              <div className="font-bold text-slate-900">{guard.full_name}</div>
-                              <div className="text-[11px] text-slate-400 font-mono">
+                            <div className="min-w-0">
+                              <div className="truncate font-bold text-slate-900">{guard.full_name}</div>
+                              <div className="font-mono text-[11px] text-slate-400">
                                 Code: {guard.employee_code}
                               </div>
                               {guard.email ? (
-                                <div className="text-[11px] text-blue-600 flex items-center gap-1 mt-0.5">
-                                  <Mail className="w-3 h-3" /> {guard.email}
+                                <div className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-blue-600">
+                                  <Mail className="h-3 w-3 shrink-0" /> {guard.email}
                                 </div>
                               ) : (
-                                <div className="text-[10px] text-amber-600 italic mt-0.5">
+                                <div className="mt-0.5 text-[10px] italic text-amber-600">
                                   No email set
                                 </div>
                               )}
@@ -884,18 +1012,18 @@ export const GuardsView: React.FC = () => {
                           </div>
                         </td>
 
-                        <td className="px-4 py-3 space-y-1">
+                        <td className="space-y-1 px-3 py-3.5">
                           <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-bold ${getRoleBadge(
+                            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${getRoleBadge(
                               guard.role
                             )}`}
                           >
-                            <ShieldCheck className="w-3 h-3" />
+                            <ShieldCheck className="h-3 w-3" />
                             {guard.role || 'Guard'}
                           </span>
                           <div className="flex flex-wrap items-center gap-1">
                             <span
-                              className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
                                 guard.tier === 'SUPER_ADMIN'
                                   ? 'bg-rose-100 text-rose-700'
                                   : guard.tier === 'INDUSTRY_ADMIN'
@@ -907,12 +1035,12 @@ export const GuardsView: React.FC = () => {
                               {tierLabel(guard.tier)}
                             </span>
                             {guard.is_guest && (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-800" title="Joined from the no-login Field app">
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800" title="Joined from the no-login Field app">
                                 Field app
                               </span>
                             )}
                             {isSuper && (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700">
                                 {guard.tier === 'SUPER_ADMIN' ? 'Platform' : guard.tenant_name || 'No industry'}
                               </span>
                             )}
@@ -925,118 +1053,124 @@ export const GuardsView: React.FC = () => {
                             {formFieldCount > 0 && (
                               <>
                                 {' • '}
-                                <span>{formFieldCount} form field{formFieldCount === 1 ? '' : 's'}</span>
+                                <span>{formFieldCount} field{formFieldCount === 1 ? '' : 's'}</span>
                               </>
                             )}
                           </div>
                         </td>
 
                         {/* Multi-Group Cell */}
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-1.5 max-w-xs">
+                        <td className="px-3 py-3.5">
+                          <div className="flex flex-wrap items-center gap-1">
                             {memberGroups.map((grp) => (
                               <span
                                 key={grp}
-                                className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-[10px]"
+                                className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800"
                               >
                                 {grp}
                               </span>
                             ))}
                             <button
+                              type="button"
                               onClick={() => {
                                 setAssigningGroupsGuard(guard);
                                 setSelectedGroupNames(memberGroups);
                               }}
-                              className="text-[11px] font-bold text-emerald-700 hover:underline ml-1"
+                              className="ml-1 text-[11px] font-bold text-emerald-700 hover:underline"
                             >
-                              Edit Groups
+                              Edit
                             </button>
                           </div>
                         </td>
 
-                        <td className="px-4 py-3 text-slate-700">
+                        <td className="px-3 py-3.5 text-slate-700">
                           <div className="flex items-center gap-1 font-semibold">
-                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                            {guard.site_location || 'Main Plant & Gate 1'}
+                            <Building2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            <span className="truncate">{guard.site_location || 'Main Plant & Gate 1'}</span>
                           </div>
-                          <div className="flex items-center gap-1 font-mono text-[11px] text-slate-500 mt-0.5">
-                            <Clock className="w-3 h-3 text-slate-400" />
+                          <div className="mt-0.5 flex items-center gap-1 font-mono text-[11px] text-slate-500">
+                            <Clock className="h-3 w-3 shrink-0 text-slate-400" />
                             {guard.shift_timing || 'Morning'}
                           </div>
                         </td>
 
                         {/* Multi-Route Cell */}
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-1.5">
+                        <td className="px-3 py-3.5">
+                          <div className="flex flex-wrap items-center gap-1">
                             {assignedList.length === 0 ? (
-                              <span className="text-slate-400 italic">No Route Assigned</span>
+                              <span className="italic text-slate-400">No Route Assigned</span>
                             ) : (
                               assignedList.map((r) => (
                                 <span
                                   key={r.id}
-                                  className="inline-flex items-center px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-semibold text-[11px]"
+                                  className="inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700"
                                 >
                                   {r.name}
                                 </span>
                               ))
                             )}
                             <button
+                              type="button"
                               onClick={() => {
                                 setAssigningGuard(guard);
                                 setSelectedRoundIds(getGuardRoundIds(guard));
                               }}
-                              className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline ml-1"
+                              className="ml-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline"
                             >
-                              {assignedList.length > 0 ? 'Edit Routes' : '+ Assign'}
+                              {assignedList.length > 0 ? 'Edit' : '+ Assign'}
                             </button>
                           </div>
                         </td>
 
-                        <td className="px-4 py-3">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                           <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
                               guard.is_active
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-rose-100 text-rose-800'
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : 'border-rose-200 bg-rose-50 text-rose-700'
                             }`}
                           >
-                            {guard.is_active ? 'Active' : 'Deactivated'}
+                            {guard.is_active ? 'Active' : 'Inactive'}
                           </span>
                         </td>
 
-                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <td className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              type="button"
                               onClick={() => openPermissionsModal(guard)}
-                              className="px-2.5 py-1 rounded border border-purple-200 bg-purple-50 text-purple-800 hover:bg-purple-100 text-[11px] font-bold flex items-center gap-1"
+                              className="inline-flex items-center gap-1 rounded-lg border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-800 transition hover:bg-purple-100"
                               title="Configure Mobile App Access & Incident Form Options"
                             >
-                              <Sliders className="w-3 h-3" /> App Access
+                              <Sliders className="h-3 w-3" /> Access
                             </button>
                             <button
+                              type="button"
                               onClick={() => openEditModal(guard)}
-                              className="px-2 py-1 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 text-[11px] font-semibold flex items-center gap-1"
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100"
                             >
-                              <Edit2 className="w-3 h-3" /> Edit
+                              <Edit2 className="h-3 w-3" /> Edit
                             </button>
                             <button
+                              type="button"
                               onClick={() => {
                                 setResettingGuard(guard);
                                 setNewPassword('');
                               }}
-                              className="px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] font-semibold"
+                              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100"
                             >
-                              Password
+                              Pass
                             </button>
                             <button
+                              type="button"
                               onClick={() => handleToggleStatus(guard)}
-                              className={`px-2 py-1 rounded border text-[11px] font-semibold ${
+                              className={`rounded-lg border px-2 py-1 text-[11px] font-bold transition ${
                                 guard.is_active
                                   ? 'border-rose-200 text-rose-600 hover:bg-rose-50'
                                   : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
                               }`}
                             >
-                              {guard.is_active ? 'Deactivate' : 'Activate'}
+                              {guard.is_active ? 'Disable' : 'Enable'}
                             </button>
                           </div>
                         </td>
@@ -1046,6 +1180,75 @@ export const GuardsView: React.FC = () => {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Numbered Pagination Footer */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+            <div className="flex items-center gap-3 text-xs text-slate-600">
+              <span>
+                Showing <strong className="font-mono text-slate-900">{startItem}</strong>–
+                <strong className="font-mono text-slate-900">{endItem}</strong> of{' '}
+                <strong className="font-mono text-slate-900">{totalRecords}</strong> staff members
+              </span>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">Per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                >
+                  <option value={20}>20</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={safePage <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Prev
+              </button>
+
+              {pageNumbers.map((pNum, idx) =>
+                pNum === 'ellipsis' ? (
+                  <span key={`el-${idx}`} className="px-2 text-slate-400">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={pNum}
+                    type="button"
+                    onClick={() => setPage(pNum)}
+                    className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
+                      safePage === pNum
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {pNum}
+                  </button>
+                )
+              )}
+
+              <button
+                type="button"
+                disabled={safePage >= totalPages || loading}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+              >
+                Next <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>
