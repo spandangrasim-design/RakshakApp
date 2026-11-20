@@ -104,9 +104,11 @@ export const IncidentsDashboard: React.FC = () => {
   const [newPhotoName, setNewPhotoName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const authHeaders = useMemo(() => {
+  const authHeaders = useMemo<Record<string, string>>(() => {
+    const headers: Record<string, string> = {};
     const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
   }, []);
 
   const getGuardGroups = (g: GuardUser): string[] => {
