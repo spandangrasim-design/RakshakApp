@@ -4,7 +4,8 @@ import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
 import { 
   Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, 
-  Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw 
+  Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw,
+  ChevronLeft, ChevronRight, Search, Clock
 } from 'lucide-react';
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
@@ -256,6 +257,8 @@ const QRGenerator: React.FC = () => {
     setEditingRoundId(round.id);
     setRoundName(round.name);
     setCurrentCheckpoints(round.checkpoints || []);
+    setRouteWorkspace('builder');
+    setTimeout(() => mapInstanceRef.current?.invalidateSize(), 60);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -416,294 +419,627 @@ const QRGenerator: React.FC = () => {
     }
   };
 
+  const [routeWorkspace, setRouteWorkspace] = useState<'routes' | 'builder'>('routes');
+  const [routeSearch, setRouteSearch] = useState<string>('');
+  const [repeatFilter, setRepeatFilter] = useState<'ALL' | 'DAILY' | 'HOURLY'>('ALL');
+  const [routePage, setRoutePage] = useState<number>(1);
+  const [routePageSize, setRoutePageSize] = useState<number>(20);
+
+  const totalCheckpointsCount = savedRounds.reduce((acc, r) => acc + (r.checkpoints?.length || 0), 0);
+  const hourlyRoutesCount = savedRounds.filter((r) => !!r.renew_every_minutes).length;
+
+  const filteredRounds = savedRounds.filter((r) => {
+    if (repeatFilter === 'DAILY' && r.renew_every_minutes) return false;
+    if (repeatFilter === 'HOURLY' && !r.renew_every_minutes) return false;
+    if (routeSearch.trim()) {
+      const q = routeSearch.trim().toLowerCase();
+      const cpNames = (r.checkpoints || []).map((c) => `${c.name} ${c.id}`).join(' ').toLowerCase();
+      if (!r.name.toLowerCase().includes(q) && !cpNames.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totalRouteRecords = filteredRounds.length;
+  const totalRoutePages = Math.max(1, Math.ceil(totalRouteRecords / routePageSize));
+  const safeRoutePage = Math.min(routePage, totalRoutePages);
+  const paginatedRounds = filteredRounds.slice((safeRoutePage - 1) * routePageSize, safeRoutePage * routePageSize);
+
+  const routePageNumbers: (number | 'ellipsis')[] = [];
+  if (totalRoutePages <= 7) {
+    for (let i = 1; i <= totalRoutePages; i++) routePageNumbers.push(i);
+  } else {
+    routePageNumbers.push(1);
+    if (safeRoutePage > 3) routePageNumbers.push('ellipsis');
+    const start = Math.max(2, safeRoutePage - 1);
+    const end = Math.min(totalRoutePages - 1, safeRoutePage + 1);
+    for (let i = start; i <= end; i++) routePageNumbers.push(i);
+    if (safeRoutePage < totalRoutePages - 2) routePageNumbers.push('ellipsis');
+    routePageNumbers.push(totalRoutePages);
+  }
+
+  const routeStartItem = totalRouteRecords === 0 ? 0 : (safeRoutePage - 1) * routePageSize + 1;
+  const routeEndItem = Math.min(totalRouteRecords, safeRoutePage * routePageSize);
+
   return (
-    <div className="p-8 max-w-6xl mx-auto text-slate-800">
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <Shield className="h-8 w-8 text-blue-600" />
-          <h1 className="text-3xl font-bold">Patrol Round & QR Manager</h1>
-        </div>
-
-        {statusMessage && (
-          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-lg border border-emerald-200 text-sm font-medium">
-            <CheckCircle2 className="h-4 w-4" /> {statusMessage}
-          </div>
-        )}
-      </div>
-
-      {/* ROUND BUILDER CARD */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-8 space-y-6">
-        <div>
-          <label className="block text-sm font-semibold text-slate-700 mb-1">
-            Round Name {editingRoundId && <span className="text-amber-600 text-xs">(Editing)</span>}
-          </label>
-          <input
-            type="text"
-            value={roundName}
-            onChange={(e) => setRoundName(e.target.value)}
-            placeholder="e.g., Night Perimeter Patrol"
-            className="w-full md:w-1/2 rounded-lg border border-slate-300 px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-
-        {/* Map Section */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-              <MapPin className="h-4 w-4 text-blue-600" /> Pick Location on Map
-            </label>
-            <span className="text-xs text-slate-500">
-              Click anywhere on the map to auto-fill Lat, Lng and Checkpoint ID
-            </span>
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <div className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header with Workspace Dropdown */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div>
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              Patrol Routes &amp; QR Checkpoints
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Manage active patrol circuits, auto-renewal schedules, printable QR sheets, and GPS checkpoint coordinates.
+            </p>
           </div>
 
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-inner bg-slate-50 relative">
-            <div className="absolute top-3 right-3 z-[1000] bg-white/95 backdrop-blur-sm shadow-md rounded-lg p-1 flex items-center border border-slate-200 text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => toggleMapLayer('street')}
-                className={`px-3 py-1.5 rounded-md ${mapType === 'street' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                Street
-              </button>
-              <button
-                type="button"
-                onClick={() => toggleMapLayer('satellite')}
-                className={`px-3 py-1.5 rounded-md flex items-center gap-1 ${mapType === 'satellite' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                <Layers className="h-3.5 w-3.5" /> Satellite
-              </button>
-            </div>
-
-            {!isMapLoaded && (
-              <div className="h-[350px] flex items-center justify-center gap-2 text-slate-500">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" /> Loading Map...
+          <div className="flex flex-wrap items-center gap-2.5">
+            {statusMessage && (
+              <div className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                <CheckCircle2 className="h-3.5 w-3.5" /> {statusMessage}
               </div>
             )}
-            <div ref={mapContainerRef} style={{ width: '100%', height: '350px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }} />
+
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <Layers className="h-3.5 w-3.5 text-brand-600" />
+              <span className="text-[11px] font-bold uppercase text-slate-400">Workspace:</span>
+              <select
+                value={routeWorkspace}
+                onChange={(e) => {
+                  const val = e.target.value as 'routes' | 'builder';
+                  setRouteWorkspace(val);
+                  if (val === 'builder') {
+                    setTimeout(() => mapInstanceRef.current?.invalidateSize(), 60);
+                  }
+                }}
+                className="bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+              >
+                <option value="routes">Saved Routes &amp; QR Sheets ({savedRounds.length})</option>
+                <option value="builder">{editingRoundId ? 'Edit Route & Map Pins' : '+ Create New Route & Pins'}</option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={renewAll}
+              disabled={renewBusy !== null || savedRounds.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+              title="Start a fresh round on every route"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${renewBusy === 'ALL' ? 'animate-spin' : ''}`} />
+              Renew All Routes
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingRoundId(null);
+                setRoundName('');
+                setCurrentCheckpoints([]);
+                setRouteWorkspace('builder');
+                setTimeout(() => mapInstanceRef.current?.invalidateSize(), 60);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
+            >
+              <Plus className="h-3.5 w-3.5 text-emerald-400" />
+              New Patrol Route
+            </button>
           </div>
         </div>
 
-        {/* Checkpoint Input Form */}
-        <form onSubmit={handleAddCheckpoint} className="flex gap-4 items-end flex-wrap">
-          <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint Name *</label>
-            <input
-              type="text"
-              value={cpName}
-              onChange={(e) => setCpName(e.target.value)}
-              placeholder="e.g., North Gate"
-              className="w-full rounded-lg border border-slate-300 px-4 py-2"
-              required
-            />
-          </div>
+        {/* 4-Card Summary KPI Strip */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => {
+              setRouteWorkspace('routes');
+              setRepeatFilter('ALL');
+              setRoutePage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              routeWorkspace === 'routes' && repeatFilter === 'ALL'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${routeWorkspace === 'routes' && repeatFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Total Patrol Routes
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">{savedRounds.length}</div>
+            </div>
+            <Shield className={`h-5 w-5 ${routeWorkspace === 'routes' && repeatFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+          </button>
 
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Checkpoint ID (Auto-filled)</label>
-            <input
-              type="text"
-              value={cpId}
-              onChange={(e) => setCpId(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
-              required
-            />
-          </div>
-
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Latitude (Auto-filled)</label>
-            <input
-              type="number"
-              step="any"
-              value={cpLat}
-              onChange={(e) => setCpLat(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
-              required
-            />
-          </div>
-
-          <div className="flex-1 min-w-[150px]">
-            <label className="block text-sm font-medium text-slate-600 mb-1">Longitude (Auto-filled)</label>
-            <input
-              type="number"
-              step="any"
-              value={cpLng}
-              onChange={(e) => setCpLng(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-4 py-2 bg-slate-50"
-              required
-            />
+          <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4">
+            <div>
+              <div className="text-[11px] font-bold uppercase text-blue-700">Total QR Checkpoints</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{totalCheckpointsCount}</div>
+            </div>
+            <MapPin className="h-5 w-5 text-blue-600" />
           </div>
 
           <button
-            type="submit"
-            className="bg-slate-800 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 h-[42px]"
+            type="button"
+            onClick={() => {
+              setRouteWorkspace('routes');
+              setRepeatFilter('HOURLY');
+              setRoutePage(1);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              routeWorkspace === 'routes' && repeatFilter === 'HOURLY'
+                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
           >
-            <Plus className="h-4 w-4" /> Add Checkpoint
-          </button>
-        </form>
-
-        {/* Current Round Checkpoints List */}
-        {currentCheckpoints.length > 0 && (
-          <div className="border-t border-slate-200 pt-4">
-            <h3 className="font-semibold text-slate-700 mb-2">Checkpoints in Current Round ({currentCheckpoints.length})</h3>
-            <ul className="divide-y divide-slate-100 mb-4">
-              {currentCheckpoints.map((cp) => (
-                <li key={cp.id} className="py-2.5 flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-3">
-                    <span className="font-medium text-slate-800">{cp.name}</span>
-                    <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-xs">{cp.id}</span>
-                    <span className="text-slate-500 font-mono text-xs">{cp.lat}, {cp.lng}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteCurrentCheckpoint(cp.id)}
-                    className="text-red-500 hover:text-red-700 p-1"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={handleSaveAndSyncRound}
-                disabled={isSaving}
-                className="bg-emerald-600 text-white px-6 py-2.5 rounded-lg font-medium flex items-center gap-2 hover:bg-emerald-700"
-              >
-                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                {editingRoundId ? 'Update & Sync Round' : 'Save & Sync Round'}
-              </button>
-              {editingRoundId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingRoundId(null);
-                    setRoundName('');
-                    setCurrentCheckpoints([]);
-                  }}
-                  className="px-4 py-2.5 border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
-                >
-                  Cancel Edit
-                </button>
-              )}
+            <div>
+              <div className="text-[11px] font-bold uppercase text-emerald-700">Auto-Repeating Routes</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{hourlyRoutesCount}</div>
             </div>
-          </div>
-        )}
-      </div>
+            <Clock className="h-5 w-5 text-emerald-600" />
+          </button>
 
-      {/* SAVED ROUNDS TABLE */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-slate-800">Existing Patrol Rounds ({savedRounds.length})</h2>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={renewAll}
-              disabled={renewBusy !== null || savedRounds.length === 0}
-              className="text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50 transition"
-              title="Start a fresh round on every route"
-            >
-              <RefreshCw className={`h-4 w-4 ${renewBusy === 'ALL' ? 'animate-spin' : ''}`} /> Renew all routes
-            </button>
-            <button
-              onClick={fetchRounds}
-              className="text-sm text-slate-500 hover:text-blue-600 flex items-center gap-1"
-            >
-              <RefreshCw className={`h-4 w-4 ${isLoadingRounds ? 'animate-spin' : ''}`} /> Refresh
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setRouteWorkspace('builder');
+              setTimeout(() => mapInstanceRef.current?.invalidateSize(), 60);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              routeWorkspace === 'builder'
+                ? 'border-indigo-500 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-indigo-700">Draft Checkpoints</div>
+              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{currentCheckpoints.length}</div>
+            </div>
+            <Plus className="h-5 w-5 text-indigo-600" />
+          </button>
         </div>
 
-        {canGuestEnroll && (
-          <label className="mb-4 flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            <input type="checkbox" checked={renewOnJoin} onChange={toggleRenewOnJoin} className="h-4 w-4 accent-blue-600" />
-            <span><strong>Renew all routes when a new guard joins</strong> from the Field app, so they can start a fresh round.</span>
-          </label>
-        )}
-
-        {savedRounds.length === 0 ? (
-          <div className="text-center py-8 text-slate-400">
-            No rounds created yet. Enter a round name above and add checkpoints to create one.
+        {/* ROUTE BUILDER CARD (Kept mounted so Leaflet map retains dimensions cleanly) */}
+        <div className={routeWorkspace === 'builder' ? 'rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-5' : 'hidden'}>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div>
+              <h2 className="text-base font-extrabold text-slate-900">
+                {editingRoundId ? `Editing Route: ${roundName}` : 'Create New Patrol Route & GPS Checkpoints'}
+              </h2>
+              <p className="text-xs text-slate-500">
+                Click anywhere on the map to drop a pin and auto-populate Latitude, Longitude, and Checkpoint ID.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRouteWorkspace('routes')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+            >
+              ← Back to Saved Routes
+            </button>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500 font-medium">
-                  <th className="py-3 px-4">Round Name</th>
-                  <th className="py-3 px-4">Checkpoints</th>
-                  <th className="py-3 px-4">Repeats</th>
-                  <th className="py-3 px-4">Created Date</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {savedRounds.map((round) => (
-                  <tr key={round.id} className="hover:bg-slate-50">
-                    <td className="py-3 px-4 font-semibold text-slate-800">{round.name}</td>
-                    <td className="py-3 px-4">
-                      <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full text-xs font-medium">
-                        {round.checkpoints?.length || 0} locations
+
+          <div>
+            <label className="mb-1 block text-xs font-bold text-slate-700">
+              Route / Circuit Name *
+            </label>
+            <input
+              type="text"
+              value={roundName}
+              onChange={(e) => setRoundName(e.target.value)}
+              placeholder="e.g., Night Perimeter Patrol"
+              className="w-full md:w-1/2 rounded-xl border border-slate-200 px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+            />
+          </div>
+
+          {/* Map Section */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                <MapPin className="h-3.5 w-3.5 text-brand-600" /> Pick Checkpoint Location on Map
+              </label>
+              <span className="text-[11px] text-slate-400">
+                Click map to auto-fill Lat, Lng &amp; Checkpoint ID
+              </span>
+            </div>
+
+            <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-inner">
+              <div className="absolute top-3 right-3 z-[1000] flex items-center rounded-xl border border-slate-200 bg-white/95 p-1 text-xs font-bold shadow-md backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={() => toggleMapLayer('street')}
+                  className={`rounded-lg px-3 py-1 ${mapType === 'street' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  Street
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleMapLayer('satellite')}
+                  className={`flex items-center gap-1 rounded-lg px-3 py-1 ${mapType === 'satellite' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  <Layers className="h-3.5 w-3.5" /> Satellite
+                </button>
+              </div>
+
+              {!isMapLoaded && (
+                <div className="flex h-[360px] items-center justify-center gap-2 text-slate-500">
+                  <Loader2 className="h-5 w-5 animate-spin text-brand-600" /> Loading Map...
+                </div>
+              )}
+              <div ref={mapContainerRef} style={{ width: '100%', height: '360px', display: isMapLoaded ? 'block' : 'none', zIndex: 0 }} />
+            </div>
+          </div>
+
+          {/* Checkpoint Input Form */}
+          <form onSubmit={handleAddCheckpoint} className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[200px] flex-1">
+              <label className="mb-1 block text-xs font-bold text-slate-600">Checkpoint Name *</label>
+              <input
+                type="text"
+                value={cpName}
+                onChange={(e) => setCpName(e.target.value)}
+                placeholder="e.g., North Gate"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-brand-500"
+                required
+              />
+            </div>
+
+            <div className="min-w-[150px] flex-1">
+              <label className="mb-1 block text-xs font-bold text-slate-600">Checkpoint ID</label>
+              <input
+                type="text"
+                value={cpId}
+                onChange={(e) => setCpId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 font-mono text-xs outline-none"
+                required
+              />
+            </div>
+
+            <div className="min-w-[150px] flex-1">
+              <label className="mb-1 block text-xs font-bold text-slate-600">Latitude</label>
+              <input
+                type="number"
+                step="any"
+                value={cpLat}
+                onChange={(e) => setCpLat(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 font-mono text-xs outline-none"
+                required
+              />
+            </div>
+
+            <div className="min-w-[150px] flex-1">
+              <label className="mb-1 block text-xs font-bold text-slate-600">Longitude</label>
+              <input
+                type="number"
+                step="any"
+                value={cpLng}
+                onChange={(e) => setCpLng(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 font-mono text-xs outline-none"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="inline-flex h-[36px] items-center gap-1.5 rounded-xl bg-slate-900 px-4 text-xs font-bold text-white transition hover:bg-slate-800"
+            >
+              <Plus className="h-3.5 w-3.5 text-emerald-400" /> Add Stop
+            </button>
+          </form>
+
+          {/* Current Round Checkpoints List */}
+          {currentCheckpoints.length > 0 && (
+            <div className="border-t border-slate-200 pt-4">
+              <h3 className="mb-2 text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                Checkpoints in Circuit ({currentCheckpoints.length})
+              </h3>
+              <ul className="mb-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/60 px-3">
+                {currentCheckpoints.map((cp, idx) => (
+                  <li key={cp.id} className="flex items-center justify-between py-2.5 text-xs">
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 font-mono text-[10px] font-bold text-white">
+                        {idx + 1}
                       </span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <select
-                        value={round.renew_every_minutes ? String(round.renew_every_minutes) : ''}
-                        onChange={(e) => changeRepeat(round.id, e.target.value)}
-                        className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 outline-none focus:border-blue-500"
-                        title="How often this route starts a fresh round by itself"
-                      >
-                        {REPEAT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        {round.renew_every_minutes && !REPEAT_OPTIONS.some((o) => o.value === String(round.renew_every_minutes)) && (
-                          <option value={String(round.renew_every_minutes)}>Every {round.renew_every_minutes} min</option>
-                        )}
-                      </select>
-                      {round.renewed_at && (
-                        <div className="mt-1 text-[10px] text-slate-400">Renewed {new Date(round.renewed_at).toLocaleString()}</div>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 text-slate-500 text-xs">
-                      {new Date(round.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="py-3 px-4 text-right space-x-2">
-                      <button
-                        onClick={() => renewNow(round)}
-                        disabled={renewBusy !== null}
-                        className="px-2.5 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md inline-flex items-center gap-1 disabled:opacity-50"
-                        title="Make this route available again for a new guard"
-                      >
-                        <RefreshCw className={`h-3.5 w-3.5 ${renewBusy === round.id ? 'animate-spin' : ''}`} /> Renew
-                      </button>
-                      <button
-                        onClick={() => handleViewRound(round)}
-                        className="px-2.5 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md inline-flex items-center gap-1"
-                      >
-                        <Eye className="h-3.5 w-3.5" /> View
-                      </button>
-                      <button
-                        onClick={() => handleDownloadRoundPDF(round)}
-                        disabled={isDownloading}
-                        className="px-2.5 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md inline-flex items-center gap-1"
-                      >
-                        <Download className="h-3.5 w-3.5" /> PDF
-                      </button>
-                      <button
-                        onClick={() => handleEditRound(round)}
-                        className="px-2.5 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-md inline-flex items-center gap-1"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" /> Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteRound(round.id)}
-                        className="px-2.5 py-1.5 text-xs bg-red-50 hover:bg-red-100 text-red-700 rounded-md inline-flex items-center gap-1"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" /> Delete
-                      </button>
-                    </td>
-                  </tr>
+                      <span className="font-bold text-slate-900">{cp.name}</span>
+                      <span className="rounded bg-white px-2 py-0.5 font-mono text-[11px] text-slate-600 ring-1 ring-slate-200">
+                        {cp.id}
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-500">
+                        {cp.lat}, {cp.lng}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCurrentCheckpoint(cp.id)}
+                      className="rounded-lg p-1 text-rose-500 hover:bg-rose-50 hover:text-rose-700"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </li>
                 ))}
-              </tbody>
-            </table>
+              </ul>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveAndSyncRound}
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700"
+                >
+                  {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {editingRoundId ? 'Update & Sync Route' : 'Save & Sync Route'}
+                </button>
+                {editingRoundId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingRoundId(null);
+                      setRoundName('');
+                      setCurrentCheckpoints([]);
+                    }}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel Edit
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* SAVED ROUNDS WORKSPACE */}
+        {routeWorkspace === 'routes' && (
+          <div className="space-y-4">
+            {/* Clean Filter & Search Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {([
+                  { key: 'ALL', label: 'All Routes' },
+                  { key: 'DAILY', label: 'Daily Midnight Reset' },
+                  { key: 'HOURLY', label: 'Multi-Hour Auto-Repeat' },
+                ] as const).map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => {
+                      setRepeatFilter(tab.key);
+                      setRoutePage(1);
+                    }}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                      repeatFilter === tab.key
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+
+                {canGuestEnroll && (
+                  <>
+                    <div className="mx-1 h-4 w-px bg-slate-200" />
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700">
+                      <input type="checkbox" checked={renewOnJoin} onChange={toggleRenewOnJoin} className="h-3.5 w-3.5 accent-brand-600" />
+                      <span>Auto-renew on new Field guard join</span>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 focus-within:border-brand-500 focus-within:bg-white">
+                  <Search className="mr-2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search route or checkpoint..."
+                    value={routeSearch}
+                    onChange={(e) => {
+                      setRouteSearch(e.target.value);
+                      setRoutePage(1);
+                    }}
+                    className="w-48 bg-transparent text-xs text-slate-800 outline-none sm:w-60"
+                  />
+                  {routeSearch && (
+                    <button type="button" onClick={() => setRouteSearch('')} className="text-slate-400 hover:text-slate-700">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={fetchRounds}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isLoadingRounds ? 'animate-spin' : ''}`} /> Refresh
+                </button>
+              </div>
+            </div>
+
+            {/* Wide Proportional Saved Rounds Table */}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[920px] border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                      <th className="py-3.5 pl-5 pr-3">Route / Circuit Name</th>
+                      <th className="w-[155px] px-3 py-3.5">Checkpoints</th>
+                      <th className="w-[230px] px-3 py-3.5">Auto-Repeat Interval</th>
+                      <th className="w-[130px] px-3 py-3.5">Created Date</th>
+                      <th className="w-[340px] py-3.5 pl-3 pr-5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {isLoadingRounds ? (
+                      Array.from({ length: 4 }).map((_, idx) => (
+                        <tr key={idx}>
+                          <td colSpan={5} className="px-5 py-3.5">
+                            <div className="h-5 w-full animate-pulse rounded-lg bg-slate-100" />
+                          </td>
+                        </tr>
+                      ))
+                    ) : paginatedRounds.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-12 text-center text-sm text-slate-400">
+                          No patrol routes match this filter. Click <strong>New Patrol Route</strong> to create one.
+                        </td>
+                      </tr>
+                    ) : (
+                      paginatedRounds.map((round) => (
+                        <tr key={round.id} className="transition-colors hover:bg-slate-50/90">
+                          <td className="py-3.5 pl-5 pr-3">
+                            <div className="text-sm font-bold text-slate-900">{round.name}</div>
+                            {round.checkpoints && round.checkpoints.length > 0 && (
+                              <div className="mt-0.5 truncate max-w-md text-[11px] text-slate-400">
+                                {round.checkpoints.map((c) => c.name).join(' → ')}
+                              </div>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3.5">
+                            <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-700">
+                              {round.checkpoints?.length || 0} stops
+                            </span>
+                          </td>
+                          <td className="px-3 py-3.5">
+                            <select
+                              value={round.renew_every_minutes ? String(round.renew_every_minutes) : ''}
+                              onChange={(e) => changeRepeat(round.id, e.target.value)}
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-brand-500"
+                              title="How often this route starts a fresh round by itself"
+                            >
+                              {REPEAT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              {round.renew_every_minutes && !REPEAT_OPTIONS.some((o) => o.value === String(round.renew_every_minutes)) && (
+                                <option value={String(round.renew_every_minutes)}>Every {round.renew_every_minutes} min</option>
+                              )}
+                            </select>
+                            {round.renewed_at && (
+                              <div className="mt-1 font-mono text-[10px] text-slate-400">
+                                Renewed {new Date(round.renewed_at).toLocaleString()}
+                              </div>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-500">
+                            {new Date(round.created_at).toLocaleDateString()}
+                          </td>
+                          <td className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => renewNow(round)}
+                                disabled={renewBusy !== null}
+                                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+                                title="Make this route available again for a new guard"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${renewBusy === round.id ? 'animate-spin' : ''}`} /> Renew
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleViewRound(round)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                              >
+                                <Eye className="h-3 w-3" /> QRs
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadRoundPDF(round)}
+                                disabled={isDownloading}
+                                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                              >
+                                <Download className="h-3 w-3" /> PDF
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleEditRound(round)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 transition hover:bg-amber-100"
+                              >
+                                <Edit2 className="h-3 w-3" /> Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRound(round.id)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-bold text-rose-700 transition hover:bg-rose-100"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Numbered Pagination Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-3">
+                <div className="flex items-center gap-3 text-xs text-slate-600">
+                  <span>
+                    Showing <strong className="font-mono text-slate-900">{routeStartItem}</strong>–
+                    <strong className="font-mono text-slate-900">{routeEndItem}</strong> of{' '}
+                    <strong className="font-mono text-slate-900">{totalRouteRecords}</strong> patrol routes
+                  </span>
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400">Per page:</span>
+                    <select
+                      value={routePageSize}
+                      onChange={(e) => {
+                        setRoutePageSize(Number(e.target.value));
+                        setRoutePage(1);
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                    >
+                      <option value={20}>20</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={safeRoutePage <= 1 || isLoadingRounds}
+                    onClick={() => setRoutePage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                  </button>
+
+                  {routePageNumbers.map((pNum, idx) =>
+                    pNum === 'ellipsis' ? (
+                      <span key={`el-${idx}`} className="px-2 text-slate-400">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={pNum}
+                        type="button"
+                        onClick={() => setRoutePage(pNum)}
+                        className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
+                          safeRoutePage === pNum
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {pNum}
+                      </button>
+                    )
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={safeRoutePage >= totalRoutePages || isLoadingRounds}
+                    onClick={() => setRoutePage((p) => Math.min(totalRoutePages, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    Next <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -711,31 +1047,32 @@ const QRGenerator: React.FC = () => {
       {/* VIEW ROUND MODAL */}
       {viewingRound && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm" onClick={() => setViewingRound(null)}>
-          <div className="bg-white rounded-2xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <div>
-                <h3 className="text-2xl font-bold text-slate-800">{viewingRound.name}</h3>
-                <p className="text-sm text-slate-500">{viewingRound.checkpoints?.length || 0} Checkpoints</p>
+                <h3 className="text-xl font-extrabold text-slate-900">{viewingRound.name}</h3>
+                <p className="text-xs text-slate-500">{viewingRound.checkpoints?.length || 0} Checkpoints</p>
               </div>
               <div className="flex gap-2">
                 <button
+                  type="button"
                   onClick={() => handleDownloadRoundPDF(viewingRound)}
-                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-1.5 hover:bg-blue-700"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
                 >
                   <Download className="h-4 w-4" /> Download PDF (1/page)
                 </button>
-                <button onClick={() => setViewingRound(null)} className="p-2 text-slate-400 hover:text-slate-700">
-                  <X className="h-6 w-6" />
+                <button type="button" onClick={() => setViewingRound(null)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                  <X className="h-5 w-5" />
                 </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mt-6">
+            <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
               {viewingQRs.map((cp) => (
-                <div key={cp.id} className="border border-slate-200 rounded-xl p-3 flex flex-col items-center bg-slate-50">
-                  <img src={cp.qrDataUri} alt={cp.name} className="w-32 h-32 rounded bg-white mb-2" />
-                  <span className="font-semibold text-slate-800 text-sm text-center">{cp.name}</span>
-                  <span className="text-xs text-slate-500 font-mono">{cp.id}</span>
+                <div key={cp.id} className="flex flex-col items-center rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <img src={cp.qrDataUri} alt={cp.name} className="mb-2 h-32 w-32 rounded bg-white" />
+                  <span className="text-center text-sm font-bold text-slate-800">{cp.name}</span>
+                  <span className="font-mono text-xs text-slate-500">{cp.id}</span>
                 </div>
               ))}
             </div>
