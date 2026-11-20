@@ -4502,25 +4502,123 @@ app.get('/api/v1/incidents', async (c) => {
   try {
     const supabase = getSupabase(c.env);
     const a = c.get('auth');
-    let incQuery: any = applyTenant(supabase.from('incidents').select('*'), scopeTenant(c));
-    if (a.tier === 'USER') incQuery = incQuery.eq('guard_id', a.guard_id); // field users see only their own tickets
-    const [incRes, guardsRes] = await Promise.all([
-      incQuery.order('reported_at', { ascending: false }),
-      applyTenant(supabase.from('guards').select('guard_id, full_name, employee_code'), scopeTenant(c))
-    ]);
-    
+    const tenant = scopeTenant(c);
+
+    const pageParam = c.req.query('page');
+    const limitParam = c.req.query('limit');
+    const isPaginated = pageParam !== undefined || limitParam !== undefined;
+    const page = Math.max(1, parseInt(pageParam || '1', 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(limitParam || '25', 10) || 25));
+
+    const statusFilter = (c.req.query('status') || '').trim().toUpperCase();
+    const priorityFilter = (c.req.query('priority') || '').trim().toUpperCase();
+    const qRaw = (c.req.query('q') || '').trim();
+    const searchField = (c.req.query('search_field') || 'all').trim();
+
+    const guardsRes = await applyTenant(
+      supabase.from('guards').select('guard_id, full_name, employee_code'),
+      tenant
+    );
+    const guardsList = guardsRes.data || [];
+    const guardsMap = new Map(guardsList.map((g: any) => [g.guard_id, g]));
+
+    // Lightweight aggregate status/priority counts across all matching tenant incidents
+    let summaryQuery: any = applyTenant(supabase.from('incidents').select('status, priority'), tenant);
+    if (a.tier === 'USER') summaryQuery = summaryQuery.eq('guard_id', a.guard_id);
+    const summaryRes = await summaryQuery;
+    const allRows = summaryRes.data || [];
+    const counts = {
+      total: allRows.length,
+      open: allRows.filter((r: any) => (r.status || 'OPEN').toUpperCase() !== 'RESOLVED').length,
+      resolved: allRows.filter((r: any) => (r.status || '').toUpperCase() === 'RESOLVED').length,
+      critical: allRows.filter((r: any) => {
+        const p = (r.priority || '').toUpperCase();
+        return p.includes('1') || p === 'P1' || p.includes('2') || p === 'P2';
+      }).length,
+    };
+
+    let incQuery: any = applyTenant(
+      supabase.from('incidents').select('*', { count: 'exact' }),
+      tenant
+    );
+    if (a.tier === 'USER') incQuery = incQuery.eq('guard_id', a.guard_id);
+
+    if (statusFilter === 'OPEN') {
+      incQuery = incQuery.neq('status', 'RESOLVED');
+    } else if (statusFilter === 'RESOLVED') {
+      incQuery = incQuery.eq('status', 'RESOLVED');
+    } else if (statusFilter && statusFilter !== 'ALL') {
+      incQuery = incQuery.eq('status', statusFilter);
+    }
+
+    if (priorityFilter && priorityFilter !== 'ALL') {
+      incQuery = incQuery.ilike('priority', `${priorityFilter}%`);
+    }
+
+    if (qRaw) {
+      const safeQ = qRaw.replace(/[,%()]/g, '');
+      if (searchField === 'number') {
+        const digits = safeQ.replace(/[^0-9]/g, '');
+        if (digits) {
+          const numVal = parseInt(digits, 10);
+          incQuery = incQuery.or(`case_number.eq.${numVal},client_incident_id.ilike.%${safeQ}%`);
+        } else {
+          incQuery = incQuery.ilike('client_incident_id', `%${safeQ}%`);
+        }
+      } else if (searchField === 'short_description') {
+        incQuery = incQuery.or(`description.ilike.%${safeQ}%,title.ilike.%${safeQ}%`);
+      } else if (searchField === 'caller') {
+        const matchingGuardIds = guardsList
+          .filter((g: any) =>
+            `${g.full_name || ''} ${g.employee_code || ''}`.toLowerCase().includes(safeQ.toLowerCase())
+          )
+          .map((g: any) => g.guard_id);
+        if (matchingGuardIds.length === 0) {
+          return c.json({
+            success: true,
+            incidents: [],
+            counts,
+            pagination: { page, limit, total: 0, total_pages: 1 },
+          });
+        }
+        incQuery = incQuery.in('guard_id', matchingGuardIds);
+      } else {
+        incQuery = incQuery.or(`description.ilike.%${safeQ}%,title.ilike.%${safeQ}%,client_incident_id.ilike.%${safeQ}%`);
+      }
+    }
+
+    incQuery = incQuery.order('reported_at', { ascending: false });
+    if (isPaginated) {
+      const from = (page - 1) * limit;
+      const to = from + limit - 1;
+      incQuery = incQuery.range(from, to);
+    }
+
+    const incRes = await incQuery;
     if (incRes.error) throw incRes.error;
-    const guardsMap = new Map((guardsRes.data || []).map((g: any) => [g.guard_id, g]));
 
     const enriched = (incRes.data || []).map((inc: any) => {
       const g = inc.guard_id ? guardsMap.get(inc.guard_id) : null;
       return {
         ...inc,
-        guards: g ? { full_name: g.full_name, employee_code: g.employee_code } : null
+        guards: g ? { full_name: g.full_name, employee_code: g.employee_code } : null,
       };
     });
 
-    return c.json({ success: true, incidents: enriched });
+    const filteredTotal = incRes.count ?? enriched.length;
+    const totalPages = Math.max(1, Math.ceil(filteredTotal / limit));
+
+    return c.json({
+      success: true,
+      incidents: enriched,
+      counts,
+      pagination: {
+        page,
+        limit,
+        total: filteredTotal,
+        total_pages: totalPages,
+      },
+    });
   } catch (error) {
     return c.json({ success: false, message: 'Failed to fetch incidents' }, 500);
   }
