@@ -1,5 +1,5 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { Eye, EyeOff, CheckCircle2, Power, HelpCircle, Send, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, CheckCircle2, Power, HelpCircle, Send, AlertCircle, Mail, MessageSquare, Radio, RefreshCw, Save, Layers } from 'lucide-react';
 
 const API_BASE_URL = "https://rakshak-api.spandangrasim.workers.dev";
 const MASK = "********";
@@ -177,10 +177,14 @@ export default function AdminConfigsPage() {
     }
   };
 
+  const [channelFilter, setChannelFilter] = useState<'ALL' | 'GMAIL' | 'WHATSAPP' | 'TELEGRAM'>('ALL');
+
   if (loading) {
     return (
-      <div className="flex justify-center items-center h-screen bg-slate-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-900"></div>
+      <div className="mx-auto max-w-[1600px] space-y-4 p-6">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="skeleton h-28 rounded-2xl" />
+        ))}
       </div>
     );
   }
@@ -189,51 +193,182 @@ export default function AdminConfigsPage() {
   const isWhatsappEnabled = configs['ENABLE_WHATSAPP'] === 'true';
   const isTelegramEnabled = configs['ENABLE_TELEGRAM'] === 'true';
 
+  const licensedCount = [allowGmail, allowWhatsapp, allowTelegram].filter(Boolean).length;
+  const activeCount = [
+    allowGmail && isGmailEnabled,
+    allowWhatsapp && isWhatsappEnabled,
+    allowTelegram && isTelegramEnabled,
+  ].filter(Boolean).length;
+
   return (
-    <div className="min-h-screen bg-slate-50 py-10 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        
-        <div className="bg-slate-900 px-6 py-5 text-white">
-          <h1 className="text-xl font-bold">Rakshak Patrol - Admin Integrations</h1>
-          <p className="text-slate-300 text-xs mt-1">
-            Configure enterprise notification channels for automatic group dispatch and SLA escalations.
-          </p>
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
+      <form onSubmit={handleSave} className="mx-auto max-w-[1600px] space-y-5">
+        {/* Tactical Calm Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div>
+            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
+              Notification Channels &amp; API Integrations
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Configure enterprise email, WhatsApp, and Telegram gateways for automated patrol digests and SLA escalations.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {licensedCount > 1 && (
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <Layers className="h-3.5 w-3.5 text-brand-600" />
+                <span className="text-[11px] font-bold uppercase text-slate-400">Channel:</span>
+                <select
+                  value={channelFilter}
+                  onChange={(e) => setChannelFilter(e.target.value as any)}
+                  className="bg-transparent text-xs font-extrabold text-slate-900 outline-none"
+                >
+                  <option value="ALL">All Licensed Channels ({licensedCount})</option>
+                  {allowGmail && <option value="GMAIL">Google Gmail OAuth2</option>}
+                  {allowWhatsapp && <option value="WHATSAPP">Meta WhatsApp API</option>}
+                  {allowTelegram && <option value="TELEGRAM">Telegram Bot API</option>}
+                </select>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={fetchConfigs}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </button>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5 text-emerald-400" />
+              {saving ? 'Saving...' : 'Save Configurations'}
+            </button>
+          </div>
+        </div>
+
+        {/* Channel Status KPI Strip */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => setChannelFilter('ALL')}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              channelFilter === 'ALL'
+                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className={`text-[11px] font-bold uppercase ${channelFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                Active Gateways
+              </div>
+              <div className="mt-1 font-mono text-2xl font-extrabold">
+                {activeCount} <span className="text-xs font-semibold opacity-60">/ {licensedCount}</span>
+              </div>
+            </div>
+            <Radio className={`h-5 w-5 ${channelFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+          </button>
+
+          {allowGmail && (
+            <button
+              type="button"
+              onClick={() => setChannelFilter('GMAIL')}
+              className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                channelFilter === 'GMAIL'
+                  ? 'border-blue-500 bg-blue-50/70 ring-2 ring-blue-500/20'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <div>
+                <div className="text-[11px] font-bold uppercase text-blue-700">Gmail OAuth2</div>
+                <div className="mt-1 text-base font-extrabold text-slate-900">
+                  {isGmailEnabled ? 'Connected' : 'Paused'}
+                </div>
+              </div>
+              <Mail className={`h-5 w-5 ${isGmailEnabled ? 'text-blue-600' : 'text-slate-400'}`} />
+            </button>
+          )}
+
+          {allowWhatsapp && (
+            <button
+              type="button"
+              onClick={() => setChannelFilter('WHATSAPP')}
+              className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                channelFilter === 'WHATSAPP'
+                  ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <div>
+                <div className="text-[11px] font-bold uppercase text-emerald-700">Meta WhatsApp</div>
+                <div className="mt-1 text-base font-extrabold text-slate-900">
+                  {isWhatsappEnabled ? 'Connected' : 'Paused'}
+                </div>
+              </div>
+              <MessageSquare className={`h-5 w-5 ${isWhatsappEnabled ? 'text-emerald-600' : 'text-slate-400'}`} />
+            </button>
+          )}
+
+          {allowTelegram && (
+            <button
+              type="button"
+              onClick={() => setChannelFilter('TELEGRAM')}
+              className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                channelFilter === 'TELEGRAM'
+                  ? 'border-sky-500 bg-sky-50/70 ring-2 ring-sky-500/20'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <div>
+                <div className="text-[11px] font-bold uppercase text-sky-700">Telegram Bot</div>
+                <div className="mt-1 text-base font-extrabold text-slate-900">
+                  {isTelegramEnabled ? 'Connected' : 'Paused'}
+                </div>
+              </div>
+              <Send className={`h-5 w-5 ${isTelegramEnabled ? 'text-sky-600' : 'text-slate-400'}`} />
+            </button>
+          )}
         </div>
 
         {message.text && (
-          <div className={`mx-6 mt-6 p-4 rounded-xl text-xs font-bold flex items-center gap-2 ${
+          <div className={`flex items-center gap-2 rounded-2xl border p-4 text-xs font-bold ${
             message.type === 'success'
-              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-              : 'bg-red-50 text-red-800 border border-red-200'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+              : 'border-rose-200 bg-rose-50 text-rose-800'
           }`}>
             {message.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
             ) : (
-              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
             )}
             <span>{message.text}</span>
           </div>
         )}
 
-        <form onSubmit={handleSave} className="p-6 space-y-5">
+        <div className="space-y-5">
           {/* 1. Google Gmail OAuth2 Refresh Token Settings */}
-          {allowGmail && (
+          {allowGmail && (channelFilter === 'ALL' || channelFilter === 'GMAIL') && (
             <div className={`rounded-2xl border transition-all ${
-              isGmailEnabled ? 'border-blue-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
+              isGmailEnabled ? 'border-blue-200 bg-white shadow-xs' : 'border-slate-200 bg-white/80'
             }`}>
-              <div className="p-4 sm:px-5 flex items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 p-5">
                 <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isGmailEnabled ? 'bg-blue-600' : 'bg-slate-400'}`}></span>
+                  <span className={`h-2.5 w-2.5 rounded-full ${isGmailEnabled ? 'bg-blue-600' : 'bg-slate-400'}`}></span>
                   <div>
-                    <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
+                    <h2 className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
                       Google Gmail OAuth2 Auto-Dispatch
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        isGmailEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                      <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${
+                        isGmailEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200'
                       }`}>
                         {isGmailEnabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="mt-0.5 text-xs text-slate-500">
                       Uses OAuth2 Refresh Token to automatically mint fresh access tokens and email all guards in an Assignment Group.
                     </p>
                   </div>
@@ -242,21 +377,21 @@ export default function AdminConfigsPage() {
                 <button
                   type="button"
                   onClick={() => handleToggleIntegration('ENABLE_GMAIL')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-sm ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition shadow-xs ${
                     isGmailEnabled
-                      ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                      ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      : 'bg-slate-900 text-white hover:bg-slate-800'
                   }`}
                 >
-                  <Power className="w-3.5 h-3.5" />
+                  <Power className="h-3.5 w-3.5" />
                   {isGmailEnabled ? 'Disable' : 'Enable'}
                 </button>
               </div>
 
               {isGmailEnabled && (
-                <div className="px-5 pb-5 pt-3 border-t border-slate-100 space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">
+                <div className="space-y-4 border-t border-slate-100 px-5 pb-5 pt-4">
+                  <div className="max-w-xl">
+                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
                       Manager / Fallback Notification Email
                     </label>
                     <input
@@ -264,38 +399,38 @@ export default function AdminConfigsPage() {
                       value={configs['MANAGER_EMAIL'] || ''}
                       onChange={(e) => handleChange('MANAGER_EMAIL', e.target.value)}
                       placeholder="spandangrasim@gmail.com"
-                      className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm bg-white"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
                     />
                   </div>
 
                   {/* Enterprise OAuth2 Refresh Token Block */}
-                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800">
                         Permanent OAuth2 Refresh Token Credentials (Recommended)
                       </span>
                       <button
                         type="button"
                         onClick={() => setShowOAuthGuide(!showOAuthGuide)}
-                        className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
+                        className="inline-flex items-center gap-1 text-xs font-bold text-brand-600 hover:underline"
                       >
-                        <HelpCircle className="w-3.5 h-3.5" />
+                        <HelpCircle className="h-3.5 w-3.5" />
                         {showOAuthGuide ? 'Hide 4-Step Guide' : 'How to Generate Refresh Token'}
                       </button>
                     </div>
 
                     {showOAuthGuide && (
-                      <div className="p-3.5 rounded-xl bg-slate-900 text-slate-200 text-xs space-y-1.5 leading-relaxed">
-                        <p><strong>1. Google Cloud Console:</strong> Go to <em>APIs & Services → OAuth consent screen</em> and set Publishing Status to <strong>"In production"</strong> (so your Refresh Token never expires).</p>
+                      <div className="space-y-1.5 rounded-xl bg-slate-900 p-4 text-xs leading-relaxed text-slate-200">
+                        <p><strong>1. Google Cloud Console:</strong> Go to <em>APIs &amp; Services → OAuth consent screen</em> and set Publishing Status to <strong>&ldquo;In production&rdquo;</strong> (so your Refresh Token never expires).</p>
                         <p><strong>2. Create OAuth Client ID:</strong> Go to <em>Credentials → Create Credentials → OAuth client ID (Web application)</em>. Add <code className="text-emerald-300">https://developers.google.com/oauthplayground</code> to <strong>Authorized redirect URIs</strong>.</p>
-                        <p><strong>3. OAuth2 Playground:</strong> Open <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-sky-400 underline">developers.google.com/oauthplayground</a> → Click the top-right Gear icon ⚙️ → Check <strong>"Use your own OAuth credentials"</strong> and paste your Client ID & Client Secret.</p>
-                        <p><strong>4. Authorize & Exchange:</strong> In Step 1 on the left, enter scope <code className="text-emerald-300">https://www.googleapis.com/auth/gmail.send</code> → Click <strong>Authorize APIs</strong> → In Step 2, click <strong>Exchange authorization code for tokens</strong> → Copy the <strong>Refresh token</strong> (`1//04...`) below!</p>
+                        <p><strong>3. OAuth2 Playground:</strong> Open <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-sky-400 underline">developers.google.com/oauthplayground</a> → Click the top-right Gear icon ⚙️ → Check <strong>&ldquo;Use your own OAuth credentials&rdquo;</strong> and paste your Client ID &amp; Client Secret.</p>
+                        <p><strong>4. Authorize &amp; Exchange:</strong> In Step 1 on the left, enter scope <code className="text-emerald-300">https://www.googleapis.com/auth/gmail.send</code> → Click <strong>Authorize APIs</strong> → In Step 2, click <strong>Exchange authorization code for tokens</strong> → Copy the <strong>Refresh token</strong> (`1//04...`) below!</p>
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+                        <label className="mb-1 block text-[11px] font-bold uppercase text-slate-600">
                           Google OAuth Client ID
                         </label>
                         <input
@@ -303,11 +438,11 @@ export default function AdminConfigsPage() {
                           value={configs['GMAIL_CLIENT_ID'] || ''}
                           onChange={(e) => handleChange('GMAIL_CLIENT_ID', e.target.value)}
                           placeholder="123456789-abc.apps.googleusercontent.com"
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs outline-none focus:border-brand-500"
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
+                        <label className="mb-1 block text-[11px] font-bold uppercase text-slate-600">
                           Google OAuth Client Secret
                         </label>
                         <div className="relative">
@@ -316,73 +451,72 @@ export default function AdminConfigsPage() {
                             value={configs['GMAIL_CLIENT_SECRET'] || ''}
                             onChange={(e) => handleChange('GMAIL_CLIENT_SECRET', e.target.value)}
                             placeholder="GOCSPX-..."
-                            className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                            className="w-full rounded-xl border border-slate-300 bg-white py-2 pl-3 pr-9 font-mono text-xs outline-none focus:border-brand-500"
                           />
                           <button
                             type="button"
                             onClick={() => toggleTokenVisibility('GMAIL_CLIENT_SECRET')}
                             className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
                           >
-                            {showTokens['GMAIL_CLIENT_SECRET'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            {showTokens['GMAIL_CLIENT_SECRET'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-bold uppercase text-slate-600">
+                          Google OAuth2 Refresh Token (1//...)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showTokens['GMAIL_REFRESH_TOKEN'] ? 'text' : 'password'}
+                            value={configs['GMAIL_REFRESH_TOKEN'] || ''}
+                            onChange={(e) => handleChange('GMAIL_REFRESH_TOKEN', e.target.value)}
+                            placeholder="1//04..."
+                            className="w-full rounded-xl border border-slate-300 bg-white py-2 pl-3 pr-9 font-mono text-xs outline-none focus:border-brand-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleTokenVisibility('GMAIL_REFRESH_TOKEN')}
+                            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                          >
+                            {showTokens['GMAIL_REFRESH_TOKEN'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
                         </div>
                       </div>
                     </div>
+                  </div>
 
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                        Google OAuth2 Refresh Token (Permanent — Starts with 1//...)
+                  {/* Fallback Direct Access Token + Test Email Button */}
+                  <div className="flex flex-wrap items-end justify-between gap-4">
+                    <div className="min-w-[280px] flex-1 max-w-xl">
+                      <label className="mb-1 block text-[11px] font-semibold uppercase text-slate-500">
+                        Optional: Direct OAuth2 Access Token (ya29... — Valid for 60 mins)
                       </label>
                       <div className="relative">
                         <input
-                          type={showTokens['GMAIL_REFRESH_TOKEN'] ? 'text' : 'password'}
-                          value={configs['GMAIL_REFRESH_TOKEN'] || ''}
-                          onChange={(e) => handleChange('GMAIL_REFRESH_TOKEN', e.target.value)}
-                          placeholder="1//04..."
-                          className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-300 text-xs font-mono bg-white"
+                          type={showTokens['GMAIL_ACCESS_TOKEN'] ? 'text' : 'password'}
+                          value={configs['GMAIL_ACCESS_TOKEN'] || ''}
+                          onChange={(e) => handleChange('GMAIL_ACCESS_TOKEN', e.target.value)}
+                          placeholder="ya29.a0..."
+                          className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-3 pr-9 font-mono text-xs outline-none focus:border-brand-500"
                         />
                         <button
                           type="button"
-                          onClick={() => toggleTokenVisibility('GMAIL_REFRESH_TOKEN')}
+                          onClick={() => toggleTokenVisibility('GMAIL_ACCESS_TOKEN')}
                           className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
                         >
-                          {showTokens['GMAIL_REFRESH_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          {showTokens['GMAIL_ACCESS_TOKEN'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Fallback Direct Access Token */}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
-                      Optional: Direct OAuth2 Access Token (ya29... — Valid for 60 mins if Refresh Token is not set)
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showTokens['GMAIL_ACCESS_TOKEN'] ? 'text' : 'password'}
-                        value={configs['GMAIL_ACCESS_TOKEN'] || ''}
-                        onChange={(e) => handleChange('GMAIL_ACCESS_TOKEN', e.target.value)}
-                        placeholder="ya29.a0..."
-                        className="w-full pl-3 pr-9 py-2 rounded-xl border border-slate-200 text-xs font-mono bg-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => toggleTokenVisibility('GMAIL_ACCESS_TOKEN')}
-                        className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
-                      >
-                        {showTokens['GMAIL_ACCESS_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end pt-1">
                     <button
                       type="button"
                       onClick={handleTestGmail}
                       disabled={testingEmail || saving}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-50"
                     >
-                      <Send className="w-3.5 h-3.5" />
+                      <Send className="h-3.5 w-3.5" />
                       {testingEmail ? 'Saving & Sending Test Email...' : 'Save & Send Test Email'}
                     </button>
                   </div>
@@ -391,24 +525,24 @@ export default function AdminConfigsPage() {
             </div>
           )}
 
-          {/* 2. Meta WhatsApp API (Only rendered if licensed by Super Admin) */}
-          {allowWhatsapp && (
+          {/* 2. Meta WhatsApp API */}
+          {allowWhatsapp && (channelFilter === 'ALL' || channelFilter === 'WHATSAPP') && (
             <div className={`rounded-2xl border transition-all ${
-              isWhatsappEnabled ? 'border-emerald-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
+              isWhatsappEnabled ? 'border-emerald-200 bg-white shadow-xs' : 'border-slate-200 bg-white/80'
             }`}>
-              <div className="p-4 sm:px-5 flex items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 p-5">
                 <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isWhatsappEnabled ? 'bg-emerald-600' : 'bg-slate-400'}`}></span>
+                  <span className={`h-2.5 w-2.5 rounded-full ${isWhatsappEnabled ? 'bg-emerald-600' : 'bg-slate-400'}`}></span>
                   <div>
-                    <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
+                    <h2 className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
                       Meta WhatsApp API Settings
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        isWhatsappEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                      <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${
+                        isWhatsappEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200'
                       }`}>
                         {isWhatsappEnabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="mt-0.5 text-xs text-slate-500">
                       Dispatch instant WhatsApp alerts to the security manager on critical incidents.
                     </p>
                   </div>
@@ -417,47 +551,45 @@ export default function AdminConfigsPage() {
                 <button
                   type="button"
                   onClick={() => handleToggleIntegration('ENABLE_WHATSAPP')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-sm ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition shadow-xs ${
                     isWhatsappEnabled
-                      ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                      ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      : 'bg-slate-900 text-white hover:bg-slate-800'
                   }`}
                 >
-                  <Power className="w-3.5 h-3.5" />
+                  <Power className="h-3.5 w-3.5" />
                   {isWhatsappEnabled ? 'Disable' : 'Enable'}
                 </button>
               </div>
 
               {isWhatsappEnabled && (
-                <div className="px-5 pb-5 pt-3 border-t border-slate-100 space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                        Manager Phone (with country code)
-                      </label>
-                      <input
-                        type="text"
-                        value={configs['MANAGER_PHONE'] || ''}
-                        onChange={(e) => handleChange('MANAGER_PHONE', e.target.value)}
-                        placeholder="+919876543210"
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm bg-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                        WhatsApp Phone Number ID
-                      </label>
-                      <input
-                        type="text"
-                        value={configs['WHATSAPP_PHONE_ID'] || ''}
-                        onChange={(e) => handleChange('WHATSAPP_PHONE_ID', e.target.value)}
-                        placeholder="10692..."
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
-                      />
-                    </div>
+                <div className="grid grid-cols-1 gap-4 border-t border-slate-100 px-5 pb-5 pt-4 md:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
+                      Manager Phone (with country code)
+                    </label>
+                    <input
+                      type="text"
+                      value={configs['MANAGER_PHONE'] || ''}
+                      onChange={(e) => handleChange('MANAGER_PHONE', e.target.value)}
+                      placeholder="+919876543210"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                    />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
+                      WhatsApp Phone Number ID
+                    </label>
+                    <input
+                      type="text"
+                      value={configs['WHATSAPP_PHONE_ID'] || ''}
+                      onChange={(e) => handleChange('WHATSAPP_PHONE_ID', e.target.value)}
+                      placeholder="10692..."
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 font-mono text-xs outline-none focus:border-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
                       WhatsApp Graph API Token
                     </label>
                     <div className="relative">
@@ -466,14 +598,14 @@ export default function AdminConfigsPage() {
                         value={configs['WHATSAPP_API_TOKEN'] || ''}
                         onChange={(e) => handleChange('WHATSAPP_API_TOKEN', e.target.value)}
                         placeholder="EAAG..."
-                        className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
+                        className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-3.5 pr-9 font-mono text-xs outline-none focus:border-brand-500"
                       />
                       <button
                         type="button"
                         onClick={() => toggleTokenVisibility('WHATSAPP_API_TOKEN')}
-                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                        className="absolute right-3 top-2 text-slate-400 hover:text-slate-600"
                       >
-                        {showTokens['WHATSAPP_API_TOKEN'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        {showTokens['WHATSAPP_API_TOKEN'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     </div>
                   </div>
@@ -482,24 +614,24 @@ export default function AdminConfigsPage() {
             </div>
           )}
 
-          {/* 3. Telegram Bot API (Only rendered if licensed by Super Admin) */}
-          {allowTelegram && (
+          {/* 3. Telegram Bot API */}
+          {allowTelegram && (channelFilter === 'ALL' || channelFilter === 'TELEGRAM') && (
             <div className={`rounded-2xl border transition-all ${
-              isTelegramEnabled ? 'border-sky-200 bg-white shadow-sm' : 'border-slate-200 bg-slate-50/70'
+              isTelegramEnabled ? 'border-sky-200 bg-white shadow-xs' : 'border-slate-200 bg-white/80'
             }`}>
-              <div className="p-4 sm:px-5 flex items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 p-5">
                 <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isTelegramEnabled ? 'bg-sky-500' : 'bg-slate-400'}`}></span>
+                  <span className={`h-2.5 w-2.5 rounded-full ${isTelegramEnabled ? 'bg-sky-500' : 'bg-slate-400'}`}></span>
                   <div>
-                    <h2 className="text-sm sm:text-base font-bold text-slate-800 flex items-center gap-2">
+                    <h2 className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
                       Telegram Bot Settings
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        isTelegramEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                      <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${
+                        isTelegramEnabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200'
                       }`}>
                         {isTelegramEnabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
+                    <p className="mt-0.5 text-xs text-slate-500">
                       Broadcast automated security alerts to a Telegram bot channel.
                     </p>
                   </div>
@@ -508,45 +640,37 @@ export default function AdminConfigsPage() {
                 <button
                   type="button"
                   onClick={() => handleToggleIntegration('ENABLE_TELEGRAM')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-sm ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition shadow-xs ${
                     isTelegramEnabled
-                      ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                      ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      : 'bg-slate-900 text-white hover:bg-slate-800'
                   }`}
                 >
-                  <Power className="w-3.5 h-3.5" />
+                  <Power className="h-3.5 w-3.5" />
                   {isTelegramEnabled ? 'Disable' : 'Enable'}
                 </button>
               </div>
 
               {isTelegramEnabled && (
-                <div className="px-5 pb-5 pt-3 border-t border-slate-100">
-                  <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                    Telegram Bot Token
-                  </label>
-                  <input
-                    type={showTokens['TELEGRAM_BOT_TOKEN'] ? 'text' : 'password'}
-                    value={configs['TELEGRAM_BOT_TOKEN'] || ''}
-                    onChange={(e) => handleChange('TELEGRAM_BOT_TOKEN', e.target.value)}
-                    placeholder="123456:ABC-DEF..."
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm font-mono bg-white"
-                  />
+                <div className="border-t border-slate-100 px-5 pb-5 pt-4">
+                  <div className="max-w-xl">
+                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
+                      Telegram Bot Token
+                    </label>
+                    <input
+                      type={showTokens['TELEGRAM_BOT_TOKEN'] ? 'text' : 'password'}
+                      value={configs['TELEGRAM_BOT_TOKEN'] || ''}
+                      onChange={(e) => handleChange('TELEGRAM_BOT_TOKEN', e.target.value)}
+                      placeholder="123456:ABC-DEF..."
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 font-mono text-xs outline-none focus:border-brand-500"
+                    />
+                  </div>
                 </div>
               )}
             </div>
           )}
-
-          <div className="pt-4 border-t border-slate-100 flex justify-end">
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-sm transition-all shadow-sm disabled:opacity-50"
-            >
-              {saving ? 'Saving Changes...' : 'Save All Configurations'}
-            </button>
-          </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   );
 }
