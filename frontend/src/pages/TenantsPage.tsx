@@ -140,6 +140,10 @@ const TenantsPage: React.FC = () => {
       .then((r) => r.json())
       .then((d) => { if (d && d.bypasses_rls === false) setKeyWarning(d.message); })
       .catch(() => {});
+    fetch(`${API}/super-admin/keepalive`)
+      .then((r) => r.json())
+      .then((d) => { if (d?.success && d.status) setKeepalive(d.status); })
+      .catch(() => {});
     fetch(`${API}/super-admin/password-hashing`)
       .then((r) => r.json())
       .then((d) => setPwLeft(typeof d.plaintext_remaining === 'number' ? d.plaintext_remaining : null))
@@ -177,6 +181,22 @@ const TenantsPage: React.FC = () => {
       flash(e.message || 'Re-sign failed');
     } finally {
       setResigning(false);
+    }
+  };
+
+  const runKeepalivePing = async () => {
+    setPingingDb(true);
+    try {
+      const r = await fetch(`${API}/super-admin/keepalive`, { method: 'POST' });
+      const d = await r.json();
+      if (d.success && d.status) {
+        setKeepalive(d.status);
+        flash(`Database keepalive ping succeeded (${d.status.latency_ms} ms).`);
+      } else {
+        flash(d.message || 'Keepalive ping failed.');
+      }
+    } finally {
+      setPingingDb(false);
     }
   };
 
@@ -290,6 +310,8 @@ const TenantsPage: React.FC = () => {
   const [tenantWorkspace, setTenantWorkspace] = useState<'all' | 'modules' | 'branding' | 'security'>('all');
   const [tenantStatusFilter, setTenantStatusFilter] = useState<'ALL' | 'ACTIVE' | 'SUSPENDED'>('ALL');
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
+  const [keepalive, setKeepalive] = useState<{ last_ping_at?: string; trigger?: string; latency_ms?: number; schedule?: string } | null>(null);
+  const [pingingDb, setPingingDb] = useState<boolean>(false);
 
   if (loading) return <div className="p-10 text-center text-slate-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>;
 
@@ -455,6 +477,33 @@ const TenantsPage: React.FC = () => {
               </div>
             </div>
             <ShieldCheck className="h-5 w-5 text-indigo-600" />
+          </button>
+        </div>
+
+        {/* Super Admin Only: Automated Every-2-Days Supabase Keepalive Heartbeat */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            <div>
+              <span className="text-xs font-extrabold text-slate-900">Database Keepalive Cron</span>
+              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                Every 2 Days (06:00 UTC)
+              </span>
+              <div className="text-[11px] text-slate-500">
+                {keepalive?.last_ping_at
+                  ? `Last heartbeat: ${new Date(keepalive.last_ping_at).toLocaleString()} (${keepalive.trigger} · ${keepalive.latency_ms} ms)`
+                  : 'Scheduled automatically every 48 hours to keep Supabase active.'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={runKeepalivePing}
+            disabled={pingingDb}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 transition hover:bg-slate-100 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 text-emerald-600 ${pingingDb ? 'animate-spin' : ''}`} />
+            {pingingDb ? 'Pinging…' : 'Ping Now'}
           </button>
         </div>
 

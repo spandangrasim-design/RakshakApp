@@ -17,4 +17,4 @@ bucket_name = "rakshak-images"
 
 # SLA Escalation Cron Trigger (Every 10 minutes)
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/10 * * * *", "0 6 */2 * *"]

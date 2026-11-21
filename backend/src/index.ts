@@ -3811,6 +3811,54 @@ app.get('/api/v1/dashboard/summary', async (c) => {
   }
 });
 
+// Super Admin only: lightweight Supabase keepalive ping & heartbeat status (404 for all other tiers)
+async function pingSupabaseKeepalive(env: Bindings, trigger: 'CRON' | 'MANUAL') {
+  const supabase = getSupabase(env);
+  const started = Date.now();
+  const { count, error } = await supabase.from('tenants').select('id', { count: 'exact', head: true });
+  if (error) throw error;
+  const record = {
+    ok: true,
+    trigger,
+    last_ping_at: new Date().toISOString(),
+    latency_ms: Date.now() - started,
+    tenants_checked: count ?? 0,
+    schedule: 'Every 2 days (06:00 UTC)',
+  };
+  if (env.R2_BUCKET) {
+    await env.R2_BUCKET.put('_system/supabase-keepalive.json', JSON.stringify(record), {
+      httpMetadata: { contentType: 'application/json' },
+    });
+  }
+  return record;
+}
+
+app.get('/api/v1/super-admin/keepalive', async (c) => {
+  try {
+    const obj = c.env.R2_BUCKET ? await c.env.R2_BUCKET.get('_system/supabase-keepalive.json') : null;
+    if (!obj) {
+      return c.json({
+        success: true,
+        status: null,
+        schedule: 'Every 2 days (06:00 UTC)',
+      });
+    }
+    const status = await obj.json();
+    return c.json({ success: true, status });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
+app.post('/api/v1/super-admin/keepalive', async (c) => {
+  try {
+    const status = await pingSupabaseKeepalive(c.env, 'MANUAL');
+    return c.json({ success: true, status });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error) }, 500);
+  }
+});
+
 // Reports WHAT KIND of database key the Worker is using. Never returns the key or any part of it.
 app.get('/api/v1/super-admin/diagnostics', async (c) => {
   const key = String(c.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
@@ -5332,6 +5380,12 @@ export default {
   },
   
   scheduled: async (event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) => {
+    // Every-2-days Supabase keepalive cron ("0 6 */2 * *")
+    if (event.cron === '0 6 */2 * *') {
+      try { await pingSupabaseKeepalive(env, 'CRON'); } catch (e) { console.error('pingSupabaseKeepalive failed', e); }
+      return;
+    }
+
     // Housekeeping first, each guarded so one failure never blocks incident escalation below.
     try { await closeStaleRuns(env); } catch (e) { console.error('closeStaleRuns failed', e); }
     try { await runDailyReports(env); } catch (e) { console.error('runDailyReports failed', e); }
