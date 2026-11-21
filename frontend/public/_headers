@@ -4,3 +4,8 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(self), camera=(), microphone=()
+
+/*.apk
+  Content-Type: application/vnd.android.package-archive
+  Content-Disposition: attachment; filename="rakshak-field.apk"
+  Cache-Control: public, max-age=300

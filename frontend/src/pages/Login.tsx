@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Lock, User, Shield, Eye, EyeOff, QrCode, Siren, BarChart3 } from 'lucide-react';
+import { Lock, User, Shield, Eye, EyeOff, QrCode, Siren, BarChart3, Smartphone, Download, AlertCircle } from 'lucide-react';
 
 interface LoginProps {
   onLoginSuccess?: (token: string, userData: any, modules?: any) => void;
@@ -14,7 +14,36 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [show, setShow] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [apkChecking, setApkChecking] = useState(false);
+  const [apkNotice, setApkNotice] = useState('');
   const navigate = useNavigate();
+
+  const apkUrl = (import.meta as any).env?.VITE_APK_DOWNLOAD_URL || '/rakshak-field.apk';
+
+  const handleDownloadApk = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (/^https?:\/\//i.test(apkUrl)) return; // External release URL downloads directly
+    e.preventDefault();
+    setApkNotice('');
+    setApkChecking(true);
+    try {
+      const res = await fetch(apkUrl, { method: 'HEAD' });
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (!res.ok || contentType.includes('text/html')) {
+        setApkNotice('APK package is not uploaded yet. Place rakshak-field.apk in frontend/public/ or set VITE_APK_DOWNLOAD_URL.');
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = apkUrl;
+      link.download = 'rakshak-field.apk';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch {
+      setApkNotice('Unable to reach APK download file. Please verify network connection.');
+    } finally {
+      setApkChecking(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +138,39 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             <button type="submit" disabled={isLoading} className="btn-primary w-full !min-h-[48px] text-base">{isLoading ? 'Signing in…' : 'Sign in'}</button>
           </form>
 
-          <p className="mt-8 border-t border-slate-100 pt-4 text-center text-xs text-slate-500 lg:text-left">
+          {/* Android Field App (.APK) Direct Download */}
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 ring-1 ring-emerald-200">
+                  <Smartphone className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900">Rakshak Field App (Android)</div>
+                  <div className="text-[11px] text-slate-500">For security guards &amp; patrol officers</div>
+                </div>
+              </div>
+
+              <a
+                href={apkUrl}
+                download="rakshak-field.apk"
+                onClick={handleDownloadApk}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
+              >
+                <Download className="h-3.5 w-3.5 text-emerald-400" />
+                {apkChecking ? 'Checking…' : 'Download APK'}
+              </a>
+            </div>
+
+            {apkNotice && (
+              <div className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-medium text-amber-800">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                <span>{apkNotice}</span>
+              </div>
+            )}
+          </div>
+
+          <p className="mt-6 border-t border-slate-100 pt-4 text-center text-xs text-slate-500 lg:text-left">
             Enterprise Security Infrastructure by <span className="font-bold text-slate-800">Spandan IT Professionals</span>
             <br /><a href="https://spandanit.com" target="_blank" rel="noopener noreferrer" className="font-bold text-brand-600 hover:underline">www.spandanit.com</a>
           </p>
