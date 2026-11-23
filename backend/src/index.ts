@@ -2334,7 +2334,7 @@ async function dispatchRouteCompletionReport(
 
           <div style="margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;">
             Instant Route Completion Report · <strong>Spandan IT Professionals</strong> &nbsp;|&nbsp;
-            <a href="https://spandanit.com" style="color:#2563eb;text-decoration:none;font-weight:700;">www.spandanit.com</a>
+            <a href="https://spandanitperipherals.github.io/" style="color:#2563eb;text-decoration:none;font-weight:700;">https://spandanitperipherals.github.io/</a>
           </div>
         </div>
       </div>
@@ -3123,7 +3123,7 @@ async function generateTypedReport(
         ${sectionHtml}
         <div style="margin-top:24px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b;display:flex;justify-content:space-between;">
           <span>Automated Report Engine · Powered by <strong>Spandan IT Professionals</strong></span>
-          <a href="https://spandanit.com" style="color:#2563eb;text-decoration:none;font-weight:700;">www.spandanit.com</a>
+          <a href="https://spandanitperipherals.github.io/" style="color:#2563eb;text-decoration:none;font-weight:700;">https://spandanitperipherals.github.io/</a>
         </div>
       </div>
     </div>

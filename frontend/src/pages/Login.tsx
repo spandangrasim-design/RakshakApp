@@ -172,7 +172,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
           <p className="mt-6 border-t border-slate-100 pt-4 text-center text-xs text-slate-500 lg:text-left">
             Enterprise Security Infrastructure by <span className="font-bold text-slate-800">Spandan IT Professionals</span>
-            <br /><a href="https://spandanit.com" target="_blank" rel="noopener noreferrer" className="font-bold text-brand-600 hover:underline">www.spandanit.com</a>
+            <br /><a href="https://spandanitperipherals.github.io/" target="_blank" rel="noopener noreferrer" className="font-bold text-brand-600 hover:underline">https://spandanitperipherals.github.io/</a>
           </p>
         </div>
       </main>
