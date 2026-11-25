@@ -41,6 +41,18 @@ interface Round {
   created_at?: string;
   assigned_guards?: AssignedGuard[];
   checkpoints: Checkpoint[];
+  active_session?: {
+    id: string;
+    round_id: string;
+    guard_id: string;
+    guard_name?: string;
+    guard_code?: string;
+    status: string;
+    start_time: string;
+    last_lat?: number;
+    last_lng?: number;
+    last_ping_at?: string;
+  } | null;
 }
 
 interface ScanRecord {
