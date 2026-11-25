@@ -114,12 +114,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
   const eligibleGuardsForPlant = useMemo(() => {
     if (!selectedPlantObj) return [];
-    const ids = selectedPlantObj.assigned_guard_ids || [];
     return guards.filter((g) => {
       if (g.is_active === false) return false;
-      const assignedByPlant = ids.includes(g.guard_id);
-      const assignedByProfile = Array.isArray(g.assigned_plants) && g.assigned_plants.some((p) => p.trim().toLowerCase() === selectedPlantObj.name.trim().toLowerCase());
-      return assignedByPlant || assignedByProfile;
+      // Personnel assignments are authoritative; ignore stale plant-side IDs.
+      return Array.isArray(g.assigned_plants) && g.assigned_plants.some(
+        (p) => p.trim().toLowerCase() === selectedPlantObj.name.trim().toLowerCase()
+      );
     });
   }, [guards, selectedPlantObj]);
 
@@ -139,12 +139,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       const guardsData = await guardsRes.json();
       const plantsData = await plantsRes.json();
       const categoriesData = await categoriesRes.json();
-      setCategories(Array.isArray(categoriesData.categories) ? categoriesData.categories : []);
 
       const loadedGuards: GuardUser[] = guardsData.guards || [];
       const loadedPlants: PlantRecord[] = plantsData.plants || [];
       setGuards(loadedGuards);
       setPlants(loadedPlants);
+      setCategories(Array.isArray(categoriesData.categories) ? categoriesData.categories.filter((item: any) => item.is_active !== false) : []);
 
       if (data.success && data.incident) {
         const currentInc: Incident = data.incident;
@@ -520,9 +520,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Category
-              </label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="block text-[11px] font-bold uppercase text-slate-500">Category</label>
+                <button type="button" onClick={() => navigate('/admin/configs')} className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline">
+                  Manage Categories
+                </button>
+              </div>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}

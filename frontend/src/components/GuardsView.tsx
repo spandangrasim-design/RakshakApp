@@ -188,10 +188,12 @@ export const GuardsView: React.FC = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
+      const token = localStorage.getItem('token') || '';
+      const requestHeaders = token ? { Authorization: `Bearer ${token}` } : {};
       const [guardsRes, roundsRes, plantsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/guards`),
-        fetch(`${API_BASE_URL}/rounds`),
-        fetch(`${API_BASE_URL}/plants`),
+        fetch(`${API_BASE_URL}/guards`, { headers: requestHeaders }),
+        fetch(`${API_BASE_URL}/rounds`, { headers: requestHeaders }),
+        fetch(`${API_BASE_URL}/plants`, { headers: requestHeaders }),
       ]);
 
       const guardsData = await guardsRes.json();

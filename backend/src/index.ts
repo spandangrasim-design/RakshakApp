@@ -1548,12 +1548,13 @@ app.get('/api/v1/guards', async (c) => {
         .map((id) => roundsMap.get(id))
         .filter(Boolean);
 
-      const rawPlants: string[] =
-        Array.isArray(g.assigned_plants) && g.assigned_plants.length > 0
-          ? g.assigned_plants
-          : Array.isArray(ext.assigned_plants)
-          ? ext.assigned_plants
-          : [];
+      // An explicitly stored empty array means the person has no plant assignments.
+      // Do not resurrect stale values from GUARD_EXTENDED_PROFILES in that case.
+      const rawPlants: string[] = Array.isArray(g.assigned_plants)
+        ? g.assigned_plants
+        : Array.isArray(ext.assigned_plants)
+        ? ext.assigned_plants
+        : [];
       const uniquePlants = Array.from(new Set(rawPlants.filter(Boolean)));
       const resolvedEmail = g.email || ext.email || null;
       const resolvedPhone = g.phone || ext.phone || null;
@@ -4211,6 +4212,20 @@ app.patch('/api/v1/guards/:id', async (c) => {
       parsed.assigned_round_id = valid[0] ?? null;
     }
     const extUpdates: Partial<GuardExtendedProfile> = {};
+    let plantsForAssignmentSync: any[] | null = null;
+    let normalizedRequestedPlants: Set<string> | null = null;
+    if (parsed.assigned_plants !== undefined) {
+      const requestedNames = Array.from(new Set(parsed.assigned_plants.map((name: string) => name.trim()).filter(Boolean)));
+      const { data: tenantPlants, error: plantsError } = await supabase
+        .from('plants').select('id, name, assigned_guard_ids').eq('tenant_id', effectiveTenant || targetRow.tenant_id);
+      if (plantsError) throw plantsError;
+      const matchedNames = new Set((tenantPlants || []).map((plant: any) => String(plant.name || '').trim().toLocaleLowerCase()));
+      const unknownNames = requestedNames.filter((name: string) => !matchedNames.has(name.toLocaleLowerCase()));
+      if (unknownNames.length) return c.json({ success: false, message: `Unknown plant assignment: ${unknownNames.join(', ')}` }, 400);
+      plantsForAssignmentSync = tenantPlants || [];
+      normalizedRequestedPlants = new Set(requestedNames.map((name: string) => name.toLocaleLowerCase()));
+      parsed.assigned_plants = requestedNames as any;
+    }
 
     if (parsed.full_name !== undefined) updates.full_name = parsed.full_name.trim();
     if (parsed.email !== undefined) {
@@ -4287,6 +4302,21 @@ app.patch('/api/v1/guards/:id', async (c) => {
           .eq('guard_id', guardId)
           .maybeSingle();
         updatedGuard = existing;
+      }
+    }
+
+    // Keep the legacy plant-side assigned_guard_ids list synchronized, but treat
+    // guards.assigned_plants as the authoritative assignment source.
+    if (parsed.assigned_plants !== undefined && updatedGuard && plantsForAssignmentSync && normalizedRequestedPlants) {
+      for (const plant of plantsForAssignmentSync) {
+        const existingIds = Array.isArray(plant.assigned_guard_ids) ? plant.assigned_guard_ids.map(String) : [];
+        const shouldAssign = normalizedRequestedPlants.has(String(plant.name || '').trim().toLocaleLowerCase());
+        const nextIds = existingIds.filter((id: string) => id !== String(guardId));
+        if (shouldAssign && !nextIds.includes(String(guardId))) nextIds.push(String(guardId));
+        if (nextIds.length !== existingIds.length || nextIds.some((id: string, index: number) => id !== existingIds[index])) {
+          const { error: syncError } = await supabase.from('plants').update({ assigned_guard_ids: nextIds }).eq('id', plant.id).eq('tenant_id', effectiveTenant || targetRow.tenant_id);
+          if (syncError) throw syncError;
+        }
       }
     }
 
@@ -4652,9 +4682,10 @@ app.post('/api/v1/incidents', async (c) => {
       try { profileMap = profileRow?.key_value ? JSON.parse(profileRow.key_value) : {}; } catch (_) {}
       const eligible = (candidates || []).some((g: any) => {
         if (g.is_active === false) return false;
-        const profilePlants = Array.isArray(g.assigned_plants) && g.assigned_plants.length ? g.assigned_plants : (profileMap[g.guard_id]?.assigned_plants || []);
-        return (Array.isArray(selectedPlant.assigned_guard_ids) && selectedPlant.assigned_guard_ids.map(String).includes(String(g.guard_id))) ||
-          (Array.isArray(profilePlants) && profilePlants.some((p: string) => p.trim().toLowerCase() === targetPlant.toLowerCase()));
+        const profilePlants = Array.isArray(g.assigned_plants)
+          ? g.assigned_plants
+          : (Array.isArray(profileMap[g.guard_id]?.assigned_plants) ? profileMap[g.guard_id].assigned_plants : []);
+        return profilePlants.some((p: string) => p.trim().toLowerCase() === targetPlant.toLowerCase());
       });
       if (!eligible) return c.json({ success: false, message: 'The selected responder is not assigned to this plant.' }, 403);
     }
@@ -5013,9 +5044,10 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       try { profileMap = profileRow?.key_value ? JSON.parse(profileRow.key_value) : {}; } catch (_) {}
       const eligible = (candidates || []).some((g: any) => {
         if (g.is_active === false) return false;
-        const profilePlants = Array.isArray(g.assigned_plants) && g.assigned_plants.length ? g.assigned_plants : (profileMap[g.guard_id]?.assigned_plants || []);
-        return (Array.isArray(plant.assigned_guard_ids) && plant.assigned_guard_ids.map(String).includes(String(g.guard_id))) ||
-          (Array.isArray(profilePlants) && profilePlants.some((p: string) => p.trim().toLowerCase() === plantName.trim().toLowerCase()));
+        const profilePlants = Array.isArray(g.assigned_plants)
+          ? g.assigned_plants
+          : (Array.isArray(profileMap[g.guard_id]?.assigned_plants) ? profileMap[g.guard_id].assigned_plants : []);
+        return profilePlants.some((p: string) => p.trim().toLowerCase() === plantName.trim().toLowerCase());
       });
       if (!eligible) return c.json({ success: false, message: 'The selected responder is not assigned to this plant.' }, 403);
     }
