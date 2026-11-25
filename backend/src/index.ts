@@ -2624,7 +2624,7 @@ async function sendTenantEmail(
   recipients: string[],
   subject: string,
   html: string,
-  attachment?: EmailAttachment
+  attachment?: EmailAttachment | EmailAttachment[]
 ): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabase(env);
   const cfg = await loadTenantConfig(supabase, tenantId);
@@ -2632,12 +2632,11 @@ async function sendTenantEmail(
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
 
   let mimeRaw = '';
-  if (attachment) {
+  const attachments = attachment ? (Array.isArray(attachment) ? attachment : [attachment]) : [];
+  if (attachments.length > 0) {
     const boundary = '----=_Part_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
     const htmlBase64 = chunkBase64(utf8ToBase64(html));
-    const attachBase64 = chunkBase64(attachment.contentBase64);
-
-    mimeRaw = [
+    const mimeParts = [
       `To: ${recipients.join(', ')}`,
       `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
       'MIME-Version: 1.0',
@@ -2649,16 +2648,20 @@ async function sendTenantEmail(
       '',
       htmlBase64,
       '',
-      `--${boundary}`,
-      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${attachment.filename}"`,
-      '',
-      attachBase64,
-      '',
-      `--${boundary}--`,
-      ''
-    ].join('\r\n');
+    ];
+    for (const file of attachments) {
+      mimeParts.push(
+        `--${boundary}`,
+        `Content-Type: ${file.contentType}; name="${file.filename}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${file.filename}"`,
+        '',
+        chunkBase64(file.contentBase64),
+        '',
+      );
+    }
+    mimeParts.push(`--${boundary}--`, '');
+    mimeRaw = mimeParts.join('\r\n');
   } else {
     mimeRaw = [
       `To: ${recipients.join(', ')}`,
@@ -2799,6 +2802,209 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
       </div>
     </div>
   `;
+}
+
+const INCIDENT_PDF_MAX_BYTES = 10 * 1024 * 1024;
+
+function pdfSafeText(value: any, max = 1100): string {
+  return String(value ?? '—').replace(/[^\x20-\x7E]/g, ' ').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').slice(0, max);
+}
+
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number; colors: number } | null {
+  let i = 2;
+  while (i + 9 < bytes.length) {
+    if (bytes[i] !== 0xff) { i++; continue; }
+    const marker = bytes[i + 1];
+    const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8], colors: bytes[i + 9] };
+    }
+    if (length < 2) break;
+    i += 2 + length;
+  }
+  return null;
+}
+
+function parsePngImage(bytes: Uint8Array): { width: number; height: number; colors: number; bytes: Uint8Array } | null {
+  if (bytes.length < 33 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint32(16), height = view.getUint32(20);
+  const bitDepth = bytes[24], colorType = bytes[25];
+  // PDF PNG predictor supports RGB and grayscale directly; alpha/palette images need pixel conversion.
+  const colors = colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (!width || !height || bitDepth !== 8 || !colors) return null;
+  const chunks: Uint8Array[] = [];
+  let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset);
+    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+    if (offset + 12 + length > bytes.length) return null;
+    if (type === 'IDAT') chunks.push(bytes.slice(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+    if (type === 'IEND') break;
+  }
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const idat = new Uint8Array(total);
+  let cursor = 0; for (const chunk of chunks) { idat.set(chunk, cursor); cursor += chunk.length; }
+  return idat.length ? { width, height, colors, bytes: idat } : null;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, photos: Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' }>): Uint8Array {
+  type PdfObj = Uint8Array;
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const objects: PdfObj[] = [];
+  const add = (s: string | Uint8Array) => { objects.push(typeof s === 'string' ? enc(s) : s); return objects.length; };
+  const pagesId = add('');
+  const catalogId = add('');
+  const pageIds: number[] = [];
+  const pageSpecs: { content: string; image?: { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' } }[] = [];
+
+  const lines: string[] = [
+    'RAKSHAK - INCIDENT REPORT',
+    `Site: ${tenantName}`,
+    `Period: ${dateLabel}`,
+    `Generated: ${new Date().toISOString()}`,
+    '',
+    `Total incidents: ${incidents.length}`,
+  ];
+  if (incidents.length === 0) lines.push('', 'No incidents reported during this reporting period.');
+  for (const [idx, incident] of incidents.entries()) {
+    const guard = guardById.get(String(incident.guard_id));
+    lines.push('', `INCIDENT ${idx + 1} - ${incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : 'Unnumbered'}`);
+    lines.push(`Plant: ${incident.plant_name || tenantName}${incident.plant_code ? ' (' + incident.plant_code + ')' : ''} | Plant ID: ${incident.plant_id || '—'}`);
+    lines.push(`Title: ${incident.title || 'Incident'}`);
+    lines.push(`Category: ${incident.category || '—'} | Priority: ${incident.priority || 'P3'} | Status: ${incident.status || 'OPEN'}`);
+    lines.push(`Impact: ${incident.impact || '—'} | Urgency: ${incident.urgency || '—'}`);
+    lines.push(`Reported: ${incident.reported_at || '—'}`);
+    lines.push(`Reported by: ${guard?.full_name || 'Field Guard'} | Assigned responder: ${incident.assigned_to || 'Unassigned'}`);
+    lines.push(`Description: ${incident.description || '—'}`);
+  }
+
+  // Text is wrapped into short lines; each incident gets its own page when the content is long.
+  const wrapped: string[] = [];
+  for (const line of lines) {
+    if (!line) { wrapped.push(''); continue; }
+    let rest = line;
+    while (rest.length > 92) { wrapped.push(rest.slice(0, 92)); rest = rest.slice(92); }
+    wrapped.push(rest);
+  }
+  const chunks: string[][] = [];
+  for (let i = 0; i < wrapped.length; i += 42) chunks.push(wrapped.slice(i, i + 42));
+  if (chunks.length === 0) chunks.push(['No incidents reported during this reporting period.']);
+  for (const chunk of chunks) {
+    let content = 'BT\n/F1 10 Tf\n50 790 Td\n14 TL\n';
+    for (const line of chunk) content += `(${pdfSafeText(line, 92)}) Tj\nT*\n`;
+    content += 'ET';
+    pageSpecs.push({ content });
+  }
+  // Add actual JPEG incident photos as separate image pages. Original JPEG compression is retained in the PDF.
+  for (const [idx, photo] of photos.entries()) {
+    const incident = incidents[idx];
+    const caseLabel = incident?.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
+    const maxW = 500, maxH = 650;
+    const scale = Math.min(maxW / photo.width, maxH / photo.height, 1);
+    const w = Math.max(1, Math.round(photo.width * scale));
+    const h = Math.max(1, Math.round(photo.height * scale));
+    pageSpecs.push({ content: `BT\n/F1 14 Tf\n50 790 Td\n(${pdfSafeText(caseLabel)} - Incident Photo) Tj\nET\nq\n${w} 0 0 ${h} 50 ${Math.max(60, 730 - h)} cm\n/Im1 Do\nQ`, image: photo });
+  }
+
+  const kids: string[] = [];
+  for (const spec of pageSpecs) {
+    const contentId = add('');
+    let imageId = 0;
+    if (spec.image) {
+      const img = spec.image;
+      const colorSpace = img.colors === 1 ? '/DeviceGray' : '/DeviceRGB';
+      const decodeParms = img.filter === 'FlateDecode' ? ` /DecodeParms << /Predictor 15 /Colors ${img.colors} /BitsPerComponent 8 /Columns ${img.width} >>` : '';
+      const header = enc(`<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /${img.filter}${decodeParms} /Length ${img.bytes.length} >>\nstream\n`);
+      const footer = enc('\nendstream');
+      const stream = new Uint8Array(header.length + img.bytes.length + footer.length);
+      stream.set(header); stream.set(img.bytes, header.length); stream.set(footer, header.length + img.bytes.length);
+      imageId = add(stream);
+    }
+    const contentBytes = enc(spec.content);
+    const contentStream = add(`<< /Length ${contentBytes.length} >>\nstream\n${spec.content}\nendstream`);
+    const resources = spec.image ? `<< /XObject << /Im1 ${imageId} 0 R >> >>` : '<< >>';
+    const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 842] /Resources ${resources} /Contents ${contentStream} 0 R >>`);
+    pageIds.push(pageId); kids.push(`${pageId} 0 R`);
+  }
+  const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  // The font object is referenced by each page; rebuild page objects after font allocation.
+  // (The temporary page objects above are replaced below.)
+  for (let i = 0; i < pageSpecs.length; i++) {
+    const pageId = pageIds[i];
+    const old = objects[pageId - 1];
+    const oldText = new TextDecoder().decode(old);
+    const contentRef = oldText.match(/\/Contents (\d+) 0 R/)?.[1] || '1';
+    const imageRef = oldText.match(/\/Im1 (\d+) 0 R/)?.[1];
+    const resources = imageRef ? `<< /Font << /F1 ${fontId} 0 R >> /XObject << /Im1 ${imageRef} 0 R >> >>` : `<< /Font << /F1 ${fontId} 0 R >> >>`;
+    objects[pageId - 1] = enc(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 842] /Resources ${resources} /Contents ${contentRef} 0 R >>`);
+  }
+  objects[pagesId - 1] = enc(`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${kids.length} >>`);
+  objects[catalogId - 1] = enc(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+
+  const parts: Uint8Array[] = [enc('%PDF-1.4\n% Rakshak\n')];
+  const offsets = [0];
+  let total = parts[0].length;
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(total);
+    const obj = new Uint8Array(enc(`${i + 1} 0 obj\n`).length + objects[i].length + enc('\nendobj\n').length);
+    const start = enc(`${i + 1} 0 obj\n`); const end = enc('\nendobj\n');
+    obj.set(start); obj.set(objects[i], start.length); obj.set(end, start.length + objects[i].length);
+    parts.push(obj); total += obj.length;
+  }
+  const xrefOffset = total;
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i < offsets.length; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  xref += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  parts.push(enc(xref));
+  const result = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let offset = 0; for (const part of parts) { result.set(part, offset); offset += part.length; }
+  return result;
+}
+
+async function buildIncidentPdfAttachment(env: Bindings, tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, filename: string): Promise<EmailAttachment> {
+  const photos = new Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' }>();
+  for (let i = 0; i < incidents.length; i++) {
+    const photoUrl = incidents[i]?.photo_url;
+    if (!photoUrl) continue;
+    let key = '';
+    try {
+      const parsed = new URL(photoUrl);
+      const marker = '/api/v1/media/';
+      if (!parsed.pathname.includes(marker)) throw new Error('Unsupported incident photo URL');
+      key = decodeURIComponent(parsed.pathname.slice(parsed.pathname.indexOf(marker) + marker.length));
+    } catch { throw new Error(`Unable to resolve incident photo for ${incidents[i].case_number || incidents[i].title || i + 1}.`); }
+    if (!key || key.includes('..') || key.startsWith('/') || !key.startsWith('incidents/photo_')) throw new Error('Invalid incident photo storage key.');
+    const object = await env.R2_BUCKET.get(key);
+    if (!object) throw new Error(`Incident photo is missing from storage for ${incidents[i].case_number || incidents[i].title || i + 1}.`);
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const jpeg = jpegDimensions(bytes);
+    if (jpeg) {
+      photos.set(i, { bytes, ...jpeg, filter: 'DCTDecode' });
+      continue;
+    }
+    const png = parsePngImage(bytes);
+    if (png) {
+      photos.set(i, { ...png, filter: 'FlateDecode' });
+      continue;
+    }
+    throw new Error(`Incident photo for ${incidents[i].case_number || incidents[i].title || i + 1} uses an unsupported image format. Use JPEG or 8-bit RGB/grayscale PNG; no photos were omitted.`);
+  }
+  const bytes = buildIncidentPdf(tenantName, dateLabel, incidents, guardById, photos);
+  if (bytes.byteLength > INCIDENT_PDF_MAX_BYTES) {
+    throw new Error(`Incident PDF exceeds the 10 MB limit (${(bytes.byteLength / 1024 / 1024).toFixed(2)} MB). Reduce the incident photo sizes and retry; no photos were omitted.`);
+  }
+  return { filename, contentType: 'application/pdf', contentBase64: bytesToBase64(bytes) };
 }
 
 async function generateTypedReport(
@@ -3184,8 +3390,12 @@ async function generateTypedReport(
 
   const excelBase64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
   const filename = `${tenantName.replace(/[^a-zA-Z0-9]/g, '_')}_${reportType.toUpperCase()}_Report_${localDate(env, nowMs)}.xlsx`;
+  const incidentPdf = await buildIncidentPdfAttachment(
+    env, tenantName, dateLabel, incidents, guardById,
+    `${tenantName.replace(/[^a-zA-Z0-9]/g, '_')}_INCIDENTS_${localDate(env, nowMs)}.pdf`
+  );
 
-  return { subject, html, excelBase64, filename, counts: { guards: guardStats.length, scans: scans.length, incidents: incidents.length } };
+  return { subject, html, excelBase64, filename, incidentPdf, counts: { guards: guardStats.length, scans: scans.length, incidents: incidents.length } };
 }
 
 async function runDailyReports(env: Bindings) {
@@ -3264,12 +3474,18 @@ async function runDailyReports(env: Bindings) {
         if (claim.error) continue;
         budget--;
 
-        const built = await generateTypedReport(supabase, env, t.id, t.name, rType);
-        const res = await sendTenantEmail(env, t.id, recips, built.subject, built.html, {
-          filename: built.filename,
-          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          contentBase64: built.excelBase64,
-        });
+        let built: any;
+        try {
+          built = await generateTypedReport(supabase, env, t.id, t.name, rType);
+        } catch (error: any) {
+          await supabase.from('daily_report_log').update({ status: 'FAILED', error: error?.message || 'Report generation failed' }).match(logKey);
+          console.error(`Daily ${rType} report generation failed for tenant ${t.id}:`, error);
+          continue;
+        }
+        const res = await sendTenantEmail(env, t.id, recips, built.subject, built.html, [
+          { filename: built.filename, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBase64: built.excelBase64 },
+          built.incidentPdf,
+        ]);
         await supabase.from('daily_report_log').update({
           status: res.ok ? 'SENT' : 'FAILED',
           error: res.error || null,
@@ -3347,11 +3563,10 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       if (recips.length === 0) {
         return c.json({ success: false, message: `No recipient email configured for ${rType} report.` }, 400);
       }
-      const res = await sendTenantEmail(c.env, tenantId, recips, built.subject, built.html, {
-        filename: built.filename,
-        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        contentBase64: built.excelBase64,
-      });
+      const res = await sendTenantEmail(c.env, tenantId, recips, built.subject, built.html, [
+        { filename: built.filename, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBase64: built.excelBase64 },
+        built.incidentPdf,
+      ]);
       if (!res.ok) return c.json({ success: false, message: res.error || 'Email send failed' }, 500);
       try {
         await supabase.from('daily_report_log').insert({
