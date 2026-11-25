@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+    paths:
+      - 'rakshak_mobile/**'
+      - '.github/workflows/build-apk.yml'
 
 jobs:
   build:

@@ -2,6 +2,9 @@ name: Build & Distribute Android APK
 
 on:
   push:
+    paths:
+      - 'rakshak_mobile/**'
+      - '.github/workflows/build-android.yml'
     tags:
       - 'v*' # Trigger build when pushing a release tag like v1.0.0
     # Or trigger manually from GitHub UI:
