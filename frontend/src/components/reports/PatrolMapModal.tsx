@@ -1,12 +1,13 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { CheckpointScanDetail } from '../../types/patrol';
-import { X, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Navigation } from 'lucide-react';
 import { getSecureMediaUrl } from '../../utils/secureMedia';
 import 'leaflet/dist/leaflet.css';
 
-// Fix Leaflet Default Icon Assets
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+
 if (typeof window !== 'undefined') {
   delete (L.Icon.Default.prototype as any)._getIconUrl;
   L.Icon.Default.mergeOptions({
@@ -16,7 +17,6 @@ if (typeof window !== 'undefined') {
   });
 }
 
-// Custom Map Pin Icons using Leaflet SVG DivIcons
 const createPinIcon = (color: string, label?: string, symbol?: string) =>
   L.divIcon({
     className: 'custom-map-pin',
@@ -36,9 +36,10 @@ const createPinIcon = (color: string, label?: string, symbol?: string) =>
     iconAnchor: [15, 38],
   });
 
-const masterPinIcon = (label?: string) => createPinIcon('#2563eb', label); // Blue: Master Target
-const verifiedPinIcon = (label?: string) => createPinIcon('#16a34a', label, '✓'); // Green: Verified (≤50m)
-const driftPinIcon = (label?: string) => createPinIcon('#d97706', label, '!'); // Amber: Drifted
+const masterPinIcon = (label?: string) => createPinIcon('#2563eb', label);
+const verifiedPinIcon = (label?: string) => createPinIcon('#16a34a', label, '✓');
+const driftPinIcon = (label?: string) => createPinIcon('#d97706', label, '!');
+const liveGuardIcon = (label?: string) => createPinIcon('#7c3aed', label, '●');
 
 const FitMapBoundsAndResize: React.FC<{ coords: [number, number][] }> = ({ coords }) => {
   const map = useMap();
@@ -68,6 +69,7 @@ interface PatrolMapModalProps {
   onClose: () => void;
   scans: CheckpointScanDetail[];
   roundTitle: string;
+  roundId?: string;
 }
 
 export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
@@ -75,17 +77,48 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
   onClose,
   scans = [],
   roundTitle,
+  roundId,
 }) => {
+  const [breadcrumbs, setBreadcrumbs] = useState<{ lat: number; lng: number; recorded_at: string }[]>([]);
+  const [liveSession, setLiveSession] = useState<any>(null);
+
+  useEffect(() => {
+    if (!isOpen || !roundId) {
+      setBreadcrumbs([]);
+      setLiveSession(null);
+      return;
+    }
+
+    let cancelled = false;
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+    const fetchLiveTrail = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/rounds/${encodeURIComponent(roundId)}/live-trail`, { headers });
+        const data = await res.json();
+        if (!cancelled && data.success && data.has_session) {
+          setLiveSession(data.session || null);
+          setBreadcrumbs(Array.isArray(data.breadcrumbs) ? data.breadcrumbs : []);
+        }
+      } catch (_) {}
+    };
+
+    fetchLiveTrail();
+    const interval = setInterval(fetchLiveTrail, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isOpen, roundId]);
+
   if (!isOpen) return null;
 
   const safeScans = Array.isArray(scans) ? scans : [];
 
   const getCoordinates = (scan: any) => {
-    // Master / Expected Checkpoint Coordinates
     const rawMasterLat = scan?.master_lat ?? scan?.expected_lat ?? scan?.qr_lat ?? scan?.checkpoint_lat ?? scan?.lat;
     const rawMasterLng = scan?.master_lng ?? scan?.expected_lng ?? scan?.qr_lng ?? scan?.checkpoint_lng ?? scan?.lng;
-
-    // Guard Actual Scan Coordinates
     const rawScanLat = scan?.scan_lat ?? scan?.guard_lat ?? scan?.actual_lat ?? scan?.scanned_lat ?? scan?.latitude;
     const rawScanLng = scan?.scan_lng ?? scan?.guard_lng ?? scan?.actual_lng ?? scan?.scanned_lng ?? scan?.longitude;
 
@@ -111,6 +144,19 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
     if (hasScan) validCoordinates.push([scanLat!, scanLng!]);
   });
 
+  const trailPoints: [number, number][] = breadcrumbs
+    .filter((b) => Number.isFinite(Number(b.lat)) && Number.isFinite(Number(b.lng)))
+    .map((b) => [Number(b.lat), Number(b.lng)]);
+
+  trailPoints.forEach((pt) => validCoordinates.push(pt));
+
+  const latestLivePoint: [number, number] | null =
+    liveSession?.last_lat && liveSession?.last_lng
+      ? [Number(liveSession.last_lat), Number(liveSession.last_lng)]
+      : trailPoints.length > 0
+      ? trailPoints[trailPoints.length - 1]
+      : null;
+
   const defaultCenter: [number, number] = validCoordinates[0] || [22.3072, 73.1812];
 
   return (
@@ -119,7 +165,14 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 z-10">
           <div>
-            <h2 className="text-lg font-extrabold text-slate-900">Patrol GPS Audit Map</h2>
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-lg font-extrabold text-slate-900">Patrol GPS Audit &amp; Live Trail Map</h2>
+              {liveSession?.status === 'ACTIVE' && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2.5 py-0.5 text-[11px] font-extrabold text-purple-800">
+                  <Navigation className="h-3 w-3" /> LIVE · {liveSession.guard_name}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500 font-mono mt-0.5">{roundTitle}</p>
           </div>
           <div className="flex items-center gap-5">
@@ -133,6 +186,11 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
               <span className="flex items-center gap-1.5 text-amber-700">
                 <span className="h-3 w-3 rounded-full bg-amber-600 inline-block border border-white shadow-sm" /> Drift Flagged
               </span>
+              {trailPoints.length > 0 && (
+                <span className="flex items-center gap-1.5 text-purple-700">
+                  <span className="h-3 w-3 rounded-full bg-purple-600 inline-block border border-white shadow-sm" /> Live Trail
+                </span>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -154,6 +212,36 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
 
             <FitMapBoundsAndResize coords={validCoordinates} />
 
+            {/* Live Guard Walking Breadcrumb Polyline */}
+            {trailPoints.length > 1 && (
+              <Polyline
+                positions={trailPoints}
+                color="#7c3aed"
+                weight={4}
+                opacity={0.85}
+              />
+            )}
+
+            {/* Latest Live Guard Location Pin */}
+            {latestLivePoint && (
+              <Marker
+                position={latestLivePoint}
+                icon={liveGuardIcon(`${liveSession?.guard_name || 'Guard'} (${liveSession?.status || 'LIVE'})`)}
+              >
+                <Popup>
+                  <div className="p-1 text-xs text-slate-800">
+                    <span className="font-bold text-purple-700 block">Live Guard Position</span>
+                    <div className="font-extrabold text-sm text-slate-900">{liveSession?.guard_name || 'Assigned Guard'}</div>
+                    {liveSession?.last_ping_at && (
+                      <div className="text-[11px] text-slate-500 mt-1">
+                        Last ping: {new Date(liveSession.last_ping_at).toLocaleTimeString()}
+                      </div>
+                    )}
+                  </div>
+                </Popup>
+              </Marker>
+            )}
+
             {safeScans.map((scan: any, idx: number) => {
               const { hasMaster, masterLat, masterLng, hasScan, scanLat, scanLng } = getCoordinates(scan);
 
@@ -167,7 +255,6 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
 
               return (
                 <React.Fragment key={scan?.scan_id || scan?.id || idx}>
-                  {/* CASE 1: VERIFIED SCAN (≤50m) -> Render Green Verified Marker directly */}
                   {hasScan && isGpsVerified && (
                     <Marker
                       position={[scanLat!, scanLng!]}
@@ -209,10 +296,8 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
                     </Marker>
                   )}
 
-                  {/* CASE 2: DRIFTED SCAN (>50m) -> Render BOTH Master (Blue) and Actual (Amber) + Line */}
                   {hasScan && !isGpsVerified && (
                     <>
-                      {/* Master Location */}
                       {hasMaster && (
                         <Marker position={[masterLat!, masterLng!]} icon={masterPinIcon(`#${idx + 1} Master`)}>
                           <Popup>
@@ -224,7 +309,6 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
                         </Marker>
                       )}
 
-                      {/* Actual Guard Location */}
                       <Marker position={[scanLat!, scanLng!]} icon={driftPinIcon(`#${idx + 1} Drifted`)}>
                         <Popup>
                           <div className="p-1 text-slate-800 text-xs w-60">
@@ -242,7 +326,6 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
                         </Popup>
                       </Marker>
 
-                      {/* Drift Line */}
                       {hasMaster && (
                         <Polyline
                           positions={[
@@ -258,7 +341,6 @@ export const PatrolMapModal: React.FC<PatrolMapModalProps> = ({
                     </>
                   )}
 
-                  {/* CASE 3: NO SCAN RECORDED YET -> Render Master Point only */}
                   {!hasScan && hasMaster && (
                     <Marker position={[masterLat!, masterLng!]} icon={masterPinIcon(`#${idx + 1}`)}>
                       <Popup>

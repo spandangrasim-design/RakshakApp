@@ -94,8 +94,10 @@ class _RunScreenState extends State<RunScreen> {
         _paused = d['status'] == 'PAUSED';
         _starting = false;
       });
-      if (!_paused && initialPosition != null) {
-        await _sendLiveLocation(initialPosition);
+      if (!_paused) {
+        if (initialPosition != null) {
+          await _sendLiveLocation(initialPosition);
+        }
         _startGpsTracking();
       }
     } on ApiException catch (e) {
@@ -275,6 +277,10 @@ class _RunScreenState extends State<RunScreen> {
   Future<void> _finish() async {
     setState(() => _busy = true);
     try {
+      try {
+        final finalPos = await _position();
+        await _sendLiveLocation(finalPos);
+      } catch (_) {}
       final doneAt = await Api.completeRun(_sessionId!);
       _gpsTimer?.cancel();
       if (!mounted) return;
