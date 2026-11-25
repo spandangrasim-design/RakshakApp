@@ -23,7 +23,7 @@ interface Checkpoint {
 }
 
 interface SearchResult {
-  place_id: number;
+  place_id: string | number;
   display_name: string;
   lat: string;
   lon: string;
@@ -241,25 +241,114 @@ const QRGenerator: React.FC = () => {
     });
   }, [currentCheckpoints, isMapLoaded]);
 
-  // Location Search via OpenStreetMap Nominatim
+  // Location search: bias results towards Gujarat, India. Explicit state/country
+  // terms supplied by the user are preserved.
   const handleLocationSearch = async () => {
-    const q = locationQuery.trim();
+    const q = locationQuery.trim().replace(/\s+/g, ' ');
     if (!q) return;
+
     setIsSearchingLocation(true);
     setSearchError(null);
     setSearchResults([]);
+
+    const gujaratContext = /gujarat|india/i.test(q)
+      ? q
+      : `${q}, Gujarat, India`;
+
+    const toSearchResult = (item: any, index: number): SearchResult | null => {
+      const lat = item?.lat ?? item?.geometry?.coordinates?.[1];
+      const lon = item?.lon ?? item?.geometry?.coordinates?.[0];
+      const displayName = item?.display_name || [
+        item?.properties?.name,
+        item?.properties?.street,
+        item?.properties?.district || item?.properties?.city,
+        item?.properties?.state,
+        item?.properties?.country,
+      ].filter(Boolean).join(', ');
+
+      if (lat == null || lon == null || !displayName) return null;
+      return {
+        place_id: item?.place_id ?? item?.properties?.osm_id ?? `${lat}-${lon}-${index}`,
+        display_name: displayName,
+        lat: String(lat),
+        lon: String(lon),
+      };
+    };
+
     try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5`
-      );
-      const data: SearchResult[] = await res.json();
-      if (!Array.isArray(data) || data.length === 0) {
-        setSearchError('No matching locations found. Try a more specific address or landmark.');
-      } else {
-        setSearchResults(data);
+      const params = new URLSearchParams({
+        format: 'jsonv2',
+        q: gujaratContext,
+        limit: '10',
+        countrycodes: 'in',
+        addressdetails: '1',
+        namedetails: '1',
+        'accept-language': 'en',
+        // Gujarat-wide Nominatim viewbox order: west, north, east, south.
+        viewbox: '68.0,24.7,74.5,20.0',
+        bounded: '0',
+      });
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+        headers: { Accept: 'application/json' },
+      });
+      if (!response.ok) throw new Error(`OpenStreetMap search returned ${response.status}`);
+      const nominatimData = await response.json();
+      let results: SearchResult[] = Array.isArray(nominatimData)
+        ? nominatimData.map(toSearchResult).filter(Boolean) as SearchResult[]
+        : [];
+
+      // Photon provides a second OpenStreetMap-backed index and often finds
+      // named buildings/POIs that Nominatim does not return for the same text.
+      if (results.length === 0) {
+        const photonParams = new URLSearchParams({
+          q: gujaratContext,
+          limit: '10',
+          // Approximate geographic centre of Gujarat for result ranking.
+          lat: '22.5',
+          lon: '71.5',
+          lang: 'en',
+        });
+        const photonResponse = await fetch(`https://photon.komoot.io/api/?${photonParams.toString()}`, {
+          headers: { Accept: 'application/geo+json' },
+        });
+        if (photonResponse.ok) {
+          const photonData = await photonResponse.json();
+          results = (photonData?.features || [])
+            .map(toSearchResult)
+            .filter(Boolean) as SearchResult[];
+        }
       }
-    } catch {
-      setSearchError('Location search failed. Check your internet connection.');
+
+      // If the Gujarat-biased lookup finds nothing, try the original phrase
+      // as a fallback while retaining the India country restriction.
+      if (results.length === 0 && gujaratContext !== q) {
+        const fallbackParams = new URLSearchParams({
+          format: 'jsonv2', q, limit: '10', countrycodes: 'in', addressdetails: '1',
+          'accept-language': 'en', viewbox: '68.0,24.7,74.5,20.0', bounded: '0',
+        });
+        const fallbackResponse = await fetch(`https://nominatim.openstreetmap.org/search?${fallbackParams.toString()}`, {
+          headers: { Accept: 'application/json' },
+        });
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          results = Array.isArray(fallbackData)
+            ? fallbackData.map(toSearchResult).filter(Boolean) as SearchResult[]
+            : [];
+        }
+      }
+
+      const uniqueResults = Array.from(
+        new Map(results.map((item) => [`${Number(item.lat).toFixed(5)},${Number(item.lon).toFixed(5)}`, item])).values()
+      );
+
+      if (uniqueResults.length === 0) {
+        setSearchError('No matching place was found in OpenStreetMap. Try the full building name, nearby road/area, or drop the pin directly on the map.');
+      } else {
+        setSearchResults(uniqueResults);
+      }
+    } catch (error) {
+      console.error('Location search failed:', error);
+      setSearchError('Location search service is unavailable. Check your connection or place the pin directly on the map.');
     } finally {
       setIsSearchingLocation(false);
     }
