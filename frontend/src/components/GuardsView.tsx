@@ -733,7 +733,6 @@ export const GuardsView: React.FC = () => {
                         ? [guard.rounds]
                         : [];
 
-                    const memberGroups = getGuardGroups(guard);
                     const perms = getGuardPermissions(guard);
                     const formFieldCount = [
                       'incident_option_1_severity','incident_option_2_category',
