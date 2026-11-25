@@ -37,7 +37,7 @@ class Api {
   /// Set by main.dart: send the guard back to the join screen.
   static void Function()? onUnauthorized;
 
-  static Future> _request(
+  static Future<Map<String, dynamic>> _request(
     String method,
     String path, {
     Map<String, dynamic>? body,
@@ -91,7 +91,7 @@ class Api {
   }
 
   // ---------- joining (no login) ----------
-  static Future<List>> industries() async {
+  static Future<List<Map<String, dynamic>>> industries() async {
     final d = await _request('GET', '/guest/industries', auth: false);
     final list = (d['industries'] as List?) ?? [];
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -127,7 +127,7 @@ class Api {
   }
 
   // ---------- routes ----------
-  static Future<List>> routes() async {
+  static Future<List<Map<String, dynamic>>> routes() async {
     final d = await _request('GET', '/field/routes');
     shift = d['shift'] is Map ? Map<String, dynamic>.from(d['shift'] as Map) : null;
     final pList = (d['plants'] as List?)
@@ -146,7 +146,7 @@ class Api {
   }
 
   /// Returns {session_id, status ('ACTIVE' or 'PAUSED'), resumed}.
-  static Future> startRun(String roundId) async {
+  static Future<Map<String, dynamic>> startRun(String roundId) async {
     return _request('POST', '/field/runs/start', body: {'round_id': roundId});
   }
 
@@ -169,7 +169,7 @@ class Api {
   }
 
   /// Stops the run before the route is finished. Returns {completed, scanned, total}.
-  static Future> endRun(String sessionId, {required String reason, String? note}) async {
+  static Future<Map<String, dynamic>> endRun(String sessionId, {required String reason, String? note}) async {
     return _request('POST', '/field/runs/$sessionId/end', body: {
       'reason': reason,
       if (note != null && note.isNotEmpty) 'note': note,

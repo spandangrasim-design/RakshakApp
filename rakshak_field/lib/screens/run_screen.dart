@@ -48,7 +48,7 @@ class _RunScreenState extends State<RunScreen> {
   Timer? _gpsTimer;
   bool _gpsPingInFlight = false;
 
-  late final List> _cps;
+  late final List<Map<String, dynamic>> _cps;
   final Set<String> _scanned = {};
 
   @override
