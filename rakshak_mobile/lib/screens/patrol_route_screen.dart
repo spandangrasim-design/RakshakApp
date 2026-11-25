@@ -233,9 +233,9 @@ class _PatrolRouteScreenState extends State<PatrolRouteScreen> {
             _lastPingTime = TimeOfDay.now().format(context);
           });
 
-          _breadcrumbTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+          _breadcrumbTimer = Timer.periodic(const Duration(seconds: 10), (_) {
             _sendBreadcrumbPing(
-                roundId: roundId, isFinalStop: false, forceSend: false);
+                roundId: roundId, isFinalStop: false, forceSend: true);
           });
         }
       }

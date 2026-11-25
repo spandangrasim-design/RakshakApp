@@ -45,6 +45,8 @@ class _RunScreenState extends State<RunScreen> {
   bool _paused = false;
   String? _error;
   Timer? _clock;
+  Timer? _gpsTimer;
+  bool _gpsPingInFlight = false;
 
   late final List> _cps;
   final Set<String> _scanned = {};
@@ -73,6 +75,7 @@ class _RunScreenState extends State<RunScreen> {
   @override
   void dispose() {
     _clock?.cancel();
+    _gpsTimer?.cancel();
     super.dispose();
   }
 
@@ -82,6 +85,8 @@ class _RunScreenState extends State<RunScreen> {
       _error = null;
     });
     try {
+      Position? initialPosition;
+      try { initialPosition = await _position(); } catch (_) {}
       final d = await Api.startRun(widget.route['id'].toString());
       if (!mounted) return;
       setState(() {
@@ -89,12 +94,37 @@ class _RunScreenState extends State<RunScreen> {
         _paused = d['status'] == 'PAUSED';
         _starting = false;
       });
+      if (!_paused && initialPosition != null) {
+        await _sendLiveLocation(initialPosition);
+        _startGpsTracking();
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.message;
         _starting = false;
       });
+    }
+  }
+
+  void _startGpsTracking() {
+    _gpsTimer?.cancel();
+    if (_sessionId == null || _paused) return;
+    _gpsTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (!mounted || _paused || _gpsPingInFlight) return;
+      try { await _sendLiveLocation(await _position()); }
+      catch (e) { debugPrint('Live patrol GPS update failed: $e'); }
+    });
+  }
+
+  Future<void> _sendLiveLocation(Position position) async {
+    final id = _sessionId;
+    if (id == null || _gpsPingInFlight || position.isMocked) return;
+    _gpsPingInFlight = true;
+    try {
+      await Api.pingRun(id, widget.route['id'].toString(), position.latitude, position.longitude);
+    } finally {
+      _gpsPingInFlight = false;
     }
   }
 
@@ -246,6 +276,7 @@ class _RunScreenState extends State<RunScreen> {
     setState(() => _busy = true);
     try {
       final doneAt = await Api.completeRun(_sessionId!);
+      _gpsTimer?.cancel();
       if (!mounted) return;
       setState(() => _busy = false);
       await Navigator.of(context).pushReplacement(
@@ -267,6 +298,7 @@ class _RunScreenState extends State<RunScreen> {
     try {
       await Api.pauseRun(_sessionId!);
       if (!mounted) return;
+      _gpsTimer?.cancel();
       setState(() {
         _paused = true;
         _busy = false;
@@ -289,6 +321,7 @@ class _RunScreenState extends State<RunScreen> {
         _paused = false;
         _busy = false;
       });
+      _startGpsTracking();
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
@@ -352,6 +385,7 @@ class _RunScreenState extends State<RunScreen> {
     setState(() => _busy = true);
     try {
       final d = await Api.endRun(_sessionId!, reason: choice.reason, note: choice.note);
+      _gpsTimer?.cancel();
       if (!mounted) return;
       setState(() => _busy = false);
       if (d['completed'] == true) {

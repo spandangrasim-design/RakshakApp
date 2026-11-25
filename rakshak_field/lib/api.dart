@@ -150,6 +150,16 @@ class Api {
     return _request('POST', '/field/runs/start', body: {'round_id': roundId});
   }
 
+  static Future<void> pingRun(String sessionId, String roundId, double lat, double lng) async {
+    await _request('POST', '/patrols/session/ping', body: {
+      'session_id': sessionId,
+      'round_id': roundId,
+      'lat': lat,
+      'lng': lng,
+      'is_final_stop': false,
+    });
+  }
+
   static Future<void> pauseRun(String sessionId, {String? reason}) async {
     await _request('POST', '/field/runs/$sessionId/pause', body: {if (reason != null) 'reason': reason});
   }

@@ -1443,7 +1443,7 @@ export const ReportsPage: React.FC = () => {
             <div className="px-6 py-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                  <Radio className={`w-4 h-4 ${liveTrail?.session?.status === 'ACTIVE' && liveTrail?.session?.last_ping_at && Date.now() - new Date(liveTrail.session.last_ping_at).getTime() <= 30000 ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
                   <h3 className="text-base font-bold">
                     Live Route Map (QR Locations vs Guard Capture Locations): {mapModalRun.roundName}
                   </h3>
@@ -1455,6 +1455,7 @@ export const ReportsPage: React.FC = () => {
                     {mapModalRun.verifiedStopsCount} of {mapModalRun.totalRouteStops}
                   </strong>{' '}
                   • Breadcrumbs: <strong>{liveTrail?.breadcrumbs?.length || 0} pts</strong>
+                  {' '}• Location: <strong className={liveTrail?.session?.status === 'ACTIVE' && liveTrail?.session?.last_ping_at && Date.now() - new Date(liveTrail.session.last_ping_at).getTime() <= 30000 ? 'text-emerald-300' : 'text-amber-300'}>{liveTrail?.session?.status === 'ACTIVE' && liveTrail?.session?.last_ping_at && Date.now() - new Date(liveTrail.session.last_ping_at).getTime() <= 30000 ? 'LIVE' : 'STALE / NOT UPDATING'}</strong>
                 </p>
               </div>
 

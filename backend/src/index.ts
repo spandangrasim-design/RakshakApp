@@ -1083,35 +1083,38 @@ app.post('/api/v1/patrols/session/ping', async (c) => {
 
     const { session_id, round_id, lat, lng, is_final_stop } = await c.req.json();
     const supabase = getSupabase(c.env);
-
-    if (lat && lng) {
-      await supabase.from('patrol_breadcrumbs').insert([{
-        session_id,
-        round_id,
-        guard_id,
-        lat,
-        lng
-      }]);
+    const auth = c.get('auth');
+    const tenantId = auth?.tenant_id;
+    const authenticatedGuardId = auth?.guard_id || guard_id;
+    if (!session_id || !round_id || !tenantId || !authenticatedGuardId) {
+      return c.json({ success: false, message: 'Invalid patrol tracking session.' }, 400);
     }
-
-    const updates: Record<string, any> = {
-      last_lat: lat,
-      last_lng: lng,
-      last_ping_at: new Date().toISOString()
-    };
-
-    if (is_final_stop) {
-      updates.status = 'COMPLETED';
-      updates.end_time = new Date().toISOString();
-    }
-
-    const { data: session } = await supabase
+    const { data: ownedSession, error: sessionError } = await supabase
       .from('patrol_sessions')
-      .update(updates)
+      .select('id, guard_id, tenant_id, round_id, status')
       .eq('id', session_id)
-      .select()
+      .eq('guard_id', authenticatedGuardId)
+      .eq('tenant_id', tenantId)
+      .eq('round_id', round_id)
       .maybeSingle();
-
+    if (sessionError) throw sessionError;
+    if (!ownedSession) return c.json({ success: false, message: 'Patrol session not found.' }, 404);
+    if (ownedSession.status !== 'ACTIVE' && !is_final_stop) {
+      return c.json({ success: false, message: 'Patrol tracking is not active.' }, 409);
+    }
+    const validCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+    if (!validCoordinates) return c.json({ success: false, message: 'Invalid GPS coordinates.' }, 400);
+    const now = new Date().toISOString();
+    const { error: crumbError } = await supabase.from('patrol_breadcrumbs').insert([{
+      session_id, round_id, guard_id: authenticatedGuardId, lat, lng
+    }]);
+    if (crumbError) throw crumbError;
+    const updates: Record<string, any> = { last_lat: lat, last_lng: lng, last_ping_at: now };
+    if (is_final_stop) { updates.status = 'COMPLETED'; updates.end_time = now; }
+    const { data: session, error: updateError } = await supabase
+      .from('patrol_sessions').update(updates).eq('id', session_id)
+      .eq('guard_id', authenticatedGuardId).eq('tenant_id', tenantId).select().maybeSingle();
+    if (updateError) throw updateError;
     return c.json({ success: true, session });
   } catch (error: any) {
     return c.json({ success: false, message: errMsg(error, 'Ping failed') }, 500);
@@ -2624,7 +2627,7 @@ async function sendTenantEmail(
   recipients: string[],
   subject: string,
   html: string,
-  attachment?: EmailAttachment | EmailAttachment[]
+  attachment?: EmailAttachment
 ): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabase(env);
   const cfg = await loadTenantConfig(supabase, tenantId);
@@ -2632,11 +2635,12 @@ async function sendTenantEmail(
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
 
   let mimeRaw = '';
-  const attachments = attachment ? (Array.isArray(attachment) ? attachment : [attachment]) : [];
-  if (attachments.length > 0) {
+  if (attachment) {
     const boundary = '----=_Part_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
     const htmlBase64 = chunkBase64(utf8ToBase64(html));
-    const mimeParts = [
+    const attachBase64 = chunkBase64(attachment.contentBase64);
+
+    mimeRaw = [
       `To: ${recipients.join(', ')}`,
       `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
       'MIME-Version: 1.0',
@@ -2648,20 +2652,16 @@ async function sendTenantEmail(
       '',
       htmlBase64,
       '',
-    ];
-    for (const file of attachments) {
-      mimeParts.push(
-        `--${boundary}`,
-        `Content-Type: ${file.contentType}; name="${file.filename}"`,
-        'Content-Transfer-Encoding: base64',
-        `Content-Disposition: attachment; filename="${file.filename}"`,
-        '',
-        chunkBase64(file.contentBase64),
-        '',
-      );
-    }
-    mimeParts.push(`--${boundary}--`, '');
-    mimeRaw = mimeParts.join('\r\n');
+      `--${boundary}`,
+      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${attachment.filename}"`,
+      '',
+      attachBase64,
+      '',
+      `--${boundary}--`,
+      ''
+    ].join('\r\n');
   } else {
     mimeRaw = [
       `To: ${recipients.join(', ')}`,
@@ -2802,278 +2802,6 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
       </div>
     </div>
   `;
-}
-
-const INCIDENT_PDF_MAX_BYTES = 10 * 1024 * 1024;
-
-function pdfSafeText(value: any, max = 1100): string {
-  return String(value ?? '—').replace(/[^\x20-\x7E]/g, ' ').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').slice(0, max);
-}
-
-function jpegDimensions(bytes: Uint8Array): { width: number; height: number; colors: number; orientation: number } | null {
-  let i = 2;
-  let orientation = 1;
-  while (i + 9 < bytes.length) {
-    if (bytes[i] !== 0xff) { i++; continue; }
-    const marker = bytes[i + 1];
-    const length = (bytes[i + 2] << 8) | bytes[i + 3];
-    if (marker === 0xe1 && length >= 14 && i + 4 + length <= bytes.length) {
-      const p = i + 4;
-      if (String.fromCharCode(...bytes.subarray(p, p + 6)) === 'Exif\u0000\u0000') {
-        const t = p + 6;
-        const little = bytes[t] === 0x49 && bytes[t + 1] === 0x49;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const u16 = (o: number) => view.getUint16(o, little);
-        const u32 = (o: number) => view.getUint32(o, little);
-        if (u16(t + 2) === 42) {
-          const ifd = t + u32(t + 4);
-          if (ifd + 2 <= bytes.length) {
-            const count = u16(ifd);
-            for (let n = 0; n < count; n++) {
-              const entry = ifd + 2 + n * 12;
-              if (entry + 12 > bytes.length) break;
-              if (u16(entry) === 0x0112) {
-                const value = u16(entry + 8);
-                if (value >= 1 && value <= 8) orientation = value;
-                break;
-              }
-            }
-          }
-        }
-      }
-    }
-    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
-      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8], colors: bytes[i + 9], orientation };
-    }
-    if (length < 2) break;
-    i += 2 + length;
-  }
-  return null;
-}
-
-function parsePngImage(bytes: Uint8Array): { width: number; height: number; colors: number; bytes: Uint8Array } | null {
-  if (bytes.length < 33 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) return null;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const width = view.getUint32(16), height = view.getUint32(20);
-  const bitDepth = bytes[24], colorType = bytes[25];
-  // PDF PNG predictor supports RGB and grayscale directly; alpha/palette images need pixel conversion.
-  const colors = colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
-  if (!width || !height || bitDepth !== 8 || !colors) return null;
-  const chunks: Uint8Array[] = [];
-  let offset = 8;
-  while (offset + 12 <= bytes.length) {
-    const length = view.getUint32(offset);
-    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
-    if (offset + 12 + length > bytes.length) return null;
-    if (type === 'IDAT') chunks.push(bytes.slice(offset + 8, offset + 8 + length));
-    offset += 12 + length;
-    if (type === 'IEND') break;
-  }
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const idat = new Uint8Array(total);
-  let cursor = 0; for (const chunk of chunks) { idat.set(chunk, cursor); cursor += chunk.length; }
-  return idat.length ? { width, height, colors, bytes: idat } : null;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunk, bytes.length)));
-  }
-  return btoa(binary);
-}
-
-function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, photos: Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number }>): Uint8Array {
-  type PdfObj = Uint8Array;
-  const enc = (s: string) => new TextEncoder().encode(s);
-  const objects: PdfObj[] = [];
-  const add = (s: string | Uint8Array) => { objects.push(typeof s === 'string' ? enc(s) : s); return objects.length; };
-  const pagesId = add('');
-  const catalogId = add('');
-  const pageIds: number[] = [];
-  const pageSpecs: { content: string; image?: { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number } }[] = [];
-  const text = (x: number, y: number, size: number, value: string, color = '0.12 0.17 0.25') =>
-    `BT\n${color} rg\n/F1 ${size} Tf\n1 0 0 1 ${x} ${y} Tm\n(${pdfSafeText(value, 105)}) Tj\nET\n`;
-  const rect = (x: number, y: number, w: number, h: number, color: string) => `${color} rg\n${x} ${y} ${w} ${h} re f\n`;
-  const line = (x1: number, y1: number, x2: number, y2: number, color = '0.86 0.89 0.92') => `${color} RG\n0.8 w\n${x1} ${y1} m ${x2} ${y2} l S\n`;
-  const header = (kicker: string, title: string) =>
-    rect(0, 755, 612, 87, '0.08 0.16 0.29') +
-    text(42, 812, 9, kicker.toUpperCase(), '0.72 0.82 0.94') +
-    text(42, 781, 21, title, '1 1 1') +
-    text(42, 735, 9, `${tenantName}  |  ${dateLabel}`, '0.38 0.43 0.50');
-
-  // Executive summary page.
-  let cover = header('RAKSHAK  /  SECURITY OPERATIONS', 'Incident Report');
-  cover += rect(42, 625, 528, 78, '0.94 0.96 0.98');
-  cover += text(60, 674, 9, 'REPORTING PERIOD', '0.35 0.42 0.52');
-  cover += text(60, 649, 15, dateLabel, '0.08 0.16 0.29');
-  cover += text(390, 674, 9, 'TOTAL INCIDENTS', '0.35 0.42 0.52');
-  cover += text(390, 644, 25, String(incidents.length), '0.08 0.16 0.29');
-  cover += text(42, 590, 13, 'Incident overview', '0.08 0.16 0.29');
-  cover += line(42, 576, 570, 576);
-  if (!incidents.length) {
-    cover += rect(42, 490, 528, 58, '0.92 0.97 0.94');
-    cover += text(60, 525, 12, 'No incidents reported', '0.12 0.38 0.25');
-    cover += text(60, 505, 9, 'There were no incidents recorded during this reporting period.', '0.20 0.30 0.25');
-  } else {
-    let y = 548;
-    for (const [idx, incident] of incidents.entries()) {
-      const caseLabel = incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
-      cover += rect(42, y - 54, 528, 46, idx % 2 ? '0.97 0.98 0.99' : '0.94 0.96 0.98');
-      cover += text(56, y - 27, 10, `${caseLabel}  |  ${incident.title || 'Security incident'}`);
-      cover += text(56, y - 44, 8, `${incident.plant_name || tenantName}  •  ${incident.priority || 'P3'}  •  ${incident.status || 'OPEN'}`, '0.35 0.42 0.52');
-      y -= 62;
-      if (y < 110) break;
-    }
-  }
-  cover += text(42, 48, 8, `Generated ${new Date().toISOString()}  |  Rakshak Security Management`, '0.45 0.49 0.55');
-  pageSpecs.push({ content: cover });
-
-  // One clean, structured detail page per incident.
-  for (const [idx, incident] of incidents.entries()) {
-    const guard = guardById.get(String(incident.guard_id));
-    const caseLabel = incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
-    let content = header('INCIDENT DETAILS', caseLabel);
-    content += rect(42, 665, 528, 48, '0.94 0.96 0.98');
-    content += text(58, 691, 9, 'TITLE', '0.35 0.42 0.52');
-    content += text(58, 672, 13, incident.title || 'Security incident');
-    const fields: [string, string][] = [
-      ['PLANT', `${incident.plant_name || 'Unspecified plant'}${incident.plant_code ? ` (${incident.plant_code})` : ''}`],
-      ['CATEGORY', incident.category || '—'],
-      ['PRIORITY / STATUS', `${incident.priority || 'P3'}  /  ${incident.status || 'OPEN'}`],
-      ['IMPACT / URGENCY', `${incident.impact || '—'}  /  ${incident.urgency || '—'}`],
-      ['REPORTED AT', incident.reported_at || '—'],
-      ['REPORTED BY', guard?.full_name || 'Field Guard'],
-      ['ASSIGNED RESPONDER', incident.assigned_to || 'Unassigned'],
-    ];
-    let y = 632;
-    for (const [label, value] of fields) {
-      content += text(48, y, 8, label, '0.40 0.46 0.54');
-      content += text(220, y, 9, value);
-      content += line(48, y - 9, 564, y - 9, '0.90 0.92 0.94');
-      y -= 35;
-    }
-    content += text(48, y - 2, 8, 'DESCRIPTION', '0.40 0.46 0.54');
-    const desc = String(incident.description || '—');
-    const words = desc.split(/\s+/); let row = ''; let dy = y - 24;
-    for (const word of words) {
-      const next = row ? `${row} ${word}` : word;
-      if (next.length > 88) { content += text(48, dy, 9, row); dy -= 15; row = word; }
-      else row = next;
-    }
-    if (row) content += text(48, dy, 9, row);
-    content += text(42, 48, 8, `Rakshak  |  ${caseLabel}  |  ${idx + 1} of ${incidents.length}`, '0.45 0.49 0.55');
-    pageSpecs.push({ content });
-
-    const photo = photos.get(idx);
-    if (photo) {
-      const orientation = photo.orientation || 1;
-      const swaps = orientation >= 5 && orientation <= 8;
-      const naturalW = swaps ? photo.height : photo.width;
-      const naturalH = swaps ? photo.width : photo.height;
-      // Keep the evidence image well clear of the page heading and caption.
-      // The reserved photo panel is x=56..556, y=126..650 (500 x 524 points).
-      const maxW = 480, maxH = 500;
-      const scale = Math.min(maxW / naturalW, maxH / naturalH, 1);
-      const w = Math.max(1, Math.round(naturalW * scale));
-      const h = Math.max(1, Math.round(naturalH * scale));
-      const x = (612 - w) / 2, yPhoto = 138 + (500 - h) / 2;
-      let matrix = `${w} 0 0 ${h} ${x} ${yPhoto} cm`;
-      if (orientation === 3) matrix = `${-w} 0 0 ${-h} ${x + w} ${yPhoto + h} cm`;
-      else if (orientation === 6) matrix = `0 ${-h} ${w} 0 ${x} ${yPhoto + h} cm`;
-      else if (orientation === 8) matrix = `0 ${h} ${-w} 0 ${x + w} ${yPhoto} cm`;
-      content = header('INCIDENT EVIDENCE', `${caseLabel} - Photo`) +
-        text(42, 710, 9, 'Photo evidence supplied with this incident', '0.38 0.43 0.50') +
-        rect(42, 112, 528, 552, '0.97 0.98 0.99') +
-        rect(56, 126, 500, 524, '1 1 1') +
-        `q\n${matrix}\n/Im1 Do\nQ\n` +
-        text(42, 48, 8, `Rakshak  |  ${caseLabel}`, '0.45 0.49 0.55');
-      pageSpecs.push({ content, image: photo });
-    }
-  }
-
-  const kids: string[] = [];
-  for (const spec of pageSpecs) {
-    let imageId = 0;
-    if (spec.image) {
-      const img = spec.image;
-      const colorSpace = img.colors === 1 ? '/DeviceGray' : '/DeviceRGB';
-      const decodeParms = img.filter === 'FlateDecode' ? ` /DecodeParms << /Predictor 15 /Colors ${img.colors} /BitsPerComponent 8 /Columns ${img.width} >>` : '';
-      const headerBytes = enc(`<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /${img.filter}${decodeParms} /Length ${img.bytes.length} >>\nstream\n`);
-      const footer = enc('\nendstream');
-      const stream = new Uint8Array(headerBytes.length + img.bytes.length + footer.length);
-      stream.set(headerBytes); stream.set(img.bytes, headerBytes.length); stream.set(footer, headerBytes.length + img.bytes.length);
-      imageId = add(stream);
-    }
-    const contentStream = add(`<< /Length ${enc(spec.content).length} >>\nstream\n${spec.content}\nendstream`);
-    const fontIdPlaceholder = 'FONT_REF';
-    const resources = spec.image ? `<< /XObject << /Im1 ${imageId} 0 R >> >>` : '<< >>';
-    const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 842] /Resources ${resources} /Contents ${contentStream} 0 R >>`);
-    pageIds.push(pageId); kids.push(`${pageId} 0 R`);
-  }
-  const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
-  for (const pageId of pageIds) {
-    const oldText = new TextDecoder().decode(objects[pageId - 1]);
-    const contentRef = oldText.match(/\/Contents (\d+) 0 R/)?.[1] || '1';
-    const imageRef = oldText.match(/\/Im1 (\d+) 0 R/)?.[1];
-    const resources = imageRef ? `<< /Font << /F1 ${fontId} 0 R >> /XObject << /Im1 ${imageRef} 0 R >> >>` : `<< /Font << /F1 ${fontId} 0 R >> >>`;
-    objects[pageId - 1] = enc(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 842] /Resources ${resources} /Contents ${contentRef} 0 R >>`);
-  }
-  objects[pagesId - 1] = enc(`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${kids.length} >>`);
-  objects[catalogId - 1] = enc(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
-  const parts: Uint8Array[] = [enc('%PDF-1.4\n% Rakshak\n')];
-  const offsets = [0]; let total = parts[0].length;
-  for (let i = 0; i < objects.length; i++) {
-    offsets.push(total);
-    const startObj = enc(`${i + 1} 0 obj\n`), endObj = enc('\nendobj\n');
-    const obj = new Uint8Array(startObj.length + objects[i].length + endObj.length);
-    obj.set(startObj); obj.set(objects[i], startObj.length); obj.set(endObj, startObj.length + objects[i].length);
-    parts.push(obj); total += obj.length;
-  }
-  const xrefOffset = total;
-  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let i = 1; i < offsets.length; i++) xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
-  xref += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  parts.push(enc(xref));
-  const result = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
-  let offset = 0; for (const part of parts) { result.set(part, offset); offset += part.length; }
-  return result;
-}
-
-async function buildIncidentPdfAttachment(env: Bindings, tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, filename: string): Promise<EmailAttachment> {
-  const photos = new Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number }>();
-  for (let i = 0; i < incidents.length; i++) {
-    const photoUrl = incidents[i]?.photo_url;
-    if (!photoUrl) continue;
-    let key = '';
-    try {
-      const parsed = new URL(photoUrl);
-      const marker = '/api/v1/media/';
-      if (!parsed.pathname.includes(marker)) throw new Error('Unsupported incident photo URL');
-      key = decodeURIComponent(parsed.pathname.slice(parsed.pathname.indexOf(marker) + marker.length));
-    } catch { throw new Error(`Unable to resolve incident photo for ${incidents[i].case_number || incidents[i].title || i + 1}.`); }
-    if (!key || key.includes('..') || key.startsWith('/') || !key.startsWith('incidents/photo_')) throw new Error('Invalid incident photo storage key.');
-    const object = await env.R2_BUCKET.get(key);
-    if (!object) throw new Error(`Incident photo is missing from storage for ${incidents[i].case_number || incidents[i].title || i + 1}.`);
-    const bytes = new Uint8Array(await object.arrayBuffer());
-    const jpeg = jpegDimensions(bytes);
-    if (jpeg) {
-      photos.set(i, { bytes, ...jpeg, filter: 'DCTDecode' });
-      continue;
-    }
-    const png = parsePngImage(bytes);
-    if (png) {
-      photos.set(i, { ...png, filter: 'FlateDecode' });
-      continue;
-    }
-    throw new Error(`Incident photo for ${incidents[i].case_number || incidents[i].title || i + 1} uses an unsupported image format. Use JPEG or 8-bit RGB/grayscale PNG; no photos were omitted.`);
-  }
-  const bytes = buildIncidentPdf(tenantName, dateLabel, incidents, guardById, photos);
-  if (bytes.byteLength > INCIDENT_PDF_MAX_BYTES) {
-    throw new Error(`Incident PDF exceeds the 10 MB limit (${(bytes.byteLength / 1024 / 1024).toFixed(2)} MB). Reduce the incident photo sizes and retry; no photos were omitted.`);
-  }
-  return { filename, contentType: 'application/pdf', contentBase64: bytesToBase64(bytes) };
 }
 
 async function generateTypedReport(
@@ -3459,12 +3187,8 @@ async function generateTypedReport(
 
   const excelBase64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
   const filename = `${tenantName.replace(/[^a-zA-Z0-9]/g, '_')}_${reportType.toUpperCase()}_Report_${localDate(env, nowMs)}.xlsx`;
-  const incidentPdf = await buildIncidentPdfAttachment(
-    env, tenantName, dateLabel, incidents, guardById,
-    `${tenantName.replace(/[^a-zA-Z0-9]/g, '_')}_INCIDENTS_${localDate(env, nowMs)}.pdf`
-  );
 
-  return { subject, html, excelBase64, filename, incidentPdf, counts: { guards: guardStats.length, scans: scans.length, incidents: incidents.length } };
+  return { subject, html, excelBase64, filename, counts: { guards: guardStats.length, scans: scans.length, incidents: incidents.length } };
 }
 
 async function runDailyReports(env: Bindings) {
@@ -3543,18 +3267,12 @@ async function runDailyReports(env: Bindings) {
         if (claim.error) continue;
         budget--;
 
-        let built: any;
-        try {
-          built = await generateTypedReport(supabase, env, t.id, t.name, rType);
-        } catch (error: any) {
-          await supabase.from('daily_report_log').update({ status: 'FAILED', error: error?.message || 'Report generation failed' }).match(logKey);
-          console.error(`Daily ${rType} report generation failed for tenant ${t.id}:`, error);
-          continue;
-        }
-        const res = await sendTenantEmail(env, t.id, recips, built.subject, built.html, [
-          { filename: built.filename, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBase64: built.excelBase64 },
-          built.incidentPdf,
-        ]);
+        const built = await generateTypedReport(supabase, env, t.id, t.name, rType);
+        const res = await sendTenantEmail(env, t.id, recips, built.subject, built.html, {
+          filename: built.filename,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          contentBase64: built.excelBase64,
+        });
         await supabase.from('daily_report_log').update({
           status: res.ok ? 'SENT' : 'FAILED',
           error: res.error || null,
@@ -3632,10 +3350,11 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
       if (recips.length === 0) {
         return c.json({ success: false, message: `No recipient email configured for ${rType} report.` }, 400);
       }
-      const res = await sendTenantEmail(c.env, tenantId, recips, built.subject, built.html, [
-        { filename: built.filename, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBase64: built.excelBase64 },
-        built.incidentPdf,
-      ]);
+      const res = await sendTenantEmail(c.env, tenantId, recips, built.subject, built.html, {
+        filename: built.filename,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        contentBase64: built.excelBase64,
+      });
       if (!res.ok) return c.json({ success: false, message: res.error || 'Email send failed' }, 500);
       try {
         await supabase.from('daily_report_log').insert({
