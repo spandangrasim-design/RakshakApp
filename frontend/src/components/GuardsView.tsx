@@ -67,6 +67,13 @@ interface RoundItem {
   name: string;
 }
 
+interface PlantItem {
+  id: string;
+  name: string;
+  plant_code?: string | null;
+  is_active?: boolean;
+}
+
 interface Guard {
   guard_id: string;
   full_name: string;
@@ -90,11 +97,16 @@ interface Guard {
   assigned_rounds?: { id: string; name: string }[];
   app_permissions?: Partial<AppPermissions>;
   is_custom_override?: boolean;
+  assigned_plants?: string[];
 }
 
 export const GuardsView: React.FC = () => {
   const [guards, setGuards] = useState<Guard[]>([]);
   const [rounds, setRounds] = useState<RoundItem[]>([]);
+  const [plants, setPlants] = useState<PlantItem[]>([]);
+  const [plantAssignmentGuard, setPlantAssignmentGuard] = useState<Guard | null>(null);
+  const [selectedPlantNames, setSelectedPlantNames] = useState<string[]>([]);
+  const [savingPlantAssignment, setSavingPlantAssignment] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -176,19 +188,22 @@ export const GuardsView: React.FC = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [guardsRes, roundsRes] = await Promise.all([
+      const [guardsRes, roundsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/guards`),
         fetch(`${API_BASE_URL}/rounds`),
+        fetch(`${API_BASE_URL}/plants`),
       ]);
 
       const guardsData = await guardsRes.json();
       const roundsData = await roundsRes.json();
+      const plantsData = await plantsRes.json();
 
       const loadedGuards: Guard[] = guardsData.guards || [];
       setGuards(loadedGuards);
       setLicensedKeys(new Set<string>(guardsData.licensed_permission_keys || []));
       setTenants(guardsData.tenants || []);
       if (roundsData.success) setRounds(roundsData.rounds || []);
+      if (plantsData.success) setPlants((plantsData.plants || []).filter((p: PlantItem) => p.is_active !== false));
 
     } catch (err) {
       console.error('Failed to load guard records:', err);
@@ -243,6 +258,33 @@ export const GuardsView: React.FC = () => {
       alert('Network error saving app permissions.');
     } finally {
       setSavingPerms(false);
+    }
+  };
+
+  const openPlantAssignment = (guard: Guard) => {
+    setPlantAssignmentGuard(guard);
+    setSelectedPlantNames(Array.isArray(guard.assigned_plants) ? [...guard.assigned_plants] : []);
+  };
+
+  const handleSavePlantAssignment = async () => {
+    if (!plantAssignmentGuard) return;
+    setSavingPlantAssignment(true);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch(`${API_BASE_URL}/guards/${plantAssignmentGuard.guard_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ assigned_plants: selectedPlantNames }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || 'Unable to save plant assignments.');
+      setGuards((current) => current.map((g) => g.guard_id === plantAssignmentGuard.guard_id
+        ? { ...g, assigned_plants: [...selectedPlantNames] } : g));
+      setPlantAssignmentGuard(null);
+    } catch (error: any) {
+      alert(error?.message || 'Unable to save plant assignments.');
+    } finally {
+      setSavingPlantAssignment(false);
     }
   };
 
@@ -703,6 +745,7 @@ export const GuardsView: React.FC = () => {
                 <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                   <th className="w-[250px] py-3.5 pl-5 pr-3">Staff Member &amp; Contact</th>
                   <th className="w-[195px] px-3 py-3.5">Role &amp; Access</th>
+                  <th className="w-[190px] px-3 py-3.5">Assigned Plants</th>
                   <th className="w-[175px] px-3 py-3.5">Site &amp; Shift</th>
                   <th className="px-3 py-3.5">Assigned Patrol Routes</th>
                   <th className="w-[105px] px-3 py-3.5">Status</th>
@@ -713,14 +756,14 @@ export const GuardsView: React.FC = () => {
                 {loading ? (
                   Array.from({ length: 6 }).map((_, idx) => (
                     <tr key={idx}>
-                      <td colSpan={6} className="px-5 py-3.5">
+                      <td colSpan={7} className="px-5 py-3.5">
                         <div className="h-6 w-full animate-pulse rounded-lg bg-slate-100" />
                       </td>
                     </tr>
                   ))
                 ) : paginatedGuards.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-12 text-center text-sm text-slate-400">
+                    <td colSpan={7} className="py-12 text-center text-sm text-slate-400">
                       No matching personnel records found.
                     </td>
                   </tr>
@@ -825,6 +868,17 @@ export const GuardsView: React.FC = () => {
                                 <span>{formFieldCount} field{formFieldCount === 1 ? '' : 's'}</span>
                               </>
                             )}
+                          </div>
+                        </td>
+
+                        <td className="px-3 py-3.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {(guard.assigned_plants || []).length ? (guard.assigned_plants || []).map((plantName) => (
+                              <span key={plantName} className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">{plantName}</span>
+                            )) : <span className="italic text-slate-400">No plant assigned</span>}
+                            <button type="button" onClick={() => openPlantAssignment(guard)} className="ml-1 inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-50">
+                              <Building2 className="h-3 w-3" /> Assign
+                            </button>
                           </div>
                         </td>
 
@@ -1625,6 +1679,33 @@ export const GuardsView: React.FC = () => {
           </div>
         </div>
       )}
+          {plantAssignmentGuard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" onClick={() => setPlantAssignmentGuard(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Assign Plants</h3>
+                <p className="mt-1 text-xs text-slate-500">Select the plants this person is allowed to respond to.</p>
+                <p className="mt-1 text-xs font-bold text-indigo-700">{plantAssignmentGuard.full_name}</p>
+              </div>
+              <button type="button" onClick={() => setPlantAssignmentGuard(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100" aria-label="Close plant assignment"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 p-3">
+              {plants.length === 0 ? <p className="py-4 text-center text-xs text-slate-500">No active plants found. Add plants in Administration Settings first.</p> : plants.map((plant) => (
+                <label key={plant.id} className="flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-2 hover:bg-slate-50">
+                  <span className="min-w-0"><span className="block text-xs font-bold text-slate-800">{plant.name}</span>{plant.plant_code && <span className="text-[10px] text-slate-500">Plant ID: {plant.plant_code}</span>}</span>
+                  <input type="checkbox" checked={selectedPlantNames.includes(plant.name)} onChange={() => setSelectedPlantNames((current) => current.includes(plant.name) ? current.filter((name) => name !== plant.name) : [...current, plant.name])} className="h-4 w-4 accent-indigo-600" />
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setPlantAssignmentGuard(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600">Cancel</button>
+              <button type="button" onClick={() => void handleSavePlantAssignment()} disabled={savingPlantAssignment || plants.length === 0} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{savingPlantAssignment ? 'Saving…' : 'Save Plant Assignment'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
           {/* Verification Photo Modal (Auto-adjusting) */}
       {selectedPhoto && (
         <div

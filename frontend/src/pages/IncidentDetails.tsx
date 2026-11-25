@@ -128,15 +128,18 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     try {
       setLoading(true);
 
-      const [incRes, guardsRes, plantsRes] = await Promise.all([
+      const [incRes, guardsRes, plantsRes, categoriesRes] = await Promise.all([
         fetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`, { headers: authHeaders }),
         fetch(`${API_BASE_URL}/guards`, { headers: authHeaders }),
         fetch(`${API_BASE_URL}/plants`, { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/incident-categories`, { headers: authHeaders }),
       ]);
 
       const data = await incRes.json();
       const guardsData = await guardsRes.json();
       const plantsData = await plantsRes.json();
+      const categoriesData = await categoriesRes.json();
+      setCategories(Array.isArray(categoriesData.categories) ? categoriesData.categories : []);
 
       const loadedGuards: GuardUser[] = guardsData.guards || [];
       const loadedPlants: PlantRecord[] = plantsData.plants || [];
