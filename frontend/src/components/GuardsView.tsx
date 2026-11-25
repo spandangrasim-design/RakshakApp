@@ -189,7 +189,7 @@ export const GuardsView: React.FC = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token') || '';
-      const requestHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+      const requestHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
       const [guardsRes, roundsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/guards`, { headers: requestHeaders }),
         fetch(`${API_BASE_URL}/rounds`, { headers: requestHeaders }),
