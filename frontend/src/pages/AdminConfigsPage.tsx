@@ -1,5 +1,4 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import CategoryManagementPanel from '../components/CategoryManagementPanel';
 import {
   Eye,
   EyeOff,
@@ -422,8 +421,6 @@ export default function AdminConfigsPage() {
             <span>{message.text}</span>
           </div>
         )}
-
-        <CategoryManagementPanel />
 
         {/* Plant Names & Automated Email Alert Assignments */}
         <div className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-xs space-y-4">

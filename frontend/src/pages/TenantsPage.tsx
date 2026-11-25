@@ -1,3 +1,4 @@
+import CategoryManagementPanel from '../components/CategoryManagementPanel';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2, Plus, Save, Ban, CheckCircle2, UserPlus, Loader2,
@@ -732,6 +733,11 @@ const TenantsPage: React.FC = () => {
                   );
                 })}
               </div>
+            )}
+
+            {/* SECTION 2B: SUPER ADMIN INCIDENT CATEGORY ALLOWANCE & MANAGEMENT */}
+            {(tenantWorkspace === 'all' || tenantWorkspace === 'modules') && (
+              <CategoryManagementPanel tenantId={selected.id} tenantName={selected.name} />
             )}
 
             {/* SECTION 3: ADMIN ACCOUNT CREATION & QR KEY ROTATION */}

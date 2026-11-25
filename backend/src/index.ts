@@ -4455,35 +4455,104 @@ app.get('/api/v1/plants', async (c) => {
 });
 
 // ==========================================
-// INCIDENT CATEGORY MANAGEMENT (tenant scoped)
+// INCIDENT CATEGORY MANAGEMENT (Super Admin controlled per tenant)
 // ==========================================
+async function getTenantMaxCategories(supabase: any, tenantId: string): Promise<number> {
+  const { data } = await supabase
+    .from('tenant_configs')
+    .select('config_value')
+    .eq('tenant_id', tenantId)
+    .eq('config_key', 'MAX_INCIDENT_CATEGORIES')
+    .maybeSingle();
+  const parsed = Number(data?.config_value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 10;
+}
+
 app.get('/api/v1/incident-categories', requireModule('module_incidents'), async (c) => {
   try {
     const supabase = getSupabase(c.env);
     const auth = c.get('auth');
-    const tenantId = auth.tier === 'SUPER_ADMIN'
+    const isSuperAdmin = auth.tier === 'SUPER_ADMIN';
+    const tenantId = isSuperAdmin
       ? (c.req.query('tenant_id') || await resolveAdminTenantId(c, supabase))
       : auth.tenant_id;
-    if (!tenantId) return c.json({ success: true, categories: [] });
-    let query = supabase.from('incident_categories').select('id, tenant_id, name, is_active, created_at, updated_at').eq('tenant_id', tenantId).order('name', { ascending: true });
-    if (c.req.query('include_inactive') !== 'true') query = query.eq('is_active', true);
+    if (!tenantId) return c.json({ success: true, categories: [], max_allowed: 10 });
+
+    const maxAllowed = await getTenantMaxCategories(supabase, tenantId);
+    let query = supabase
+      .from('incident_categories')
+      .select('id, tenant_id, name, is_active, created_at, updated_at')
+      .eq('tenant_id', tenantId)
+      .order('created_at', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (!isSuperAdmin || c.req.query('include_inactive') !== 'true') {
+      query = query.eq('is_active', true);
+    }
     const { data, error } = await query;
     if (error) throw error;
-    return c.json({ success: true, categories: data || [] });
+
+    let rows = data || [];
+    // Enforce Super Admin's allowed category count for regular admins and field guards
+    if (!isSuperAdmin) {
+      rows = rows.slice(0, maxAllowed);
+    }
+    return c.json({ success: true, categories: rows, max_allowed: maxAllowed });
   } catch (error) {
     return c.json({ success: false, message: errMsg(error, 'Failed to load categories') }, 500);
   }
 });
 
-app.post('/api/v1/incident-categories', adminTiers, async (c) => {
+app.put('/api/v1/super-admin/tenants/:tenantId/incident-categories/limit', async (c) => {
   try {
+    const auth = c.get('auth');
+    if (auth?.tier !== 'SUPER_ADMIN') return c.json({ success: false, message: 'Super Admin access required.' }, 403);
     const supabase = getSupabase(c.env);
-    const tenantId = await resolveAdminTenantId(c, supabase);
-    if (!tenantId) return c.json({ success: false, message: 'Tenant context is required.' }, 400);
+    const tenantId = c.req.param('tenantId');
     const body = await c.req.json();
+    const maxAllowed = Math.max(0, Math.min(100, Math.floor(Number(body.max_allowed ?? 10))));
+
+    const { error } = await supabase
+      .from('tenant_configs')
+      .upsert(
+        { tenant_id: tenantId, config_key: 'MAX_INCIDENT_CATEGORIES', config_value: String(maxAllowed) },
+        { onConflict: 'tenant_id,config_key' }
+      );
+    if (error) throw error;
+    return c.json({ success: true, max_allowed: maxAllowed });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to update category limit') }, 500);
+  }
+});
+
+app.post('/api/v1/incident-categories', async (c) => {
+  try {
+    const auth = c.get('auth');
+    if (auth?.tier !== 'SUPER_ADMIN') {
+      return c.json({ success: false, message: 'Only Super Admin can add incident categories.' }, 403);
+    }
+    const supabase = getSupabase(c.env);
+    const body = await c.req.json();
+    const tenantId = String(body.tenant_id || c.req.query('tenant_id') || '').trim();
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+
     const name = String(body.name || '').trim().replace(/\s+/g, ' ');
     if (!name || name.length > 80) return c.json({ success: false, message: 'Category name must contain 1–80 characters.' }, 400);
-    const { data, error } = await supabase.from('incident_categories').insert({ tenant_id: tenantId, name, is_active: true }).select('id, tenant_id, name, is_active, created_at, updated_at').single();
+
+    const maxAllowed = await getTenantMaxCategories(supabase, tenantId);
+    const { count: activeCount } = await supabase
+      .from('incident_categories')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true);
+
+    const shouldActivate = (activeCount ?? 0) < maxAllowed;
+
+    const { data, error } = await supabase
+      .from('incident_categories')
+      .insert({ tenant_id: tenantId, name, is_active: shouldActivate })
+      .select('id, tenant_id, name, is_active, created_at, updated_at')
+      .single();
     if (error) return c.json({ success: false, message: 'A category with this name may already exist.' }, 409);
     return c.json({ success: true, category: data }, 201);
   } catch (error) {
@@ -4491,12 +4560,17 @@ app.post('/api/v1/incident-categories', adminTiers, async (c) => {
   }
 });
 
-app.patch('/api/v1/incident-categories/:id', adminTiers, async (c) => {
+app.patch('/api/v1/incident-categories/:id', async (c) => {
   try {
+    const auth = c.get('auth');
+    if (auth?.tier !== 'SUPER_ADMIN') {
+      return c.json({ success: false, message: 'Only Super Admin can modify incident categories.' }, 403);
+    }
     const supabase = getSupabase(c.env);
-    const tenantId = await resolveAdminTenantId(c, supabase);
-    if (!tenantId) return c.json({ success: false, message: 'Tenant context is required.' }, 400);
     const body = await c.req.json();
+    const tenantId = String(body.tenant_id || c.req.query('tenant_id') || '').trim();
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+
     const updates: Record<string, any> = { updated_at: new Date().toISOString() };
     if (body.name !== undefined) {
       const name = String(body.name || '').trim().replace(/\s+/g, ' ');
@@ -4510,8 +4584,31 @@ app.patch('/api/v1/incident-categories/:id', adminTiers, async (c) => {
       }
       updates.name = name;
     }
-    if (body.is_active !== undefined) updates.is_active = body.is_active === true;
-    const { data, error } = await supabase.from('incident_categories').update(updates).eq('id', c.req.param('id')).eq('tenant_id', tenantId).select('id, tenant_id, name, is_active, created_at, updated_at').single();
+    if (body.is_active !== undefined) {
+      if (body.is_active === true) {
+        const maxAllowed = await getTenantMaxCategories(supabase, tenantId);
+        const { count: activeCount } = await supabase
+          .from('incident_categories')
+          .select('id', { count: 'exact', head: true })
+          .eq('tenant_id', tenantId)
+          .eq('is_active', true);
+        if ((activeCount ?? 0) >= maxAllowed) {
+          return c.json(
+            { success: false, message: `Limit reached: only ${maxAllowed} active category(s) allowed for this tenant. Increase the limit or deactivate another category first.` },
+            400
+          );
+        }
+      }
+      updates.is_active = body.is_active === true;
+    }
+
+    const { data, error } = await supabase
+      .from('incident_categories')
+      .update(updates)
+      .eq('id', c.req.param('id'))
+      .eq('tenant_id', tenantId)
+      .select('id, tenant_id, name, is_active, created_at, updated_at')
+      .single();
     if (error || !data) return c.json({ success: false, message: 'Category not found or update rejected.' }, 404);
     return c.json({ success: true, category: data });
   } catch (error) {
