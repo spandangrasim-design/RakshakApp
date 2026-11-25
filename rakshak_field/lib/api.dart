@@ -21,10 +21,13 @@ class Api {
   /// The current shift window from the server (if the industry configured shifts): {name, start_at, end_at}.
   static Map<String, dynamic>? shift;
 
+  /// Configured Plant Names for the current industry (populated from /field/routes).
+  static List<String> plants = ['Test - P1', 'Test2 - P2'];
+
   /// Set by main.dart: send the guard back to the join screen.
   static void Function()? onUnauthorized;
 
-  static Future<Map<String, dynamic>> _request(
+  static Future> _request(
     String method,
     String path, {
     Map<String, dynamic>? body,
@@ -78,7 +81,7 @@ class Api {
   }
 
   // ---------- joining (no login) ----------
-  static Future<List<Map<String, dynamic>>> industries() async {
+  static Future<List>> industries() async {
     final d = await _request('GET', '/guest/industries', auth: false);
     final list = (d['industries'] as List?) ?? [];
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
@@ -114,9 +117,16 @@ class Api {
   }
 
   // ---------- routes ----------
-  static Future<List<Map<String, dynamic>>> routes() async {
+  static Future<List>> routes() async {
     final d = await _request('GET', '/field/routes');
     shift = d['shift'] is Map ? Map<String, dynamic>.from(d['shift'] as Map) : null;
+    final pList = (d['plants'] as List?)
+        ?.map((e) => e.toString())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (pList != null && pList.isNotEmpty) {
+      plants = pList;
+    }
     await Session.updateAccess(
       Map<String, dynamic>.from((d['app_permissions'] as Map?) ?? {}),
       ((d['incident_form_fields'] as List?) ?? []).map((e) => e.toString()).toList(),
@@ -126,7 +136,7 @@ class Api {
   }
 
   /// Returns {session_id, status ('ACTIVE' or 'PAUSED'), resumed}.
-  static Future<Map<String, dynamic>> startRun(String roundId) async {
+  static Future> startRun(String roundId) async {
     return _request('POST', '/field/runs/start', body: {'round_id': roundId});
   }
 
@@ -139,7 +149,7 @@ class Api {
   }
 
   /// Stops the run before the route is finished. Returns {completed, scanned, total}.
-  static Future<Map<String, dynamic>> endRun(String sessionId, {required String reason, String? note}) async {
+  static Future> endRun(String sessionId, {required String reason, String? note}) async {
     return _request('POST', '/field/runs/$sessionId/end', body: {
       'reason': reason,
       if (note != null && note.isNotEmpty) 'note': note,
@@ -160,10 +170,13 @@ class Api {
     required double guardLat,
     required double guardLng,
     required String clientScanId,
+    required String selfieBase64,
+    required String locationPhotoBase64,
   }) async {
     await _request(
       'POST',
       '/scans',
+      timeout: const Duration(seconds: 60),
       body: {
         'client_scan_id': clientScanId,
         'checkpoint_id': checkpointId,
@@ -173,6 +186,8 @@ class Api {
         'guard_lat': guardLat,
         'guard_lng': guardLng,
         'uptime_seconds': 0,
+        'selfie_url': selfieBase64,
+        'location_photo_url': locationPhotoBase64,
       },
     );
   }

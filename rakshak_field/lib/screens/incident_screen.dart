@@ -20,12 +20,6 @@ class IncidentScreen extends StatefulWidget {
 }
 
 class _IncidentScreenState extends State<IncidentScreen> {
-  static const _priorities = <String, String>{
-    'P1': 'P1 - Critical',
-    'P2': 'P2 - High',
-    'P3': 'P3 - Moderate',
-    'P4': 'P4 - Low',
-  };
   static const _categories = <String>[
     'Security / Patrol',
     'Safety Hazard',
@@ -39,13 +33,14 @@ class _IncidentScreenState extends State<IncidentScreen> {
   final _title = TextEditingController();
   final _desc = TextEditingController();
   final _location = TextEditingController();
-  String _priority = 'P3';
+  late String _plantName = Api.plants.isNotEmpty ? Api.plants.first : 'Test - P1';
   String _category = 'Security / Patrol';
   Uint8List? _photo;
   bool _sending = false;
 
-  // 'group' is chosen by the server (default queue); the guard never sees it.
-  late final List<String> _fields = Session.formFields.where((f) => f != 'group').toList();
+  // 'group' is chosen by the server (default queue); 'severity' is replaced by Plant Name.
+  late final List<String> _fields =
+      Session.formFields.where((f) => f != 'group' && f != 'severity').toList();
 
   @override
   void dispose() {
@@ -73,8 +68,8 @@ class _IncidentScreenState extends State<IncidentScreen> {
     final payload = <String, dynamic>{
       'client_incident_id': const Uuid().v4(),
       'reported_at': DateTime.now().toUtc().toIso8601String(),
+      'plant_name': _plantName,
     };
-    if (_fields.contains('severity')) payload['priority'] = _priority;
     if (_fields.contains('category')) payload['category'] = _category;
     if (_fields.contains('title') && _title.text.trim().isNotEmpty) {
       payload['title'] = _title.text.trim();
@@ -105,25 +100,33 @@ class _IncidentScreenState extends State<IncidentScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final plants = Api.plants.isNotEmpty ? Api.plants : const ['Test - P1', 'Test2 - P2'];
+    final selectedPlant = plants.contains(_plantName) ? _plantName : plants.first;
+
     final children = <Widget>[
-      Text('At: ${widget.checkpointName}', style: const TextStyle(color: Colors.black54)),
+      if (widget.checkpointName != null && widget.checkpointName!.isNotEmpty) ...[
+        Text('At: ${widget.checkpointName}', style: const TextStyle(color: Colors.black54)),
+        const SizedBox(height: 16),
+      ],
+      DropdownButtonFormField<String>(
+        value: selectedPlant,
+        decoration: const InputDecoration(
+          labelText: '1. Plant Name',
+          border: OutlineInputBorder(),
+        ),
+        items: [for (final p in plants) DropdownMenuItem(value: p, child: Text(p))],
+        onChanged: (v) => setState(() => _plantName = v ?? selectedPlant),
+      ),
       const SizedBox(height: 16),
     ];
 
     for (var i = 0; i < _fields.length; i++) {
+      final stepIdx = i + 1;
       switch (_fields[i]) {
-        case 'severity':
-          children.add(DropdownButtonFormField<String>(
-            value: _priority,
-            decoration: InputDecoration(labelText: numbered(i, 'Severity'), border: const OutlineInputBorder()),
-            items: [for (final e in _priorities.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
-            onChanged: (v) => setState(() => _priority = v ?? 'P3'),
-          ));
-          break;
         case 'category':
           children.add(DropdownButtonFormField<String>(
             value: _category,
-            decoration: InputDecoration(labelText: numbered(i, 'Category'), border: const OutlineInputBorder()),
+            decoration: InputDecoration(labelText: numbered(stepIdx, 'Category'), border: const OutlineInputBorder()),
             items: [for (final c in _categories) DropdownMenuItem(value: c, child: Text(c))],
             onChanged: (v) => setState(() => _category = v ?? _category),
           ));
@@ -131,21 +134,21 @@ class _IncidentScreenState extends State<IncidentScreen> {
         case 'title':
           children.add(TextField(
             controller: _title,
-            decoration: InputDecoration(labelText: numbered(i, 'Short title'), border: const OutlineInputBorder()),
+            decoration: InputDecoration(labelText: numbered(stepIdx, 'Short title'), border: const OutlineInputBorder()),
           ));
           break;
         case 'description':
           children.add(TextField(
             controller: _desc,
             maxLines: 4,
-            decoration: InputDecoration(labelText: numbered(i, 'What happened?'), border: const OutlineInputBorder()),
+            decoration: InputDecoration(labelText: numbered(stepIdx, 'What happened?'), border: const OutlineInputBorder()),
           ));
           break;
         case 'photo':
           children.add(Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(numbered(i, 'Photo'), style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(numbered(stepIdx, 'Photo'), style: const TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               if (_photo != null)
                 ClipRRect(

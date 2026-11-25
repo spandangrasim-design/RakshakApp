@@ -13,7 +13,7 @@ import {
   Plus,
   X,
   Paperclip,
-  Flame,
+  Building2,
   SlidersHorizontal
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
@@ -27,6 +27,8 @@ const DEFAULT_GROUPS = [
   'Fire & Safety Response',
 ];
 
+const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
+
 interface GuardUser {
   guard_id: string;
   full_name: string;
@@ -35,6 +37,7 @@ interface GuardUser {
   is_active?: boolean;
   assignment_group?: string | null;
   assignment_groups?: string[];
+  assigned_plants?: string[];
 }
 
 interface IncidentRecord {
@@ -44,7 +47,7 @@ interface IncidentRecord {
   client_incident_id?: string;
   title: string;
   description: string;
-  priority?: string;
+  plant_name?: string;
   status?: string;
   reported_at: string;
   photo_url?: string | null;
@@ -55,29 +58,18 @@ interface IncidentRecord {
   assigned_to?: string | null;
 }
 
-const calculatePriority = (impact: string, urgency: string): { label: string; code: string } => {
-  const imp = impact.charAt(0);
-  const urg = urgency.charAt(0);
-
-  if (imp === '1' && urg === '1') return { label: 'P1 - Critical', code: 'P1' };
-  if ((imp === '1' && urg === '2') || (imp === '2' && urg === '1')) return { label: 'P2 - High', code: 'P2' };
-  if ((imp === '1' && urg === '3') || (imp === '2' && urg === '2') || (imp === '3' && urg === '1')) {
-    return { label: 'P3 - Moderate', code: 'P3' };
-  }
-  return { label: 'P4 - Low', code: 'P4' };
-};
-
 export const IncidentsDashboard: React.FC = () => {
   const navigate = useNavigate();
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
   const [guardsMap, setGuardsMap] = useState<Record<string, string>>({});
   const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
+  const [availablePlants, setAvailablePlants] = useState<string[]>(DEFAULT_PLANTS);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Server-side Filter & Pagination State
   const [statusTab, setStatusTab] = useState<'ALL' | 'OPEN' | 'RESOLVED'>('ALL');
-  const [priorityFilter, setPriorityFilter] = useState<'ALL' | 'P1' | 'P2' | 'P3' | 'P4'>('ALL');
+  const [plantFilter, setPlantFilter] = useState<string>('ALL');
   const [searchField, setSearchField] = useState<'number' | 'short_description' | 'caller'>('number');
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -86,7 +78,7 @@ export const IncidentsDashboard: React.FC = () => {
   const [pageSize, setPageSize] = useState<number>(25);
   const [totalRecords, setTotalRecords] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(1);
-  const [summaryCounts, setSummaryCounts] = useState({ total: 0, open: 0, resolved: 0, critical: 0 });
+  const [summaryCounts, setSummaryCounts] = useState({ total: 0, open: 0, resolved: 0 });
 
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -96,8 +88,7 @@ export const IncidentsDashboard: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [newCallerGuardId, setNewCallerGuardId] = useState('');
   const [newCategory, setNewCategory] = useState('Security / Patrol');
-  const [newImpact, setNewImpact] = useState('2 - Medium');
-  const [newUrgency, setNewUrgency] = useState('2 - Medium');
+  const [newPlantName, setNewPlantName] = useState(DEFAULT_PLANTS[0]);
   const [newAssignmentGroup, setNewAssignmentGroup] = useState('Security Operations L1');
   const [newDescription, setNewDescription] = useState('');
   const [newPhotoBase64, setNewPhotoBase64] = useState<string | null>(null);
@@ -130,7 +121,7 @@ export const IncidentsDashboard: React.FC = () => {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Load Guards & Assignment Groups once
+  // Load Guards, Assignment Groups & Configured Plants once
   useEffect(() => {
     Promise.all([
       fetch(`${API_BASE}/guards`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ guards: [] })),
@@ -149,30 +140,51 @@ export const IncidentsDashboard: React.FC = () => {
       setGuardsMap(gMap);
 
       let customGroups: string[] = [...DEFAULT_GROUPS];
+      let customPlants: string[] = [...DEFAULT_PLANTS];
+
       if (cfgData.success && Array.isArray(cfgData.configs)) {
-        const found = cfgData.configs.find(
+        const foundGroups = cfgData.configs.find(
           (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
         );
-        if (found?.key_value) {
+        if (foundGroups?.key_value) {
           try {
-            const parsed = JSON.parse(found.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              customGroups = parsed;
-            }
+            const parsed = JSON.parse(foundGroups.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) customGroups = parsed;
+          } catch (_) {}
+        }
+
+        const foundPlants = cfgData.configs.find(
+          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_PLANTS'
+        );
+        if (foundPlants?.key_value) {
+          try {
+            const parsed = JSON.parse(foundPlants.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) customPlants = parsed;
           } catch (_) {}
         }
       }
 
       const groupSet = new Set<string>(customGroups);
+      const plantSet = new Set<string>(customPlants);
       loadedGuards.forEach((g) => {
         getGuardGroups(g).forEach((grp) => {
           if (grp) groupSet.add(grp);
         });
+        (g.assigned_plants || []).forEach((p) => {
+          if (p) plantSet.add(p);
+        });
       });
+
       const allGroups = Array.from(groupSet);
+      const allPlants = Array.from(plantSet);
       setAvailableGroups(allGroups);
+      setAvailablePlants(allPlants);
+
       if (allGroups.length > 0 && !allGroups.includes(newAssignmentGroup)) {
         setNewAssignmentGroup(allGroups[0]);
+      }
+      if (allPlants.length > 0 && !allPlants.includes(newPlantName)) {
+        setNewPlantName(allPlants[0]);
       }
     });
   }, [authHeaders]);
@@ -186,7 +198,7 @@ export const IncidentsDashboard: React.FC = () => {
         limit: String(pageSize),
       });
       if (statusTab !== 'ALL') params.set('status', statusTab);
-      if (priorityFilter !== 'ALL') params.set('priority', priorityFilter);
+      if (plantFilter !== 'ALL') params.set('plant_name', plantFilter);
       if (debouncedQuery) {
         params.set('q', debouncedQuery);
         params.set('search_field', searchField);
@@ -199,13 +211,16 @@ export const IncidentsDashboard: React.FC = () => {
       setIncidents(items);
 
       if (data.counts) {
-        setSummaryCounts(data.counts);
+        setSummaryCounts({
+          total: data.counts.total ?? items.length,
+          open: data.counts.open ?? 0,
+          resolved: data.counts.resolved ?? 0,
+        });
       } else {
         setSummaryCounts({
           total: items.length,
           open: items.filter((i) => (i.status || 'OPEN').toUpperCase() !== 'RESOLVED').length,
           resolved: items.filter((i) => (i.status || '').toUpperCase() === 'RESOLVED').length,
-          critical: items.filter((i) => ['P1', 'P2'].some((k) => (i.priority || '').toUpperCase().includes(k))).length,
         });
       }
 
@@ -221,16 +236,11 @@ export const IncidentsDashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, statusTab, priorityFilter, debouncedQuery, searchField, authHeaders]);
+  }, [page, pageSize, statusTab, plantFilter, debouncedQuery, searchField, authHeaders]);
 
   useEffect(() => {
     fetchPaginatedIncidents();
   }, [fetchPaginatedIncidents]);
-
-  const computedNewPriority = useMemo(
-    () => calculatePriority(newImpact, newUrgency),
-    [newImpact, newUrgency]
-  );
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -261,9 +271,7 @@ export const IncidentsDashboard: React.FC = () => {
         title: newDescription.trim().slice(0, 45),
         description: newDescription.trim(),
         category: newCategory,
-        impact: newImpact,
-        urgency: newUrgency,
-        priority: computedNewPriority.code,
+        plant_name: newPlantName,
         assignment_group: newAssignmentGroup,
         photo_url: newPhotoBase64 || null,
       };
@@ -286,15 +294,15 @@ export const IncidentsDashboard: React.FC = () => {
         if (data.email_dispatched) {
           setBanner({
             type: 'ok',
-            text: `New incident created and dispatched to "${newAssignmentGroup}" (${(
+            text: `New incident created for "${newPlantName}" and alert dispatched to ${(
               data.email_recipients || []
-            ).join(', ')}).`,
+            ).join(', ')}.`,
           });
         } else {
           setBanner({
             type: 'err',
-            text: `Incident created, but auto-email to "${newAssignmentGroup}" reported: ${
-              data.email_error || 'No emails configured for group'
+            text: `Incident created for "${newPlantName}", but auto-email reported: ${
+              data.email_error || 'No emails configured for this plant/group'
             }`,
           });
         }
@@ -321,39 +329,14 @@ export const IncidentsDashboard: React.FC = () => {
     return 'Field Patrol Guard';
   };
 
-  const renderPriorityBadge = (p?: string) => {
-    const priority = (p || 'P3').toUpperCase();
-    if (priority.includes('1') || priority === 'P1') {
-      return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-700">
-          <span className="h-1.5 w-1.5 rounded-full bg-rose-600" />
-          P1 · Critical
-        </span>
-      );
-    }
-    if (priority.includes('2') || priority === 'P2') {
-      return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
-          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-          P2 · High
-        </span>
-      );
-    }
-    if (priority.includes('4') || priority === 'P4') {
-      return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">
-          P4 · Low
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-700">
-        P3 · Moderate
-      </span>
-    );
-  };
+  const renderPlantBadge = (plant?: string) => (
+    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+      <Building2 className="h-3 w-3" />
+      {plant || 'Unassigned Plant'}
+    </span>
+  );
 
-  // Compute compact numbered page window (e.g. 1 ... 4 5 6 ... 20)
+  // Compute compact numbered page window
   const pageNumbers = useMemo(() => {
     const pages: (number | 'ellipsis')[] = [];
     if (totalPages <= 7) {
@@ -376,14 +359,14 @@ export const IncidentsDashboard: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
       <div className="mx-auto max-w-[1600px] space-y-5">
-        {/* Tactical Calm Header */}
+        {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-              Incidents &amp; Triage Queue
+              Incidents &amp; Plant Triage Queue
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Paginated security incident log with instant priority triage, evidence preview, and response-group dispatch.
+              Paginated security incident log routed by Plant Name with automated email alerts to assigned plant teams.
             </p>
           </div>
 
@@ -423,28 +406,28 @@ export const IncidentsDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Full-Dataset Summary KPI Strip (Reflects all 500+ cases even while paged) */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* Summary KPI Strip */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <button
             type="button"
             onClick={() => {
               setStatusTab('ALL');
-              setPriorityFilter('ALL');
+              setPlantFilter('ALL');
               setPage(1);
             }}
             className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
-              statusTab === 'ALL' && priorityFilter === 'ALL'
+              statusTab === 'ALL' && plantFilter === 'ALL'
                 ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
                 : 'border-slate-200 bg-white hover:border-slate-300'
             }`}
           >
             <div>
-              <div className={`text-[11px] font-bold uppercase ${statusTab === 'ALL' && priorityFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+              <div className={`text-[11px] font-bold uppercase ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
                 All Logged Cases
               </div>
               <div className="mt-1 font-mono text-2xl font-extrabold">{summaryCounts.total}</div>
             </div>
-            <ShieldAlert className={`h-5 w-5 ${statusTab === 'ALL' && priorityFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+            <ShieldAlert className={`h-5 w-5 ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
           </button>
 
           <button
@@ -469,25 +452,6 @@ export const IncidentsDashboard: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              setPriorityFilter((p) => (p === 'P1' ? 'ALL' : 'P1'));
-              setPage(1);
-            }}
-            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
-              priorityFilter === 'P1'
-                ? 'border-rose-500 bg-rose-50/70 ring-2 ring-rose-500/20'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div>
-              <div className="text-[11px] font-bold uppercase text-rose-700">High / Critical (P1–P2)</div>
-              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{summaryCounts.critical}</div>
-            </div>
-            <Flame className="h-5 w-5 text-rose-600" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
               setStatusTab('RESOLVED');
               setPage(1);
             }}
@@ -505,7 +469,7 @@ export const IncidentsDashboard: React.FC = () => {
           </button>
         </div>
 
-        {/* Clean Filter & Search Toolbar */}
+        {/* Filter & Search Toolbar */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
           <div className="flex flex-wrap items-center gap-1.5">
             {(['ALL', 'OPEN', 'RESOLVED'] as const).map((tab) => (
@@ -528,29 +492,27 @@ export const IncidentsDashboard: React.FC = () => {
 
             <div className="mx-1 h-4 w-px bg-slate-200" />
 
-            <div className="inline-flex items-center gap-1 text-slate-500">
+            <div className="inline-flex items-center gap-1.5 text-slate-500">
               <SlidersHorizontal className="h-3.5 w-3.5" />
-              {(['ALL', 'P1', 'P2', 'P3', 'P4'] as const).map((prio) => (
-                <button
-                  key={prio}
-                  type="button"
-                  onClick={() => {
-                    setPriorityFilter(prio);
-                    setPage(1);
-                  }}
-                  className={`rounded-lg px-2 py-1 text-[11px] font-bold transition ${
-                    priorityFilter === prio
-                      ? 'bg-brand-600 text-white'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {prio === 'ALL' ? 'Any Priority' : prio}
-                </button>
-              ))}
+              <select
+                value={plantFilter}
+                onChange={(e) => {
+                  setPlantFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 outline-none"
+              >
+                <option value="ALL">All Plants</option>
+                {availablePlants.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
-          {/* Server-Side Case / Description / Guard Search */}
+          {/* Search */}
           <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 focus-within:border-brand-500 focus-within:bg-white">
             <select
               value={searchField}
@@ -585,14 +547,14 @@ export const IncidentsDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Clean Paginated Incidents Table */}
+        {/* Paginated Incidents Table */}
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] border-collapse text-left">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                   <th className="w-[125px] py-3.5 pl-5 pr-3">Case ID</th>
-                  <th className="w-[135px] px-3 py-3.5">Priority</th>
+                  <th className="w-[155px] px-3 py-3.5">Plant Name</th>
                   <th className="px-4 py-3.5">Incident Summary</th>
                   <th className="w-[165px] px-3 py-3.5">Reported By</th>
                   <th className="w-[205px] px-3 py-3.5">Response Group</th>
@@ -634,7 +596,7 @@ export const IncidentsDashboard: React.FC = () => {
                             <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
                           </span>
                         </td>
-                        <td className="whitespace-nowrap px-3 py-3.5">{renderPriorityBadge(item.priority)}</td>
+                        <td className="whitespace-nowrap px-3 py-3.5">{renderPlantBadge(item.plant_name)}</td>
                         <td className="max-w-md xl:max-w-xl px-4 py-3.5">
                           <div className="truncate font-bold text-slate-900">{item.title || 'Patrol Incident'}</div>
                           <div className="truncate text-[11px] text-slate-500">{item.description}</div>
@@ -691,7 +653,7 @@ export const IncidentsDashboard: React.FC = () => {
             </table>
           </div>
 
-          {/* Clean Numbered Pagination Footer */}
+          {/* Pagination Footer */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3">
             <div className="flex items-center gap-3 text-xs text-slate-600">
               <span>
@@ -788,7 +750,7 @@ export const IncidentsDashboard: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">Log New Security Incident</h2>
-                <p className="text-[11px] text-slate-500">Automatically calculates ITSM priority and alerts the assigned group.</p>
+                <p className="text-[11px] text-slate-500">Automatically alerts all users assigned to the selected Plant Name.</p>
               </div>
               <button
                 type="button"
@@ -833,54 +795,36 @@ export const IncidentsDashboard: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Impact</label>
+                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant Name *</label>
                   <select
-                    value={newImpact}
-                    onChange={(e) => setNewImpact(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold outline-none"
+                    value={newPlantName}
+                    onChange={(e) => setNewPlantName(e.target.value)}
+                    className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
                   >
-                    <option>1 - High</option>
-                    <option>2 - Medium</option>
-                    <option>3 - Low</option>
+                    {availablePlants.map((plant) => (
+                      <option key={plant} value={plant}>
+                        {plant}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Urgency</label>
+                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Assignment Group</label>
                   <select
-                    value={newUrgency}
-                    onChange={(e) => setNewUrgency(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold outline-none"
+                    value={newAssignmentGroup}
+                    onChange={(e) => setNewAssignmentGroup(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
                   >
-                    <option>1 - High</option>
-                    <option>2 - Medium</option>
-                    <option>3 - Low</option>
+                    {availableGroups.map((grp) => (
+                      <option key={grp} value={grp}>
+                        {grp}
+                      </option>
+                    ))}
                   </select>
                 </div>
-
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Calculated Priority</label>
-                  <div className="flex h-[34px] items-center rounded-xl border border-slate-200 bg-slate-100 px-3 font-extrabold text-slate-800">
-                    {computedNewPriority.label}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-700">Assignment Group</label>
-                <select
-                  value={newAssignmentGroup}
-                  onChange={(e) => setNewAssignmentGroup(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
-                >
-                  {availableGroups.map((grp) => (
-                    <option key={grp} value={grp}>
-                      {grp}
-                    </option>
-                  ))}
-                </select>
               </div>
 
               <div>
