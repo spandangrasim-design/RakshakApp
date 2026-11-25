@@ -2810,14 +2810,40 @@ function pdfSafeText(value: any, max = 1100): string {
   return String(value ?? '—').replace(/[^\x20-\x7E]/g, ' ').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').slice(0, max);
 }
 
-function jpegDimensions(bytes: Uint8Array): { width: number; height: number; colors: number } | null {
+function jpegDimensions(bytes: Uint8Array): { width: number; height: number; colors: number; orientation: number } | null {
   let i = 2;
+  let orientation = 1;
   while (i + 9 < bytes.length) {
     if (bytes[i] !== 0xff) { i++; continue; }
     const marker = bytes[i + 1];
     const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (marker === 0xe1 && length >= 14 && i + 4 + length <= bytes.length) {
+      const p = i + 4;
+      if (String.fromCharCode(...bytes.subarray(p, p + 6)) === 'Exif\u0000\u0000') {
+        const t = p + 6;
+        const little = bytes[t] === 0x49 && bytes[t + 1] === 0x49;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const u16 = (o: number) => view.getUint16(o, little);
+        const u32 = (o: number) => view.getUint32(o, little);
+        if (u16(t + 2) === 42) {
+          const ifd = t + u32(t + 4);
+          if (ifd + 2 <= bytes.length) {
+            const count = u16(ifd);
+            for (let n = 0; n < count; n++) {
+              const entry = ifd + 2 + n * 12;
+              if (entry + 12 > bytes.length) break;
+              if (u16(entry) === 0x0112) {
+                const value = u16(entry + 8);
+                if (value >= 1 && value <= 8) orientation = value;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
     if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
-      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8], colors: bytes[i + 9] };
+      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8], colors: bytes[i + 9], orientation };
     }
     if (length < 2) break;
     i += 2 + length;
@@ -2858,7 +2884,7 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, photos: Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' }>): Uint8Array {
+function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, photos: Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number }>): Uint8Array {
   type PdfObj = Uint8Array;
   const enc = (s: string) => new TextEncoder().encode(s);
   const objects: PdfObj[] = [];
@@ -2866,84 +2892,127 @@ function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[
   const pagesId = add('');
   const catalogId = add('');
   const pageIds: number[] = [];
-  const pageSpecs: { content: string; image?: { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' } }[] = [];
+  const pageSpecs: { content: string; image?: { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number } }[] = [];
+  const text = (x: number, y: number, size: number, value: string, color = '0.12 0.17 0.25') =>
+    `BT\n${color} rg\n/F1 ${size} Tf\n1 0 0 1 ${x} ${y} Tm\n(${pdfSafeText(value, 105)}) Tj\nET\n`;
+  const rect = (x: number, y: number, w: number, h: number, color: string) => `${color} rg\n${x} ${y} ${w} ${h} re f\n`;
+  const line = (x1: number, y1: number, x2: number, y2: number, color = '0.86 0.89 0.92') => `${color} RG\n0.8 w\n${x1} ${y1} m ${x2} ${y2} l S\n`;
+  const header = (kicker: string, title: string) =>
+    rect(0, 755, 612, 87, '0.08 0.16 0.29') +
+    text(42, 812, 9, kicker.toUpperCase(), '0.72 0.82 0.94') +
+    text(42, 781, 21, title, '1 1 1') +
+    text(42, 735, 9, `${tenantName}  |  ${dateLabel}`, '0.38 0.43 0.50');
 
-  const lines: string[] = [
-    'RAKSHAK - INCIDENT REPORT',
-    `Site: ${tenantName}`,
-    `Period: ${dateLabel}`,
-    `Generated: ${new Date().toISOString()}`,
-    '',
-    `Total incidents: ${incidents.length}`,
-  ];
-  if (incidents.length === 0) lines.push('', 'No incidents reported during this reporting period.');
+  // Executive summary page.
+  let cover = header('RAKSHAK  /  SECURITY OPERATIONS', 'Incident Report');
+  cover += rect(42, 625, 528, 78, '0.94 0.96 0.98');
+  cover += text(60, 674, 9, 'REPORTING PERIOD', '0.35 0.42 0.52');
+  cover += text(60, 649, 15, dateLabel, '0.08 0.16 0.29');
+  cover += text(390, 674, 9, 'TOTAL INCIDENTS', '0.35 0.42 0.52');
+  cover += text(390, 644, 25, String(incidents.length), '0.08 0.16 0.29');
+  cover += text(42, 590, 13, 'Incident overview', '0.08 0.16 0.29');
+  cover += line(42, 576, 570, 576);
+  if (!incidents.length) {
+    cover += rect(42, 490, 528, 58, '0.92 0.97 0.94');
+    cover += text(60, 525, 12, 'No incidents reported', '0.12 0.38 0.25');
+    cover += text(60, 505, 9, 'There were no incidents recorded during this reporting period.', '0.20 0.30 0.25');
+  } else {
+    let y = 548;
+    for (const [idx, incident] of incidents.entries()) {
+      const caseLabel = incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
+      cover += rect(42, y - 54, 528, 46, idx % 2 ? '0.97 0.98 0.99' : '0.94 0.96 0.98');
+      cover += text(56, y - 27, 10, `${caseLabel}  |  ${incident.title || 'Security incident'}`);
+      cover += text(56, y - 44, 8, `${incident.plant_name || tenantName}  •  ${incident.priority || 'P3'}  •  ${incident.status || 'OPEN'}`, '0.35 0.42 0.52');
+      y -= 62;
+      if (y < 110) break;
+    }
+  }
+  cover += text(42, 48, 8, `Generated ${new Date().toISOString()}  |  Rakshak Security Management`, '0.45 0.49 0.55');
+  pageSpecs.push({ content: cover });
+
+  // One clean, structured detail page per incident.
   for (const [idx, incident] of incidents.entries()) {
     const guard = guardById.get(String(incident.guard_id));
-    lines.push('', `INCIDENT ${idx + 1} - ${incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : 'Unnumbered'}`);
-    lines.push(`Plant: ${incident.plant_name || tenantName}${incident.plant_code ? ' (' + incident.plant_code + ')' : ''} | Plant ID: ${incident.plant_id || '—'}`);
-    lines.push(`Title: ${incident.title || 'Incident'}`);
-    lines.push(`Category: ${incident.category || '—'} | Priority: ${incident.priority || 'P3'} | Status: ${incident.status || 'OPEN'}`);
-    lines.push(`Impact: ${incident.impact || '—'} | Urgency: ${incident.urgency || '—'}`);
-    lines.push(`Reported: ${incident.reported_at || '—'}`);
-    lines.push(`Reported by: ${guard?.full_name || 'Field Guard'} | Assigned responder: ${incident.assigned_to || 'Unassigned'}`);
-    lines.push(`Description: ${incident.description || '—'}`);
-  }
-
-  // Text is wrapped into short lines; each incident gets its own page when the content is long.
-  const wrapped: string[] = [];
-  for (const line of lines) {
-    if (!line) { wrapped.push(''); continue; }
-    let rest = line;
-    while (rest.length > 92) { wrapped.push(rest.slice(0, 92)); rest = rest.slice(92); }
-    wrapped.push(rest);
-  }
-  const chunks: string[][] = [];
-  for (let i = 0; i < wrapped.length; i += 42) chunks.push(wrapped.slice(i, i + 42));
-  if (chunks.length === 0) chunks.push(['No incidents reported during this reporting period.']);
-  for (const chunk of chunks) {
-    let content = 'BT\n/F1 10 Tf\n50 790 Td\n14 TL\n';
-    for (const line of chunk) content += `(${pdfSafeText(line, 92)}) Tj\nT*\n`;
-    content += 'ET';
+    const caseLabel = incident.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
+    let content = header('INCIDENT DETAILS', caseLabel);
+    content += rect(42, 665, 528, 48, '0.94 0.96 0.98');
+    content += text(58, 691, 9, 'TITLE', '0.35 0.42 0.52');
+    content += text(58, 672, 13, incident.title || 'Security incident');
+    const fields: [string, string][] = [
+      ['PLANT', `${incident.plant_name || tenantName}${incident.plant_code ? ` (${incident.plant_code})` : ''}`],
+      ['PLANT ID', incident.plant_id || '—'],
+      ['CATEGORY', incident.category || '—'],
+      ['PRIORITY / STATUS', `${incident.priority || 'P3'}  /  ${incident.status || 'OPEN'}`],
+      ['IMPACT / URGENCY', `${incident.impact || '—'}  /  ${incident.urgency || '—'}`],
+      ['REPORTED AT', incident.reported_at || '—'],
+      ['REPORTED BY', guard?.full_name || 'Field Guard'],
+      ['ASSIGNED RESPONDER', incident.assigned_to || 'Unassigned'],
+    ];
+    let y = 632;
+    for (const [label, value] of fields) {
+      content += text(48, y, 8, label, '0.40 0.46 0.54');
+      content += text(220, y, 9, value);
+      content += line(48, y - 9, 564, y - 9, '0.90 0.92 0.94');
+      y -= 35;
+    }
+    content += text(48, y - 2, 8, 'DESCRIPTION', '0.40 0.46 0.54');
+    const desc = String(incident.description || '—');
+    const words = desc.split(/\s+/); let row = ''; let dy = y - 24;
+    for (const word of words) {
+      const next = row ? `${row} ${word}` : word;
+      if (next.length > 88) { content += text(48, dy, 9, row); dy -= 15; row = word; }
+      else row = next;
+    }
+    if (row) content += text(48, dy, 9, row);
+    content += text(42, 48, 8, `Rakshak  |  ${caseLabel}  |  ${idx + 1} of ${incidents.length}`, '0.45 0.49 0.55');
     pageSpecs.push({ content });
-  }
-  // Add actual JPEG incident photos as separate image pages. Original JPEG compression is retained in the PDF.
-  for (const [idx, photo] of photos.entries()) {
-    const incident = incidents[idx];
-    const caseLabel = incident?.case_number ? 'RKS-' + String(incident.case_number).padStart(6, '0') : `Incident ${idx + 1}`;
-    const maxW = 500, maxH = 650;
-    const scale = Math.min(maxW / photo.width, maxH / photo.height, 1);
-    const w = Math.max(1, Math.round(photo.width * scale));
-    const h = Math.max(1, Math.round(photo.height * scale));
-    pageSpecs.push({ content: `BT\n/F1 14 Tf\n50 790 Td\n(${pdfSafeText(caseLabel)} - Incident Photo) Tj\nET\nq\n${w} 0 0 ${h} 50 ${Math.max(60, 730 - h)} cm\n/Im1 Do\nQ`, image: photo });
+
+    const photo = photos.get(idx);
+    if (photo) {
+      const orientation = photo.orientation || 1;
+      const swaps = orientation >= 5 && orientation <= 8;
+      const naturalW = swaps ? photo.height : photo.width;
+      const naturalH = swaps ? photo.width : photo.height;
+      const maxW = 500, maxH = 610;
+      const scale = Math.min(maxW / naturalW, maxH / naturalH, 1);
+      const w = Math.max(1, Math.round(naturalW * scale));
+      const h = Math.max(1, Math.round(naturalH * scale));
+      const x = (612 - w) / 2, yPhoto = 105 + (610 - h) / 2;
+      let matrix = `${w} 0 0 ${h} ${x} ${yPhoto} cm`;
+      if (orientation === 3) matrix = `${-w} 0 0 ${-h} ${x + w} ${yPhoto + h} cm`;
+      else if (orientation === 6) matrix = `0 ${-h} ${w} 0 ${x} ${yPhoto + h} cm`;
+      else if (orientation === 8) matrix = `0 ${h} ${-w} 0 ${x + w} ${yPhoto} cm`;
+      content = header('INCIDENT EVIDENCE', `${caseLabel} - Photo`) +
+        text(42, 710, 9, 'Original incident photograph; orientation and aspect ratio preserved.', '0.38 0.43 0.50') +
+        rect(42, 94, 528, 590, '0.97 0.98 0.99') +
+        `q\n${matrix}\n/Im1 Do\nQ\n` +
+        text(42, 48, 8, `Rakshak  |  ${caseLabel}`, '0.45 0.49 0.55');
+      pageSpecs.push({ content, image: photo });
+    }
   }
 
   const kids: string[] = [];
   for (const spec of pageSpecs) {
-    const contentId = add('');
     let imageId = 0;
     if (spec.image) {
       const img = spec.image;
       const colorSpace = img.colors === 1 ? '/DeviceGray' : '/DeviceRGB';
       const decodeParms = img.filter === 'FlateDecode' ? ` /DecodeParms << /Predictor 15 /Colors ${img.colors} /BitsPerComponent 8 /Columns ${img.width} >>` : '';
-      const header = enc(`<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /${img.filter}${decodeParms} /Length ${img.bytes.length} >>\nstream\n`);
+      const headerBytes = enc(`<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /${img.filter}${decodeParms} /Length ${img.bytes.length} >>\nstream\n`);
       const footer = enc('\nendstream');
-      const stream = new Uint8Array(header.length + img.bytes.length + footer.length);
-      stream.set(header); stream.set(img.bytes, header.length); stream.set(footer, header.length + img.bytes.length);
+      const stream = new Uint8Array(headerBytes.length + img.bytes.length + footer.length);
+      stream.set(headerBytes); stream.set(img.bytes, headerBytes.length); stream.set(footer, headerBytes.length + img.bytes.length);
       imageId = add(stream);
     }
-    const contentBytes = enc(spec.content);
-    const contentStream = add(`<< /Length ${contentBytes.length} >>\nstream\n${spec.content}\nendstream`);
+    const contentStream = add(`<< /Length ${enc(spec.content).length} >>\nstream\n${spec.content}\nendstream`);
+    const fontIdPlaceholder = 'FONT_REF';
     const resources = spec.image ? `<< /XObject << /Im1 ${imageId} 0 R >> >>` : '<< >>';
     const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 842] /Resources ${resources} /Contents ${contentStream} 0 R >>`);
     pageIds.push(pageId); kids.push(`${pageId} 0 R`);
   }
   const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
-  // The font object is referenced by each page; rebuild page objects after font allocation.
-  // (The temporary page objects above are replaced below.)
-  for (let i = 0; i < pageSpecs.length; i++) {
-    const pageId = pageIds[i];
-    const old = objects[pageId - 1];
-    const oldText = new TextDecoder().decode(old);
+  for (const pageId of pageIds) {
+    const oldText = new TextDecoder().decode(objects[pageId - 1]);
     const contentRef = oldText.match(/\/Contents (\d+) 0 R/)?.[1] || '1';
     const imageRef = oldText.match(/\/Im1 (\d+) 0 R/)?.[1];
     const resources = imageRef ? `<< /Font << /F1 ${fontId} 0 R >> /XObject << /Im1 ${imageRef} 0 R >> >>` : `<< /Font << /F1 ${fontId} 0 R >> >>`;
@@ -2951,15 +3020,13 @@ function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[
   }
   objects[pagesId - 1] = enc(`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${kids.length} >>`);
   objects[catalogId - 1] = enc(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
-
   const parts: Uint8Array[] = [enc('%PDF-1.4\n% Rakshak\n')];
-  const offsets = [0];
-  let total = parts[0].length;
+  const offsets = [0]; let total = parts[0].length;
   for (let i = 0; i < objects.length; i++) {
     offsets.push(total);
-    const obj = new Uint8Array(enc(`${i + 1} 0 obj\n`).length + objects[i].length + enc('\nendobj\n').length);
-    const start = enc(`${i + 1} 0 obj\n`); const end = enc('\nendobj\n');
-    obj.set(start); obj.set(objects[i], start.length); obj.set(end, start.length + objects[i].length);
+    const startObj = enc(`${i + 1} 0 obj\n`), endObj = enc('\nendobj\n');
+    const obj = new Uint8Array(startObj.length + objects[i].length + endObj.length);
+    obj.set(startObj); obj.set(objects[i], startObj.length); obj.set(endObj, startObj.length + objects[i].length);
     parts.push(obj); total += obj.length;
   }
   const xrefOffset = total;
@@ -2973,7 +3040,7 @@ function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[
 }
 
 async function buildIncidentPdfAttachment(env: Bindings, tenantName: string, dateLabel: string, incidents: any[], guardById: Map<string, any>, filename: string): Promise<EmailAttachment> {
-  const photos = new Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode' }>();
+  const photos = new Map<number, { bytes: Uint8Array; width: number; height: number; colors: number; filter: 'DCTDecode' | 'FlateDecode'; orientation?: number }>();
   for (let i = 0; i < incidents.length; i++) {
     const photoUrl = incidents[i]?.photo_url;
     if (!photoUrl) continue;
