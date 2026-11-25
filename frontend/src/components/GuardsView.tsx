@@ -725,7 +725,7 @@ export const GuardsView: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-              People, Assignment Groups &amp; App Access
+              People &amp; App Access
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
               Manage security personnel, custom response units, patrol routes, and granular mobile app permissions.
@@ -1454,7 +1454,7 @@ export const GuardsView: React.FC = () => {
       )}
 
       {/* MODAL A: Create & Manage Custom Assignment Groups */}
-      {showManageGroupsModal && (
+      {false && showManageGroupsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
