@@ -190,6 +190,28 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   const defaultCode = round.assigned_guards?.[0]?.employee_code || '';
 
   if (!rawScans || rawScans.length === 0) {
+    if (round.active_session) {
+      const st = new Date(round.active_session.start_time);
+      return [
+        {
+          runId: round.active_session.id,
+          runNumber: 1,
+          roundId: round.id,
+          roundName: round.name,
+          totalRouteStops: round.checkpoints?.length || 0,
+          dateKey: st.toISOString().split('T')[0],
+          displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+          guardName: round.active_session.guard_name || defaultGuard,
+          guardCode: round.active_session.guard_code || defaultCode,
+          startTime: round.active_session.start_time,
+          endTime: '',
+          durationText: 'Live (0 Stops Yet)',
+          status: round.active_session.status === 'PAUSED' ? 'PAUSED' : 'IN_PROGRESS',
+          verifiedStopsCount: 0,
+          scans: [],
+        },
+      ];
+    }
     return [
       {
         runId: `${round.id}-pending`,
@@ -307,6 +329,30 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
     flushBucket(currentBucket, runs.length + 1);
   }
 
+  if (round.active_session) {
+    const activeStartMs = new Date(round.active_session.start_time).getTime();
+    const hasRunForActive = runs.some((r) => r.startTime && Math.abs(new Date(r.startTime).getTime() - activeStartMs) < 120000 && r.status !== 'COMPLETED');
+    if (!hasRunForActive) {
+      const st = new Date(round.active_session.start_time);
+      runs.push({
+        runId: round.active_session.id,
+        runNumber: runs.length + 1,
+        roundId: round.id,
+        roundName: round.name,
+        totalRouteStops: round.checkpoints?.length || 0,
+        dateKey: st.toISOString().split('T')[0],
+        displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        guardName: round.active_session.guard_name || defaultGuard,
+        guardCode: round.active_session.guard_code || defaultCode,
+        startTime: round.active_session.start_time,
+        endTime: '',
+        durationText: 'Live (0 Stops Yet)',
+        status: round.active_session.status === 'PAUSED' ? 'PAUSED' : 'IN_PROGRESS',
+        verifiedStopsCount: 0,
+        scans: [],
+      });
+    }
+  }
   return runs.reverse();
 }
 

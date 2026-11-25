@@ -670,8 +670,7 @@ app.on('GET',    '/api/v1/rounds/:id/scans', adminTiers, requireModule('module_p
 app.on('POST',   '/api/v1/patrols/session/start', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/patrols/session/ping', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/patrols/sync', requireModule('module_patrol'), requirePermission('patrol_route'))
-app.on('GET',    '/api/v1/rounds/:id/live-trail', adminTiers, requireModule('module_patrol'),
-       requireTenantFlag((f) => f.module_patrol.allow_live_gps_trail), ownedRow('rounds', 'id', 'id'))
+app.on('GET',    '/api/v1/rounds/:id/live-trail', adminTiers, requireModule('module_patrol'), ownedRow('rounds', 'id', 'id'))
 app.on('GET',    '/api/v1/shifts/active', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/shifts/start', requireModule('module_patrol'), requirePermission('patrol_route'))
 app.on('POST',   '/api/v1/shifts/end', requireModule('module_patrol'), requirePermission('patrol_route'))
@@ -1360,10 +1359,11 @@ app.get('/api/v1/rounds', async (c) => {
   try {
     const supabase = getSupabase(c.env);
 
-    const [roundsRes, cpRes, guardsRes] = await Promise.all([
+    const [roundsRes, cpRes, guardsRes, sessionsRes] = await Promise.all([
       applyTenant(supabase.from('rounds').select('*'), scopeTenant(c)).order('created_at', { ascending: false }),
       applyTenant(supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload, sequence_order'), scopeTenant(c)).order('sequence_order', { ascending: true }).order('name', { ascending: true }),
-      applyTenant(supabase.from('guards').select('*'), scopeTenant(c))
+      applyTenant(supabase.from('guards').select('*'), scopeTenant(c)),
+      applyTenant(supabase.from('patrol_sessions').select('id, round_id, guard_id, status, start_time, last_lat, last_lng, last_ping_at').in('status', ['ACTIVE', 'PAUSED']).order('start_time', { ascending: false }), scopeTenant(c))
     ]);
 
     if (roundsRes.error) return c.json({ success: false, message: errMsg(roundsRes.error) }, 500);
@@ -1372,6 +1372,8 @@ app.get('/api/v1/rounds', async (c) => {
     const rounds = roundsRes.data || [];
     const checkpoints = cpRes.data || [];
     const guards = guardsRes.data || [];
+    const activeSessions = sessionsRes.data || [];
+    const guardById = new Map(guards.map((g: any) => [g.guard_id || g.id, g]));
 
     const roundsWithCheckpoints = rounds.map((round) => {
       const assignedGuards = guards.filter((g: any) => {
@@ -1402,7 +1404,19 @@ app.get('/api/v1/rounds', async (c) => {
       };
     });
 
-    return c.json({ success: true, rounds: roundsWithCheckpoints });
+    const enrichedRounds = roundsWithCheckpoints.map((r: any) => {
+      const s = activeSessions.find((sess: any) => sess.round_id === r.id);
+      const g: any = s ? guardById.get(s.guard_id) : null;
+      return {
+        ...r,
+        active_session: s ? {
+          ...s,
+          guard_name: g?.full_name || g?.name || 'Active Guard',
+          guard_code: g?.employee_code || '',
+        } : null,
+      };
+    });
+    return c.json({ success: true, rounds: enrichedRounds });
   } catch (error: any) {
     return c.json({ success: false, message: errMsg(error, 'Server error') }, 500);
   }

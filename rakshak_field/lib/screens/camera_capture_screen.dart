@@ -4,22 +4,37 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-/// Opens the in-app camera (with a front/back switch) and returns the JPEG bytes, or null if cancelled.
+/// Opens the in-app camera and returns the JPEG bytes, or null if cancelled.
+/// When [lockLens] is true, the camera switch button is hidden and the user
+/// is restricted strictly to front (selfie) or back (site photo).
 Future<Uint8List?> captureImage(
   BuildContext context, {
   required String title,
   required bool startFront,
+  bool lockLens = true,
 }) {
   return Navigator.of(context).push<Uint8List>(
-    MaterialPageRoute(builder: (_) => CameraCaptureScreen(title: title, startFront: startFront)),
+    MaterialPageRoute(
+      builder: (_) => CameraCaptureScreen(
+        title: title,
+        startFront: startFront,
+        lockLens: lockLens,
+      ),
+    ),
   );
 }
 
 class CameraCaptureScreen extends StatefulWidget {
   final String title;
   final bool startFront;
+  final bool lockLens;
 
-  const CameraCaptureScreen({super.key, required this.title, required this.startFront});
+  const CameraCaptureScreen({
+    super.key,
+    required this.title,
+    required this.startFront,
+    this.lockLens = true,
+  });
 
   @override
   State<CameraCaptureScreen> createState() => _CameraCaptureScreenState();
@@ -46,7 +61,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
+    final c = _controller;
+    _controller = null;
+    c?.dispose();
     super.dispose();
   }
 
@@ -55,6 +72,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
       _opening = true;
       _error = null;
     });
+    // Allow any previous CameraX session (e.g. Step 1 selfie or QR scanner) to finish releasing hardware
+    await Future.delayed(const Duration(milliseconds: 350));
+    if (!mounted) return;
+
     try {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) throw Exception('No camera found');
@@ -66,22 +87,33 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
       });
       return;
     }
+
+    if (widget.lockLens && !_cameras.any((c) => c.lensDirection == _lens)) {
+      if (!mounted) return;
+      setState(() {
+        _error = widget.startFront
+            ? 'Front camera is required for selfie verification but was not found.'
+            : 'Back camera is required for site photo verification but was not found.';
+        _opening = false;
+      });
+      return;
+    }
+
     await _openWithRetry(_lens);
   }
 
-  /// The very first start shows Android's camera-permission prompt, which can make the first attempt fail.
-  /// So try a few times quietly before ever showing an error.
-  Future<void> _openWithRetry(CameraLensDirection lens) async {
+  Future<bool> _openWithRetry(CameraLensDirection lens) async {
     for (var attempt = 0; attempt < 4; attempt++) {
-      if (!mounted) return;
-      if (await _open(lens)) return;
-      await Future.delayed(const Duration(milliseconds: 900));
+      if (!mounted) return false;
+      if (await _open(lens)) return true;
+      await Future.delayed(const Duration(milliseconds: 700));
     }
-    if (!mounted) return;
+    if (!mounted) return false;
     setState(() {
       _error = 'The camera could not start. Allow camera access and close other apps using it.';
       _opening = false;
     });
+    return false;
   }
 
   /// Returns true when the preview is running.
@@ -94,17 +126,27 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
     final old = _controller;
     _controller = null;
-    try {
-      await old?.dispose();
-    } catch (_) {}
+    if (old != null) {
+      try {
+        await old.dispose();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
 
     CameraController? controller;
     try {
-      final description = _cameras.firstWhere(
-        (c) => c.lensDirection == lens,
-        orElse: () => _cameras.first,
+      final matching = _cameras.where((c) => c.lensDirection == lens).toList();
+      if (widget.lockLens && matching.isEmpty) {
+        return false;
+      }
+      final description = matching.isNotEmpty ? matching.first : _cameras.first;
+
+      controller = CameraController(
+        description,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
       );
-      controller = CameraController(description, ResolutionPreset.medium, enableAudio: false);
       await controller.initialize();
       if (!mounted) {
         await controller.dispose();
@@ -126,7 +168,6 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // While the camera is still opening (e.g. the permission dialog is on screen) do nothing.
     if (_opening) return;
     final c = _controller;
     if (state == AppLifecycleState.inactive) {
@@ -141,11 +182,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
   }
 
   bool get _canSwitch =>
+      !widget.lockLens &&
       _cameras.any((c) => c.lensDirection == CameraLensDirection.front) &&
       _cameras.any((c) => c.lensDirection == CameraLensDirection.back);
 
   Future<void> _switch() async {
-    if (_opening || _capturing) return;
+    if (widget.lockLens || _opening || _capturing) return;
     await _openWithRetry(_lens == CameraLensDirection.front ? CameraLensDirection.back : CameraLensDirection.front);
   }
 
@@ -190,14 +232,48 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
   @override
   Widget build(BuildContext context) {
+    final badgeText = widget.startFront ? 'FRONT CAMERA LOCKED' : 'BACK CAMERA LOCKED';
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(color: Colors.white)),
+        title: Text(widget.title, style: const TextStyle(color: Colors.white, fontSize: 16)),
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
       ),
-      body: SafeArea(child: _body()),
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (widget.lockLens)
+              Container(
+                width: double.infinity,
+                color: Colors.white10,
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      widget.startFront ? Icons.face : Icons.photo_camera_back,
+                      size: 14,
+                      color: Colors.amberAccent,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      badgeText,
+                      style: const TextStyle(
+                        color: Colors.amberAccent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Expanded(child: _body()),
+          ],
+        ),
+      ),
     );
   }
 
@@ -268,7 +344,14 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
 
     return Column(
       children: [
-        Expanded(child: Center(child: CameraPreview(c))),
+        Expanded(
+          child: Center(
+            child: CameraPreview(
+              c,
+              key: ValueKey('${_lens.name}_${c.hashCode}'),
+            ),
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 24),
           child: Row(
