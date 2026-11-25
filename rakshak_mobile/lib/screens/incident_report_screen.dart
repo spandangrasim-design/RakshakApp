@@ -27,8 +27,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
   String _selectedCategory = 'Security / Patrol';
   String _selectedPriority = 'P3';
-  String _selectedGroup = 'Security Operations L1';
-  List<String> _availableGroups = IncidentService.defaultGroups;
+  List<String> _categories = ['Security / Patrol', 'Asset Breach', 'Fire / Hazard', 'Access Control'];
   bool _isSubmitting = false;
 
   // Ordered list of form fields this user is entitled to (server-resolved: plant licence AND admin allocation).
@@ -54,12 +53,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   Uint8List? _photoBytes;
   final ImagePicker _picker = ImagePicker();
 
-  final List<String> _categories = [
-    'Security / Patrol',
-    'Asset Breach',
-    'Fire / Hazard',
-    'Access Control',
-  ];
 
   final List<String> _quickTemplates = [
     'Unauthorized Perimeter Entry',
@@ -108,17 +101,18 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
   void initState() {
     super.initState();
     _loadFields();
-    _loadGroups();
+    _loadCategories();
   }
 
-  Future<void> _loadGroups() async {
-    final groups = await IncidentService.fetchAssignmentGroups();
+  Future<void> _loadCategories() async {
+    final token = await TokenStore.read();
+    if (token == null || token.isEmpty) return;
+    final categories = await IncidentService.fetchCategories(token);
     if (!mounted) return;
     setState(() {
-      _availableGroups = groups;
-      if (!_availableGroups.contains(_selectedGroup) &&
-          _availableGroups.isNotEmpty) {
-        _selectedGroup = _availableGroups.first;
+      _categories = categories;
+      if (!_categories.contains(_selectedCategory) && _categories.isNotEmpty) {
+        _selectedCategory = _categories.first;
       }
     });
   }
@@ -195,7 +189,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
       'priority': _selectedPriority,
       'impact': selectedMeta['impact'],
       'urgency': selectedMeta['urgency'],
-      'assignment_group': _selectedGroup,
       'photo_url': _photoBase64 ?? '',
       'reported_at': DateTime.now().toIso8601String(),
     };
@@ -224,7 +217,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
     if (outcome.ok) {
       _showSnack(
-        'Incident dispatched to $_selectedGroup!',
+        'Incident reported and routed to the selected plant.',
         Colors.green.shade700,
       );
       if (mounted) Navigator.pop(context, true);
@@ -443,7 +436,7 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
 
             ],
             if (_has('category')) ...[
-            // 2. Category & Response Group Routing
+            // 2. Incident Category
             Row(
               children: [
                 Expanded(
@@ -496,47 +489,6 @@ class _IncidentReportScreenState extends State<IncidentReportScreen> {
               ],
             ),
             const SizedBox(height: 14),
-
-            ],
-            if (_has('group')) ...[
-            Text(
-              '${_n('group')}. Dispatch Assignment Group (Auto-Emails Unit)',
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 13,
-                color: Color(0xFF0F172A),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEFF6FF),
-                border: Border.all(color: const Color(0xFF93C5FD)),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: _selectedGroup,
-                  isExpanded: true,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E3A8A),
-                  ),
-                  items: _availableGroups
-                      .map((g) => DropdownMenuItem(
-                            value: g,
-                            child: Text(g, overflow: TextOverflow.ellipsis),
-                          ))
-                      .toList(),
-                  onChanged: (v) {
-                    if (v != null) setState(() => _selectedGroup = v);
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
 
             ],
             if (_has('title')) ...[

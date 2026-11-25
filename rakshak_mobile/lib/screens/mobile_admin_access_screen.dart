@@ -32,7 +32,6 @@ class _MobileAdminAccessScreenState extends State<MobileAdminAccessScreen> {
   static const _incidentOptions = <String, String>{
     'incident_option_1_severity': 'Severity level',
     'incident_option_2_category': 'Category',
-    'incident_option_3_group': 'Assignment group',
     'incident_option_4_title': 'Title',
     'incident_option_5_description': 'Description',
     'incident_option_6_photo': 'Camera photo',

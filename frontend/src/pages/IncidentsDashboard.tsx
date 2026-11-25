@@ -29,6 +29,7 @@ interface GuardUser {
   email?: string | null;
   site_location?: string;
   is_active?: boolean;
+  assigned_plants?: string[];
 }
 
 interface IncidentRecord {
@@ -79,8 +80,10 @@ export const IncidentsDashboard: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newCallerGuardId, setNewCallerGuardId] = useState('');
-  const [newCategory, setNewCategory] = useState('Security / Patrol');
+  const [newCategory, setNewCategory] = useState('');
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [newPlantId, setNewPlantId] = useState('');
+  const [newAssignedTo, setNewAssignedTo] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newPhotoBase64, setNewPhotoBase64] = useState<string | null>(null);
@@ -95,6 +98,13 @@ export const IncidentsDashboard: React.FC = () => {
   }, []);
 
   const activePlants = useMemo(() => plants.filter((p) => p.is_active !== false), [plants]);
+  const selectedCreatePlant = useMemo(() => activePlants.find(p => p.id === newPlantId) || activePlants[0] || null, [activePlants, newPlantId]);
+  const eligibleCreateResponders = useMemo(() => {
+    if (!selectedCreatePlant) return [];
+    const assignedIds = selectedCreatePlant.assigned_guard_ids || [];
+    return guards.filter(g => g.is_active !== false && (assignedIds.includes(g.guard_id) || (g.assigned_plants || []).some(p => p.trim().toLowerCase() === selectedCreatePlant.name.trim().toLowerCase())));
+  }, [guards, selectedCreatePlant]);
+
 
   const plantCodeByName = useMemo(() => {
     const map: Record<string, string> = {};
@@ -103,6 +113,14 @@ export const IncidentsDashboard: React.FC = () => {
     });
     return map;
   }, [plants]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/incident-categories`, { headers: authHeaders }).then(r => r.json()).then(d => {
+      const rows = Array.isArray(d.categories) ? d.categories : [];
+      setCategories(rows);
+      setNewCategory(current => rows.some((x: any) => x.name === current) ? current : (rows[0]?.name || ''));
+    }).catch(() => setCategories([]));
+  }, [authHeaders]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -234,6 +252,7 @@ export const IncidentsDashboard: React.FC = () => {
         plant_id: chosenPlant.id,
         plant_name: chosenPlant.name,
         plant_code: chosenPlant.plant_code || '',
+        assigned_to: newAssignedTo || null,
         photo_url: newPhotoBase64 || null,
       };
 
@@ -775,11 +794,7 @@ export const IncidentsDashboard: React.FC = () => {
                     onChange={(e) => setNewCategory(e.target.value)}
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
                   >
-                    <option>Security / Patrol</option>
-                    <option>Fire &amp; Safety</option>
-                    <option>Access Control / Gate</option>
-                    <option>Equipment / CCTV Fault</option>
-                    <option>Visitor / Perimeter Breach</option>
+                    {categories.map(category => <option key={category.id} value={category.name}>{category.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -788,7 +803,7 @@ export const IncidentsDashboard: React.FC = () => {
                 <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
                 <select
                   value={newPlantId}
-                  onChange={(e) => setNewPlantId(e.target.value)}
+                  onChange={(e) => { setNewPlantId(e.target.value); setNewAssignedTo(''); }}
                   className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
                 >
                   {activePlants.map((plant) => (
@@ -796,6 +811,14 @@ export const IncidentsDashboard: React.FC = () => {
                       {plant.name}{plant.plant_code ? ` (${plant.plant_code})` : ''}
                     </option>
                   ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">Assigned Responder ({selectedCreatePlant?.name || 'Selected Plant'})</label>
+                <select value={newAssignedTo} onChange={(e) => setNewAssignedTo(e.target.value)} className="w-full rounded-xl border border-emerald-200 bg-emerald-50/40 px-3 py-2 text-xs font-semibold text-emerald-950 outline-none">
+                  <option value="">Unassigned (Group Queue)</option>
+                  {eligibleCreateResponders.map(g => <option key={g.guard_id} value={g.full_name}>{g.full_name} ({g.employee_code}) — {g.site_location || 'Main Site'}</option>)}
                 </select>
               </div>
 

@@ -6,12 +6,22 @@ import '../config/api_config.dart';
 class IncidentService {
   static const String baseUrl = ApiConfig.apiBase;
 
-  static const List<String> defaultGroups = [
-    'Security Operations L1',
-    'Quick Response Team (QRT)',
-    'Site Supervisors L2',
-    'Fire & Safety Response',
-  ];
+  static Future<List<String>> fetchCategories(String token) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/incident-categories'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        final rows = decoded['categories'] as List<dynamic>? ?? [];
+        final names = rows.map((e) => (e['name'] ?? '').toString()).where((e) => e.isNotEmpty).toList();
+        if (names.isNotEmpty) return names;
+      }
+    } catch (_) {}
+    return ['Security / Patrol', 'Asset Breach', 'Fire / Hazard', 'Access Control'];
+  }
+
 
   static Future<List<dynamic>> fetchIncidents(String token) async {
     final response = await http.get(
@@ -24,30 +34,6 @@ class IncidentService {
       return (decoded['incidents'] as List<dynamic>?) ?? [];
     }
     throw Exception('Failed to load incidents');
-  }
-
-  static Future<List<String>> fetchAssignmentGroups() async {
-    try {
-      final response = await http
-          .get(Uri.parse('$baseUrl/admin/configs'))
-          .timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true && data['configs'] is List) {
-          for (final item in data['configs']) {
-            if (item['key_name'] == 'CUSTOM_ASSIGNMENT_GROUPS' &&
-                item['key_value'] != null) {
-              final parsed = jsonDecode(item['key_value']);
-              if (parsed is List && parsed.isNotEmpty) {
-                return parsed.map((e) => e.toString()).toList();
-              }
-            }
-          }
-        }
-      }
-    } catch (_) {}
-    return defaultGroups;
   }
 
   static Future<Map<String, dynamic>> fetchIncidentDetails(

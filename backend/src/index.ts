@@ -66,7 +66,6 @@ export const DEFAULT_GUARD_PERMISSIONS: AppPermissions = {
   sync_queue: true,
   incident_option_1_severity: false,
   incident_option_2_category: false,
-  incident_option_3_group: false,
   incident_option_4_title: true,
   incident_option_5_description: true,
   incident_option_6_photo: true,
@@ -80,7 +79,6 @@ export const DEFAULT_SUPERVISOR_PERMISSIONS: AppPermissions = {
   sync_queue: true,
   incident_option_1_severity: true,
   incident_option_2_category: true,
-  incident_option_3_group: true,
   incident_option_4_title: true,
   incident_option_5_description: true,
   incident_option_6_photo: true,
@@ -153,8 +151,6 @@ const createGuardSchema = z.object({
   role: z.string().optional().default('Guard'),
   site_location: z.string().optional().default('Main Plant & Gate 1'),
   shift_timing: z.string().optional().default('Morning (06:00 - 14:00)'),
-  assignment_group: z.string().optional().nullable(),
-  assignment_groups: sanitizeStringArray,
   assigned_plants: sanitizeStringArray,
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
@@ -173,8 +169,6 @@ const updateGuardSchema = z.object({
   role: z.string().optional(),
   site_location: z.string().optional(),
   shift_timing: z.string().optional(),
-  assignment_group: z.string().optional().nullable(),
-  assignment_groups: sanitizeStringArray,
   assigned_plants: sanitizeStringArray,
   assigned_round_id: sanitizeUuid,
   assigned_round_ids: sanitizeUuidArray,
@@ -194,7 +188,6 @@ const getSupabase = (env: Bindings) =>
 interface GuardExtendedProfile {
   email?: string | null;
   phone?: string | null;
-  assignment_groups?: string[];
   assigned_plants?: string[];
   app_permissions?: Record<string, boolean> | null;
 }
@@ -225,7 +218,6 @@ async function saveGuardExtendedProfile(
     ...existing,
     ...(updates.email !== undefined ? { email: updates.email } : {}),
     ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
-    ...(updates.assignment_groups !== undefined ? { assignment_groups: updates.assignment_groups } : {}),
     ...(updates.assigned_plants !== undefined ? { assigned_plants: updates.assigned_plants } : {}),
     ...(updates.app_permissions !== undefined ? { app_permissions: updates.app_permissions } : {}),
   };
@@ -436,7 +428,7 @@ function configKeyAllowed(key: string, f: ReturnType<typeof normalizeTenantFeatu
   if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
   if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return ch.whatsapp_api
   if (key.startsWith('TELEGRAM_') || key === 'ENABLE_TELEGRAM') return ch.telegram_bot
-  return true // non-integration settings such as CUSTOM_ASSIGNMENT_GROUPS
+  return true // non-integration settings
 }
 
 async function loadTenantConfig(supabase: any, tenantId: string): Promise<Record<string, string>> {
@@ -1556,16 +1548,6 @@ app.get('/api/v1/guards', async (c) => {
         .map((id) => roundsMap.get(id))
         .filter(Boolean);
 
-      const rawGroups: string[] =
-        Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
-          ? g.assignment_groups
-          : Array.isArray(ext.assignment_groups) && ext.assignment_groups.length > 0
-          ? ext.assignment_groups
-          : g.assignment_group
-          ? [g.assignment_group]
-          : ['Security Operations L1'];
-
-      const uniqueGroups = Array.from(new Set(rawGroups.filter(Boolean)));
       const rawPlants: string[] =
         Array.isArray(g.assigned_plants) && g.assigned_plants.length > 0
           ? g.assigned_plants
@@ -1592,8 +1574,6 @@ app.get('/api/v1/guards', async (c) => {
         is_active: g.is_active,
         created_at: g.created_at,
         reporting_to: g.reporting_to,
-        assignment_group: uniqueGroups[0] || 'Security Operations L1',
-        assignment_groups: uniqueGroups,
         assigned_plants: uniquePlants,
         assigned_round_id: uniqueRoundIds[0] || null,
         assigned_round_ids: uniqueRoundIds.filter((id) => roundsMap.has(id)), // never report deleted routes
@@ -1804,7 +1784,7 @@ app.post('/api/v1/guest/register', async (c) => {
         last_device_id: input.device_id || null,
       };
       let ins: any = await supabase.from('guards')
-        .insert([{ ...base, site_location: 'Main Plant & Gate 1', shift_timing: 'Morning (06:00 - 14:00)', assignment_group: 'Security Operations L1' }])
+        .insert([{ ...base, site_location: 'Main Plant & Gate 1', shift_timing: 'Morning (06:00 - 14:00)' }])
         .select(cols).single();
       if (ins.error) ins = await supabase.from('guards').insert([base]).select(cols).single();
       if (ins.error) throw ins.error;
@@ -4102,10 +4082,6 @@ app.post('/api/v1/guards', async (c) => {
       : (parsed.assigned_round_id ? [parsed.assigned_round_id] : []);
     const primaryRoundId = roundIds[0] || null;
 
-    const groupsList = parsed.assignment_groups && parsed.assignment_groups.length > 0
-      ? parsed.assignment_groups
-      : (parsed.assignment_group ? [parsed.assignment_group] : ['Security Operations L1']);
-
     const cleanEmail = parsed.email ? parsed.email.trim() : null;
     const cleanPhone = parsed.phone ? parsed.phone.trim() : null;
 
@@ -4119,8 +4095,6 @@ app.post('/api/v1/guards', async (c) => {
       role: parsed.role,
       site_location: parsed.site_location,
       shift_timing: parsed.shift_timing,
-      assignment_group: groupsList[0],
-      assignment_groups: groupsList,
       assigned_plants: parsed.assigned_plants || [],
       assigned_round_id: primaryRoundId,
       assigned_round_ids: roundIds,
@@ -4159,7 +4133,6 @@ app.post('/api/v1/guards', async (c) => {
       await saveGuardExtendedProfile(supabase, newGuard.guard_id, {
         email: cleanEmail,
         phone: cleanPhone,
-        assignment_groups: groupsList,
         assigned_plants: parsed.assigned_plants || [],
         app_permissions: clampedPerms
       });
@@ -4173,8 +4146,6 @@ app.post('/api/v1/guards', async (c) => {
         ...newGuard,
         email: cleanEmail,
         phone: cleanPhone,
-        assignment_group: groupsList[0],
-        assignment_groups: groupsList,
         password_hash: undefined,
         app_permissions: resolveAccess(tenantRaw, hybrid.permissions).active_permissions,
         is_custom_override: hybrid.is_custom_override
@@ -4259,16 +4230,6 @@ app.patch('/api/v1/guards/:id', async (c) => {
     if (parsed.shift_timing !== undefined) updates.shift_timing = parsed.shift_timing;
     if (parsed.reporting_to !== undefined) updates.reporting_to = parsed.reporting_to;
 
-    if (parsed.assignment_groups !== undefined) {
-      updates.assignment_groups = parsed.assignment_groups;
-      updates.assignment_group = parsed.assignment_groups[0] || 'Security Operations L1';
-      extUpdates.assignment_groups = parsed.assignment_groups;
-    } else if (parsed.assignment_group !== undefined) {
-      updates.assignment_group = parsed.assignment_group;
-      updates.assignment_groups = parsed.assignment_group ? [parsed.assignment_group] : [];
-      extUpdates.assignment_groups = updates.assignment_groups;
-    }
-
     if (parsed.assigned_plants !== undefined) {
       updates.assigned_plants = parsed.assigned_plants;
       extUpdates.assigned_plants = parsed.assigned_plants;
@@ -4306,8 +4267,6 @@ app.patch('/api/v1/guards/:id', async (c) => {
       const safeUpdates = { ...updates };
       delete safeUpdates.email;
       delete safeUpdates.phone;
-      delete safeUpdates.assignment_group;
-      delete safeUpdates.assignment_groups;
       delete safeUpdates.assigned_plants;
       delete safeUpdates.assigned_round_ids;
       delete safeUpdates.app_permissions;
@@ -4462,6 +4421,71 @@ app.get('/api/v1/plants', async (c) => {
   }
 });
 
+// ==========================================
+// INCIDENT CATEGORY MANAGEMENT (tenant scoped)
+// ==========================================
+app.get('/api/v1/incident-categories', requireModule('module_incidents'), async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const auth = c.get('auth');
+    const tenantId = auth.tier === 'SUPER_ADMIN'
+      ? (c.req.query('tenant_id') || await resolveAdminTenantId(c, supabase))
+      : auth.tenant_id;
+    if (!tenantId) return c.json({ success: true, categories: [] });
+    let query = supabase.from('incident_categories').select('id, tenant_id, name, is_active, created_at, updated_at').eq('tenant_id', tenantId).order('name', { ascending: true });
+    if (c.req.query('include_inactive') !== 'true') query = query.eq('is_active', true);
+    const { data, error } = await query;
+    if (error) throw error;
+    return c.json({ success: true, categories: data || [] });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to load categories') }, 500);
+  }
+});
+
+app.post('/api/v1/incident-categories', adminTiers, async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
+    if (!tenantId) return c.json({ success: false, message: 'Tenant context is required.' }, 400);
+    const body = await c.req.json();
+    const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+    if (!name || name.length > 80) return c.json({ success: false, message: 'Category name must contain 1–80 characters.' }, 400);
+    const { data, error } = await supabase.from('incident_categories').insert({ tenant_id: tenantId, name, is_active: true }).select('id, tenant_id, name, is_active, created_at, updated_at').single();
+    if (error) return c.json({ success: false, message: 'A category with this name may already exist.' }, 409);
+    return c.json({ success: true, category: data }, 201);
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to create category') }, 500);
+  }
+});
+
+app.patch('/api/v1/incident-categories/:id', adminTiers, async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
+    if (!tenantId) return c.json({ success: false, message: 'Tenant context is required.' }, 400);
+    const body = await c.req.json();
+    const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+    if (body.name !== undefined) {
+      const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+      if (!name || name.length > 80) return c.json({ success: false, message: 'Category name must contain 1–80 characters.' }, 400);
+      const { data: previous } = await supabase.from('incident_categories').select('name').eq('id', c.req.param('id')).eq('tenant_id', tenantId).maybeSingle();
+      const { data: duplicate } = await supabase.from('incident_categories').select('id').eq('tenant_id', tenantId).eq('name', name).neq('id', c.req.param('id')).maybeSingle();
+      if (duplicate) return c.json({ success: false, message: 'A category with this name already exists.' }, 409);
+      if (previous?.name && previous.name !== name) {
+        const { error: historyError } = await supabase.from('incidents').update({ category: name }).eq('tenant_id', tenantId).eq('category', previous.name);
+        if (historyError) throw historyError;
+      }
+      updates.name = name;
+    }
+    if (body.is_active !== undefined) updates.is_active = body.is_active === true;
+    const { data, error } = await supabase.from('incident_categories').update(updates).eq('id', c.req.param('id')).eq('tenant_id', tenantId).select('id, tenant_id, name, is_active, created_at, updated_at').single();
+    if (error || !data) return c.json({ success: false, message: 'Category not found or update rejected.' }, 404);
+    return c.json({ success: true, category: data });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to update category') }, 500);
+  }
+});
+
 app.post('/api/v1/plants', async (c) => {
   try {
     const supabase = getSupabase(c.env);
@@ -4576,7 +4600,6 @@ app.post('/api/v1/incidents', async (c) => {
     if (authCtx.tier !== 'SUPER_ADMIN') {
       if (!allowed.incident_option_1_severity) body.priority = 'P3';
       if (!allowed.incident_option_2_category) body.category = 'Security / Patrol';
-      if (!allowed.incident_option_3_group) body.assignment_group = 'Security Operations L1';
       if (!allowed.incident_option_4_title) body.title = undefined;
       if (!allowed.incident_option_5_description) body.description = undefined;
       if (!allowed.incident_option_6_photo) body.photo_url = undefined;
@@ -4597,20 +4620,44 @@ app.post('/api/v1/incidents', async (c) => {
       urgency,
       photo_url,
       reported_at,
-      assignment_group
+      assigned_to,
     } = body;
 
     const resolvedGuardId = callerTokenGuardId; // never trust a guard_id from the body
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client_incident_id || '');
     const incidentUuid = isValidUUID ? client_incident_id : crypto.randomUUID();
 
+    const requestedCategory = String(category || 'Security / Patrol').trim();
+    const { data: activeCategory } = await supabase.from('incident_categories')
+      .select('id').eq('tenant_id', authCtx.tenant_id).eq('name', requestedCategory).eq('is_active', true).maybeSingle();
+    if (!activeCategory) return c.json({ success: false, message: 'Please select an active incident category.' }, 400);
+
     const finalPhotoUrl = photo_url
       ? await storeImage(c.env.R2_BUCKET, url.origin, 'incidents', 'photo', photo_url)
       : null;
 
-    const targetGroup = assignment_group || 'Security Operations L1';
     const targetPlant = String(plant_name || 'Test Plant').trim();
     const targetPlantCode = String(plant_code || '').trim() || null;
+    const targetAssignee = assigned_to ? String(assigned_to).trim() : '';
+    if (targetAssignee) {
+      let plantQuery = supabase.from('plants').select('id, name, assigned_guard_ids, is_active').eq('tenant_id', authCtx.tenant_id);
+      plantQuery = plant_id ? plantQuery.eq('id', plant_id) : plantQuery.eq('name', targetPlant);
+      const { data: selectedPlant } = await plantQuery.maybeSingle();
+      if (!selectedPlant || selectedPlant.is_active === false) return c.json({ success: false, message: 'Select a valid active plant before assigning a responder.' }, 400);
+      const [{ data: candidates }, { data: profileRow }] = await Promise.all([
+        supabase.from('guards').select('guard_id, full_name, assigned_plants, is_active').eq('tenant_id', authCtx.tenant_id).eq('full_name', targetAssignee),
+        supabase.from('admin_configurations').select('key_value').eq('key_name', 'GUARD_EXTENDED_PROFILES').maybeSingle(),
+      ]);
+      let profileMap: Record<string, any> = {};
+      try { profileMap = profileRow?.key_value ? JSON.parse(profileRow.key_value) : {}; } catch (_) {}
+      const eligible = (candidates || []).some((g: any) => {
+        if (g.is_active === false) return false;
+        const profilePlants = Array.isArray(g.assigned_plants) && g.assigned_plants.length ? g.assigned_plants : (profileMap[g.guard_id]?.assigned_plants || []);
+        return (Array.isArray(selectedPlant.assigned_guard_ids) && selectedPlant.assigned_guard_ids.map(String).includes(String(g.guard_id))) ||
+          (Array.isArray(profilePlants) && profilePlants.some((p: string) => p.trim().toLowerCase() === targetPlant.toLowerCase()));
+      });
+      if (!eligible) return c.json({ success: false, message: 'The selected responder is not assigned to this plant.' }, 403);
+    }
 
     const insertRecord: Record<string, any> = {
       client_incident_id: incidentUuid,
@@ -4621,13 +4668,12 @@ app.post('/api/v1/incidents', async (c) => {
       plant_name: targetPlant,
       plant_code: targetPlantCode,
       priority: priority || null,
-      category: category || 'Security / Patrol',
+      category: requestedCategory,
       impact: impact || '2 - Medium',
       urgency: urgency || '2 - Medium',
       photo_url: finalPhotoUrl,
       status: 'OPEN',
-      assignment_group: targetGroup,
-      assigned_to: null,
+      assigned_to: targetAssignee || null,
       tenant_id: authCtx.tenant_id,
       reported_at: reported_at || new Date().toISOString()
     };
@@ -4660,7 +4706,8 @@ app.post('/api/v1/incidents', async (c) => {
         priority: insertRecord.priority,
         photo_url: finalPhotoUrl,
         status: 'OPEN',
-        assignment_group: targetGroup,
+        assigned_to: targetAssignee || null,
+        category: requestedCategory,
         tenant_id: authCtx.tenant_id,
         case_number: insertRecord.case_number ?? null,
         reported_at: insertRecord.reported_at
@@ -4677,15 +4724,14 @@ app.post('/api/v1/incidents', async (c) => {
     // Only dispatch Gmail if licensed to this tenant
     let emailResult: { ok: boolean; recipients: string[]; error?: string } = { ok: false, recipients: [], error: 'Module not licensed' };
     if (tenantFeatures.module_integrations?.channels?.gmail_oauth) {
-      emailResult = await sendGroupAssignmentEmail(c.env, {
+      emailResult = await sendPlantIncidentEmail(c.env, {
         incidentId: incidentUuid,
         priority: body.priority || '',
         plantName: targetPlant,
         plantCode: targetPlantCode || '',
         description: description || title || 'Security Incident',
         photoUrl: finalPhotoUrl,
-        assignmentGroup: targetGroup,
-        assignedTo: 'Unassigned (Group Queue)',
+        assignedTo: targetAssignee || 'Unassigned (Group Queue)',
         status: 'OPEN',
         tenantId: authCtx.tenant_id,
         caseNumber: data?.case_number ?? insertRecord.case_number ?? null,
@@ -4951,6 +4997,35 @@ app.patch('/api/v1/incidents/:id', async (c) => {
         ? (body.assigned_to && String(body.assigned_to).trim() !== '' ? String(body.assigned_to).trim() : null)
         : undefined;
 
+    // Enforce plant membership on the server; the dropdown is only a convenience, not a security boundary.
+    if (normalizedNewAssignee) {
+      const plantId = body.plant_id !== undefined ? body.plant_id : current.plant_id;
+      const plantName = body.plant_name !== undefined ? String(body.plant_name) : String(current.plant_name || '');
+      let plantQuery = supabase.from('plants').select('id, name, assigned_guard_ids, is_active').eq('tenant_id', current.tenant_id);
+      plantQuery = plantId ? plantQuery.eq('id', plantId) : plantQuery.eq('name', plantName);
+      const { data: plant } = await plantQuery.maybeSingle();
+      if (!plant || plant.is_active === false) return c.json({ success: false, message: 'Select a valid active plant before assigning a responder.' }, 400);
+      const [{ data: candidates }, { data: profileRow }] = await Promise.all([
+        supabase.from('guards').select('guard_id, full_name, assigned_plants, is_active').eq('tenant_id', current.tenant_id).eq('full_name', normalizedNewAssignee),
+        supabase.from('admin_configurations').select('key_value').eq('key_name', 'GUARD_EXTENDED_PROFILES').maybeSingle(),
+      ]);
+      let profileMap: Record<string, any> = {};
+      try { profileMap = profileRow?.key_value ? JSON.parse(profileRow.key_value) : {}; } catch (_) {}
+      const eligible = (candidates || []).some((g: any) => {
+        if (g.is_active === false) return false;
+        const profilePlants = Array.isArray(g.assigned_plants) && g.assigned_plants.length ? g.assigned_plants : (profileMap[g.guard_id]?.assigned_plants || []);
+        return (Array.isArray(plant.assigned_guard_ids) && plant.assigned_guard_ids.map(String).includes(String(g.guard_id))) ||
+          (Array.isArray(profilePlants) && profilePlants.some((p: string) => p.trim().toLowerCase() === plantName.trim().toLowerCase()));
+      });
+      if (!eligible) return c.json({ success: false, message: 'The selected responder is not assigned to this plant.' }, 403);
+    }
+
+    if (body.category !== undefined && String(body.category) !== String(current.category || '')) {
+      const { data: activeCategory } = await supabase.from('incident_categories').select('id')
+        .eq('tenant_id', current.tenant_id).eq('name', String(body.category).trim()).eq('is_active', true).maybeSingle();
+      if (!activeCategory) return c.json({ success: false, message: 'Please select an active incident category.' }, 400);
+    }
+
     const updates: Record<string, any> = {};
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
@@ -4962,7 +5037,6 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.category !== undefined) updates.category = body.category;
     if (body.impact !== undefined) updates.impact = body.impact;
     if (body.urgency !== undefined) updates.urgency = body.urgency;
-    if (body.assignment_group !== undefined) updates.assignment_group = body.assignment_group;
     if (normalizedNewAssignee !== undefined) updates.assigned_to = normalizedNewAssignee;
     if (body.guard_id !== undefined) updates.guard_id = body.guard_id;
 
@@ -5010,19 +5084,12 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       changes.push(`Plant Name changed from "${current.plant_name || 'None'}" to "${body.plant_name}"`);
     }
 
-    const groupChanged =
-      body.assignment_group !== undefined &&
-      body.assignment_group !== (current.assignment_group || '');
-
     const currentAssigneeClean = (current.assigned_to || '').trim();
     const newAssigneeClean = (normalizedNewAssignee || '').trim();
     const assigneeChanged =
       normalizedNewAssignee !== undefined &&
       newAssigneeClean !== currentAssigneeClean;
 
-    if (groupChanged) {
-      changes.push(`Assignment group set to "${body.assignment_group}"`);
-    }
     if (assigneeChanged) {
       changes.push(
         newAssigneeClean
@@ -5038,20 +5105,18 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     };
     let emailLogLine = '';
 
-    if (plantChanged || groupChanged || (assigneeChanged && newAssigneeClean !== '')) {
+    if (plantChanged || (assigneeChanged && newAssigneeClean !== '')) {
       emailTriggered = true;
-      const targetGroup = body.assignment_group || current.assignment_group || 'Security Operations L1';
-      const targetPlant = body.plant_name || current.plant_name || '';
+        const targetPlant = body.plant_name || current.plant_name || '';
       const targetAssignee = newAssigneeClean || 'Unassigned (Group Queue)';
 
-      emailDispatchResult = await sendGroupAssignmentEmail(c.env, {
+      emailDispatchResult = await sendPlantIncidentEmail(c.env, {
         incidentId,
         priority: body.priority || current.priority || '',
         plantName: targetPlant,
         plantCode: body.plant_code || current.plant_code || '',
         description: body.description || current.description || 'Security Incident',
         photoUrl: current.photo_url || null,
-        assignmentGroup: targetGroup,
         assignedTo: targetAssignee,
         status: body.status || current.status || 'OPEN',
         workNote: body.work_note,
@@ -5263,12 +5328,11 @@ app.post('/api/v1/admin/test-gmail', async (c) => {
   const supabase = getSupabase(c.env);
   const tenantId = await resolveAdminTenantId(c, supabase);
 
-  const result = await sendGroupAssignmentEmail(c.env, {
+  const result = await sendPlantIncidentEmail(c.env, {
     incidentId: '100999',
     priority: 'P2 - High',
     description: 'This is a live verification email from Rakshak Patrol using your Google OAuth2 credentials.',
     photoUrl: null,
-    assignmentGroup: 'Security Operations L1',
     assignedTo: 'System Test',
     status: 'ACTIVE',
     includeManagerFallback: true,
@@ -5337,7 +5401,7 @@ async function getValidGmailAccessToken(
   };
 }
 
-async function sendGroupAssignmentEmail(
+async function sendPlantIncidentEmail(
   env: Bindings,
   params: {
     incidentId: string;
@@ -5346,7 +5410,6 @@ async function sendGroupAssignmentEmail(
     plantCode?: string;
     description: string;
     photoUrl: string | null;
-    assignmentGroup: string;
     assignedTo: string;
     status: string;
     workNote?: string;
@@ -5481,10 +5544,6 @@ async function sendGroupAssignmentEmail(
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.status)}</td>
           </tr>
           <tr>
-            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assignment Group</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.assignmentGroup)}</td>
-          </tr>
-          <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assigned Responder</td>
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.assignedTo || 'Unassigned (Group Queue)')}</td>
           </tr>
@@ -5579,12 +5638,11 @@ async function sendWhatsAppAlert(env: Bindings, tenantId: string, incidentId: st
 }
 
 async function sendGoogleEmergencyEmail(env: Bindings, tenantId: string, incidentId: string, priority: string, description: string, photoUrl: string | null, caseNumber?: number | null) {
-  const res = await sendGroupAssignmentEmail(env, {
+  const res = await sendPlantIncidentEmail(env, {
     incidentId,
     priority,
     description,
     photoUrl,
-    assignmentGroup: 'Security Operations L1',
     assignedTo: 'SLA Escalation',
     status: 'ESCALATED',
     includeManagerFallback: true,

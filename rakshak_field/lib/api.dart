@@ -23,6 +23,16 @@ class Api {
 
   /// Configured Plant Names for the current industry (populated from /field/routes).
   static List<String> plants = ['Test - P1', 'Test2 - P2'];
+  static List<String> incidentCategories = ['Security / Patrol', 'Safety Hazard', 'Fire', 'Medical', 'Theft / Intrusion', 'Equipment Fault', 'Other'];
+
+  static Future<void> loadIncidentCategories() async {
+    try {
+      final d = await _request('GET', '/incident-categories');
+      final rows = (d['categories'] as List?) ?? [];
+      final names = rows.map((e) => (e['name'] ?? '').toString()).where((e) => e.isNotEmpty).toList();
+      if (names.isNotEmpty) incidentCategories = names;
+    } catch (_) {}
+  }
 
   /// Set by main.dart: send the guard back to the join screen.
   static void Function()? onUnauthorized;

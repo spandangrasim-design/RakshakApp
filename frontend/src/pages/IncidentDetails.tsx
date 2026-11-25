@@ -25,6 +25,7 @@ interface GuardUser {
   role?: string;
   site_location?: string;
   is_active?: boolean;
+  assigned_plants?: string[];
 }
 
 interface Incident {
@@ -72,6 +73,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [callerGuardId, setCallerGuardId] = useState('');
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [plantName, setPlantName] = useState('Test Plant');
   const [state, setState] = useState('Active');
   const [assignedTo, setAssignedTo] = useState('');
@@ -111,10 +113,14 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   }, [plantName, selectedPlantObj, incident]);
 
   const eligibleGuardsForPlant = useMemo(() => {
-    const activeGuards = guards.filter((g) => g.is_active !== false);
-    const ids = selectedPlantObj?.assigned_guard_ids || [];
-    if (ids.length === 0) return activeGuards;
-    return activeGuards.filter((g) => ids.includes(g.guard_id));
+    if (!selectedPlantObj) return [];
+    const ids = selectedPlantObj.assigned_guard_ids || [];
+    return guards.filter((g) => {
+      if (g.is_active === false) return false;
+      const assignedByPlant = ids.includes(g.guard_id);
+      const assignedByProfile = Array.isArray(g.assigned_plants) && g.assigned_plants.some((p) => p.trim().toLowerCase() === selectedPlantObj.name.trim().toLowerCase());
+      return assignedByPlant || assignedByProfile;
+    });
   }, [guards, selectedPlantObj]);
 
   const fetchAllDetails = async () => {
@@ -519,10 +525,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 onChange={(e) => setCategory(e.target.value)}
                 className="w-full border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold outline-none"
               >
-                <option>Security / Patrol</option>
-                <option>Asset Breach</option>
-                <option>Fire / Hazard</option>
-                <option>Access Control</option>
+                {categories.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}
+                {!categories.some(item => item.name === category) && <option value={category}>{category}</option>}
               </select>
             </div>
           </div>

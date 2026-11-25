@@ -262,9 +262,7 @@ class _HomeIncidentsPreviewState extends State<HomeIncidentsPreview> {
                       incident['description'] ??
                       'Security Incident')
                   .toString();
-              final group =
-                  (incident['assignment_group'] ?? 'Security Operations L1')
-                      .toString();
+              final plantName = (incident['plant_name'] ?? 'Unassigned Plant').toString();
               final category =
                   (incident['category'] ?? 'Security / Patrol').toString();
               final timeAgo =
@@ -387,24 +385,9 @@ class _HomeIncidentsPreviewState extends State<HomeIncidentsPreview> {
                               const SizedBox(height: 4),
                               Row(
                                 children: [
-                                  const Icon(
-                                    Icons.groups_2_outlined,
-                                    size: 13,
-                                    color: Color(0xFF059669),
-                                  ),
+                                  const Icon(Icons.factory_outlined, size: 13, color: Color(0xFF059669)),
                                   const SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      group,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: Color(0xFF059669),
-                                      ),
-                                    ),
-                                  ),
+                                  Expanded(child: Text(plantName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF059669)))),
                                 ],
                               ),
                             ],

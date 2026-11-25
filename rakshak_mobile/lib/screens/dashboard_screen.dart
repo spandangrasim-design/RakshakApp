@@ -51,7 +51,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     'sync_queue': false,
     'incident_option_1_severity': false,
     'incident_option_2_category': false,
-    'incident_option_3_group': false,
     'incident_option_4_title': false,
     'incident_option_5_description': false,
     'incident_option_6_photo': false,

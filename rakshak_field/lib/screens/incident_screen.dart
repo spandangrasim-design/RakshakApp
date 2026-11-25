@@ -20,15 +20,6 @@ class IncidentScreen extends StatefulWidget {
 }
 
 class _IncidentScreenState extends State<IncidentScreen> {
-  static const _categories = <String>[
-    'Security / Patrol',
-    'Safety Hazard',
-    'Fire',
-    'Medical',
-    'Theft / Intrusion',
-    'Equipment Fault',
-    'Other',
-  ];
 
   final _title = TextEditingController();
   final _desc = TextEditingController();
@@ -38,9 +29,15 @@ class _IncidentScreenState extends State<IncidentScreen> {
   Uint8List? _photo;
   bool _sending = false;
 
-  // 'group' is chosen by the server (default queue); 'severity' is replaced by Plant Name.
+  // Plant is selected directly; incident form fields follow the user's permissions.
   late final List<String> _fields =
       Session.formFields.where((f) => f != 'group' && f != 'severity').toList();
+
+  @override
+  void initState() {
+    super.initState();
+    Api.loadIncidentCategories().then((_) { if (mounted) setState(() { if (!Api.incidentCategories.contains(_category) && Api.incidentCategories.isNotEmpty) _category = Api.incidentCategories.first; }); });
+  }
 
   @override
   void dispose() {
@@ -127,7 +124,7 @@ class _IncidentScreenState extends State<IncidentScreen> {
           children.add(DropdownButtonFormField<String>(
             value: _category,
             decoration: InputDecoration(labelText: numbered(stepIdx, 'Category'), border: const OutlineInputBorder()),
-            items: [for (final c in _categories) DropdownMenuItem(value: c, child: Text(c))],
+            items: [for (final c in Api.incidentCategories) DropdownMenuItem(value: c, child: Text(c))],
             onChanged: (v) => setState(() => _category = v ?? _category),
           ));
           break;
