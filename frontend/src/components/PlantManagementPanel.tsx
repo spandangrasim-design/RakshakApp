@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Building2,
   Plus,
@@ -9,7 +9,9 @@ import {
   AlertCircle,
   Users,
   X,
-  Save
+  Save,
+  Bell,
+  BellOff
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
@@ -17,8 +19,9 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spand
 export interface PlantRecord {
   id: string;
   name: string;
-  team_name?: string | null;
+  plant_code?: string | null;
   assigned_guard_ids?: string[];
+  email_notifications_enabled?: boolean;
   is_active: boolean;
 }
 
@@ -49,8 +52,13 @@ export const PlantManagementPanel: React.FC<Props> = ({
   // Add / Edit Form State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [teamName, setTeamName] = useState('');
+  const [plantCode, setPlantCode] = useState('');
+  const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(true);
   const [selectedGuardIds, setSelectedGuardIds] = useState<string[]>([]);
+
+  // Keep callback ref stable to prevent infinite re-fetch loops
+  const onPlantsChangedRef = useRef(onPlantsChanged);
+  onPlantsChangedRef.current = onPlantsChanged;
 
   const activeGuards = guards.filter((g) => g.is_active !== false);
 
@@ -61,14 +69,16 @@ export const PlantManagementPanel: React.FC<Props> = ({
       const data = await res.json();
       if (data.success && Array.isArray(data.plants)) {
         setPlants(data.plants);
-        onPlantsChanged?.(data.plants);
+        onPlantsChangedRef.current?.(data.plants);
+      } else {
+        setBanner({ type: 'err', text: data.message || 'Failed to load plants.' });
       }
     } catch {
-      setBanner({ type: 'err', text: 'Failed to load plants.' });
+      setBanner({ type: 'err', text: 'Network error while loading plants.' });
     } finally {
       setLoading(false);
     }
-  }, [authHeaders, onPlantsChanged]);
+  }, [authHeaders]);
 
   useEffect(() => {
     loadPlants();
@@ -77,14 +87,16 @@ export const PlantManagementPanel: React.FC<Props> = ({
   const resetForm = () => {
     setEditingId(null);
     setName('');
-    setTeamName('');
+    setPlantCode('');
+    setEmailNotificationsEnabled(true);
     setSelectedGuardIds([]);
   };
 
   const startEdit = (plant: PlantRecord) => {
     setEditingId(plant.id);
     setName(plant.name);
-    setTeamName(plant.team_name || '');
+    setPlantCode(plant.plant_code || '');
+    setEmailNotificationsEnabled(plant.email_notifications_enabled !== false);
     setSelectedGuardIds(Array.isArray(plant.assigned_guard_ids) ? plant.assigned_guard_ids : []);
     setBanner(null);
   };
@@ -97,7 +109,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || !plantCode.trim()) return;
 
     setSaving(true);
     setBanner(null);
@@ -110,8 +122,9 @@ export const PlantManagementPanel: React.FC<Props> = ({
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           name: name.trim(),
-          team_name: teamName.trim() || null,
+          plant_code: plantCode.trim(),
           assigned_guard_ids: selectedGuardIds,
+          email_notifications_enabled: emailNotificationsEnabled,
         }),
       });
       const data = await res.json();
@@ -120,7 +133,9 @@ export const PlantManagementPanel: React.FC<Props> = ({
       } else {
         setBanner({
           type: 'ok',
-          text: editingId ? `Updated plant "${name.trim()}".` : `Added plant "${name.trim()}".`,
+          text: editingId
+            ? `Updated "${name.trim()} (${plantCode.trim()})".`
+            : `Added "${name.trim()} (${plantCode.trim()})".`,
         });
         resetForm();
         await loadPlants();
@@ -144,7 +159,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
       if (res.ok && data.success) {
         setBanner({
           type: 'ok',
-          text: `"${plant.name}" is now ${!plant.is_active ? 'enabled' : 'disabled'}. Historical incidents remain intact.`,
+          text: `"${plant.name}" is now ${!plant.is_active ? 'Active' : 'Inactive'}. Historical incidents remain intact.`,
         });
         await loadPlants();
       }
@@ -153,10 +168,28 @@ export const PlantManagementPanel: React.FC<Props> = ({
     }
   };
 
+  const handleToggleNotifications = async (plant: PlantRecord) => {
+    setBanner(null);
+    const nextVal = plant.email_notifications_enabled === false;
+    try {
+      const res = await fetch(`${API_BASE}/plants/${plant.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ email_notifications_enabled: nextVal }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await loadPlants();
+      }
+    } catch {
+      setBanner({ type: 'err', text: 'Could not update notification setting.' });
+    }
+  };
+
   const handleDelete = async (plant: PlantRecord) => {
     if (
       !window.confirm(
-        `Delete plant "${plant.name}"? Historical incidents will keep their plant name, but new incidents will no longer see this plant.`
+        `Delete plant "${plant.name}"? Historical incidents will keep their plant record, but new incidents will no longer see this plant.`
       )
     ) {
       return;
@@ -211,7 +244,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
           <div className="flex items-center gap-2">
             <Building2 className="h-4 w-4 text-indigo-600" />
             <h2 className="text-sm font-extrabold text-slate-900">
-              {editingId ? `Edit Plant: ${name}` : 'Add New Plant & Routing Team'}
+              {editingId ? `Edit Plant: ${name}` : 'Add New Plant'}
             </h2>
           </div>
           {editingId && (
@@ -225,7 +258,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
           )}
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div>
             <label className="mb-1 block text-[11px] font-bold uppercase text-slate-600">
               Plant Name *
@@ -235,29 +268,45 @@ export const PlantManagementPanel: React.FC<Props> = ({
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Test - P1"
+              placeholder="e.g. Test Plant, Warehouse, Factory"
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold outline-none focus:border-indigo-500 focus:bg-white"
             />
           </div>
 
           <div>
             <label className="mb-1 block text-[11px] font-bold uppercase text-slate-600">
-              Mapped Response Team / Group Name
+              Plant Code *
             </label>
             <input
               type="text"
-              value={teamName}
-              onChange={(e) => setTeamName(e.target.value)}
-              placeholder="e.g. Security Operations L1 Team"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold outline-none focus:border-indigo-500 focus:bg-white"
+              required
+              value={plantCode}
+              onChange={(e) => setPlantCode(e.target.value)}
+              placeholder="e.g. P1, P2, Q1, WH-01, SITE-A"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 font-mono text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white"
             />
+          </div>
+
+          <div className="flex items-end">
+            <label className="flex w-full cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-700">
+              <span className="inline-flex items-center gap-1.5">
+                <Bell className="h-3.5 w-3.5 text-indigo-600" />
+                Auto Email Alerts
+              </span>
+              <input
+                type="checkbox"
+                checked={emailNotificationsEnabled}
+                onChange={(e) => setEmailNotificationsEnabled(e.target.checked)}
+                className="h-4 w-4 accent-indigo-600"
+              />
+            </label>
           </div>
         </div>
 
         <div>
           <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase text-slate-600">
             <Users className="h-3.5 w-3.5 text-indigo-600" />
-            Assigned Users for Automatic Email Alerts ({selectedGuardIds.length} selected)
+            Assigned Users ({selectedGuardIds.length} selected)
           </label>
           <div className="grid max-h-44 grid-cols-1 gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-2 lg:grid-cols-3">
             {activeGuards.map((g) => {
@@ -304,26 +353,27 @@ export const PlantManagementPanel: React.FC<Props> = ({
       {/* Existing Plants Table */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[780px] border-collapse text-left text-xs">
+          <table className="w-full min-w-[820px] border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                 <th className="py-3 pl-5 pr-3">Plant Name</th>
-                <th className="px-3 py-3">Mapped Team / Group</th>
-                <th className="px-3 py-3">Assigned Users (Email Alerts)</th>
-                <th className="w-[110px] px-3 py-3">Status</th>
-                <th className="w-[210px] py-3 pl-3 pr-5 text-right">Actions</th>
+                <th className="w-[130px] px-3 py-3">Plant Code</th>
+                <th className="px-3 py-3">Assigned Users</th>
+                <th className="w-[130px] px-3 py-3">Notifications</th>
+                <th className="w-[100px] px-3 py-3">Status</th>
+                <th className="w-[220px] py-3 pl-3 pr-5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-slate-400">
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate-400">
                     Loading plants...
                   </td>
                 </tr>
               ) : plants.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-slate-400">
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate-400">
                     No plants configured yet. Add one above.
                   </td>
                 </tr>
@@ -333,17 +383,20 @@ export const PlantManagementPanel: React.FC<Props> = ({
                   const assignedNames = ids
                     .map((id) => guards.find((g) => g.guard_id === id)?.full_name)
                     .filter(Boolean);
+                  const notifOn = plant.email_notifications_enabled !== false;
 
                   return (
                     <tr key={plant.id} className="hover:bg-slate-50/80">
                       <td className="py-3 pl-5 pr-3 font-bold text-slate-900">
-                        <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-800">
-                          <Building2 className="h-3 w-3" />
+                        <span className="inline-flex items-center gap-1.5">
+                          <Building2 className="h-3.5 w-3.5 text-indigo-600" />
                           {plant.name}
                         </span>
                       </td>
-                      <td className="px-3 py-3 font-semibold text-slate-700">
-                        {plant.team_name || <span className="text-slate-400">—</span>}
+                      <td className="px-3 py-3">
+                        <span className="inline-flex rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 font-mono text-[11px] font-extrabold text-indigo-800">
+                          {plant.plant_code || '—'}
+                        </span>
                       </td>
                       <td className="px-3 py-3 text-slate-600">
                         {assignedNames.length > 0 ? (
@@ -362,6 +415,20 @@ export const PlantManagementPanel: React.FC<Props> = ({
                         )}
                       </td>
                       <td className="px-3 py-3">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleNotifications(plant)}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase transition ${
+                            notifOn
+                              ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                              : 'border-slate-200 bg-slate-100 text-slate-500 hover:bg-slate-200'
+                          }`}
+                        >
+                          {notifOn ? <Bell className="h-3 w-3" /> : <BellOff className="h-3 w-3" />}
+                          {notifOn ? 'Email On' : 'Muted'}
+                        </button>
+                      </td>
+                      <td className="px-3 py-3">
                         <span
                           className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
                             plant.is_active
@@ -369,7 +436,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
                               : 'border-slate-200 bg-slate-100 text-slate-500'
                           }`}
                         >
-                          {plant.is_active ? 'Active' : 'Disabled'}
+                          {plant.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
                       <td className="whitespace-nowrap py-3 pl-3 pr-5 text-right">
@@ -385,9 +452,8 @@ export const PlantManagementPanel: React.FC<Props> = ({
                             type="button"
                             onClick={() => handleToggleActive(plant)}
                             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100"
-                            title={plant.is_active ? 'Disable plant' : 'Enable plant'}
                           >
-                            <Power className="h-3 w-3" /> {plant.is_active ? 'Disable' : 'Enable'}
+                            <Power className="h-3 w-3" /> {plant.is_active ? 'Deactivate' : 'Activate'}
                           </button>
                           <button
                             type="button"

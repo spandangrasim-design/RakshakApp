@@ -32,12 +32,13 @@ interface Incident {
   guard_id?: string;
   title?: string;
   description: string;
+  plant_id?: string | null;
   plant_name?: string;
+  plant_code?: string | null;
   status: string;
   photo_url: string | null;
   reported_at: string;
   category?: string;
-  assignment_group?: string;
   assigned_to?: string | null;
   resolution_code?: string;
   resolution_notes?: string;
@@ -71,7 +72,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [callerGuardId, setCallerGuardId] = useState('');
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
-  const [plantName, setPlantName] = useState('Test - P1');
+  const [plantName, setPlantName] = useState('Test Plant');
   const [state, setState] = useState('Active');
   const [assignedTo, setAssignedTo] = useState('');
 
@@ -104,6 +105,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     [plants, plantName]
   );
 
+  const plantDisplayLabel = useMemo(() => {
+    const code = selectedPlantObj?.plant_code || incident?.plant_code || '';
+    return code ? `${plantName} (${code})` : plantName;
+  }, [plantName, selectedPlantObj, incident]);
+
   const eligibleGuardsForPlant = useMemo(() => {
     const activeGuards = guards.filter((g) => g.is_active !== false);
     const ids = selectedPlantObj?.assigned_guard_ids || [];
@@ -131,15 +137,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       setGuards(loadedGuards);
       setPlants(loadedPlants);
 
-      let currentInc: Incident | null = null;
-      let rawUpdates: IncidentUpdate[] = [];
-
       if (data.success && data.incident) {
-        currentInc = data.incident;
-        rawUpdates = data.updates || [];
-      }
-
-      if (currentInc) {
+        const currentInc: Incident = data.incident;
         setIncident(currentInc);
         setCallerGuardId(currentInc.guard_id || loadedGuards[0]?.guard_id || '');
         setShortDescription(currentInc.description || currentInc.title || 'Security Patrol Incident');
@@ -148,7 +147,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         const resolvedPlant =
           (currentInc.plant_name || '').trim() ||
           loadedPlants.find((p) => p.is_active !== false)?.name ||
-          'Test - P1';
+          'Test Plant';
         setPlantName(resolvedPlant);
 
         setState(
@@ -163,6 +162,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
         if (currentInc.resolution_notes) setResolutionNotes(currentInc.resolution_notes);
 
+        const rawUpdates: IncidentUpdate[] = data.updates || [];
         const sortedUpdates = [...rawUpdates].sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
@@ -187,14 +187,13 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     setIsUpdating(true);
     setStatusBanner(null);
 
-    const mappedTeam = selectedPlantObj?.team_name || plantName;
-
     try {
       const payload = {
         description: shortDescription,
         category,
+        plant_id: selectedPlantObj?.id || null,
         plant_name: plantName,
-        assignment_group: mappedTeam,
+        plant_code: selectedPlantObj?.plant_code || '',
         status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
         assigned_to: assignedTo.trim() || null,
         guard_id: callerGuardId,
@@ -218,7 +217,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           if (data.email_dispatched) {
             setStatusBanner({
               type: 'ok',
-              text: `Case updated. Dispatch email sent to "${plantName}" team (${(
+              text: `Case updated. Dispatch email sent for ${plantDisplayLabel} (${(
                 data.email_recipients || []
               ).join(', ')}).`,
             });
@@ -396,7 +395,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 </span>
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 font-bold text-[11px]">
                   <Building2 className="w-3 h-3" />
-                  {plantName}
+                  {plantDisplayLabel}
                 </span>
                 <span className="px-2.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-bold text-[11px]">
                   {state}
@@ -528,17 +527,17 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             </div>
           </div>
 
-          {/* Card 2: Unified Plant Routing & Bound Responder */}
+          {/* Card 2: Plant Routing & Bound Responder */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-600" />
                 <h2 className="text-sm font-black uppercase tracking-wider text-slate-800">
-                  2. Plant Routing &amp; Bound Assignee
+                  2. Plant Routing &amp; Assigned User
                 </h2>
               </div>
               <span className="text-[11px] font-bold text-slate-500">
-                {eligibleGuardsForPlant.length} staff eligible
+                {eligibleGuardsForPlant.length} staff assigned
               </span>
             </div>
 
@@ -560,7 +559,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Plant Name &amp; Mapped Team
+                Plant
               </label>
               <select
                 value={plantName}
@@ -572,25 +571,25 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               >
                 {plants.map((p) => (
                   <option key={p.id} value={p.name}>
-                    {p.name}{p.team_name ? ` — ${p.team_name}` : ''}{p.is_active === false ? ' (Disabled)' : ''}
+                    {p.name}{p.plant_code ? ` (${p.plant_code})` : ''}{p.is_active === false ? ' · Inactive' : ''}
                   </option>
                 ))}
                 {!plants.some((p) => p.name === plantName) && (
-                  <option value={plantName}>{plantName}</option>
+                  <option value={plantName}>{plantDisplayLabel}</option>
                 )}
               </select>
             </div>
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Assigned Responder (Mapped to &ldquo;{plantName}&rdquo;)
+                Assigned Responder ({plantDisplayLabel})
               </label>
               <select
                 value={assignedTo}
                 onChange={(e) => setAssignedTo(e.target.value)}
                 className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
               >
-                <option value="">-- Unassigned (Plant Team Queue) --</option>
+                <option value="">-- All Assigned Plant Users --</option>
                 {eligibleGuardsForPlant.map((g) => (
                   <option key={g.guard_id} value={g.full_name}>
                     {g.full_name} ({g.employee_code}) — {g.role || 'Guard'}
@@ -686,7 +685,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   rows={3}
                   value={workNoteMessage}
                   onChange={(e) => setWorkNoteMessage(e.target.value)}
-                  placeholder="Enter instructions for the assigned plant team..."
+                  placeholder="Enter instructions for the assigned plant users..."
                   className="w-full border border-slate-300 rounded-xl bg-slate-50 p-3 outline-none focus:bg-white focus:border-blue-600 text-slate-800"
                 />
 

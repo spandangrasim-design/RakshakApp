@@ -38,14 +38,15 @@ interface IncidentRecord {
   client_incident_id?: string;
   title: string;
   description: string;
+  plant_id?: string | null;
   plant_name?: string;
+  plant_code?: string | null;
   status?: string;
   reported_at: string;
   photo_url?: string | null;
   guard_id?: string;
   guards?: { full_name?: string; employee_code?: string } | null;
   category?: string;
-  assignment_group?: string;
   assigned_to?: string | null;
 }
 
@@ -79,7 +80,7 @@ export const IncidentsDashboard: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [newCallerGuardId, setNewCallerGuardId] = useState('');
   const [newCategory, setNewCategory] = useState('Security / Patrol');
-  const [newPlantName, setNewPlantName] = useState('');
+  const [newPlantId, setNewPlantId] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newPhotoBase64, setNewPhotoBase64] = useState<string | null>(null);
   const [newPhotoName, setNewPhotoName] = useState<string | null>(null);
@@ -94,15 +95,14 @@ export const IncidentsDashboard: React.FC = () => {
 
   const activePlants = useMemo(() => plants.filter((p) => p.is_active !== false), [plants]);
 
-  const plantTeamMap = useMemo(() => {
+  const plantCodeByName = useMemo(() => {
     const map: Record<string, string> = {};
     plants.forEach((p) => {
-      if (p.team_name) map[p.name] = p.team_name;
+      if (p.plant_code) map[p.name.toLowerCase()] = p.plant_code;
     });
     return map;
   }, [plants]);
 
-  // Debounce search input
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedQuery(searchInput.trim());
@@ -111,7 +111,6 @@ export const IncidentsDashboard: React.FC = () => {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Load Guards & Plants once
   useEffect(() => {
     Promise.all([
       fetch(`${API_BASE}/guards`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ guards: [] })),
@@ -132,11 +131,18 @@ export const IncidentsDashboard: React.FC = () => {
       const loadedPlants: PlantRecord[] = pData.plants || [];
       setPlants(loadedPlants);
       const firstActive = loadedPlants.find((p) => p.is_active !== false);
-      if (firstActive) setNewPlantName(firstActive.name);
+      if (firstActive) setNewPlantId(firstActive.id);
     });
   }, [authHeaders]);
 
-  // Fetch Paginated Incidents
+  const handlePlantsChanged = useCallback((updated: PlantRecord[]) => {
+    setPlants(updated);
+    const firstActive = updated.find((p) => p.is_active !== false);
+    if (firstActive) {
+      setNewPlantId((prev) => (updated.some((p) => p.id === prev && p.is_active !== false) ? prev : firstActive.id));
+    }
+  }, []);
+
   const fetchPaginatedIncidents = useCallback(async () => {
     try {
       setLoading(true);
@@ -208,8 +214,12 @@ export const IncidentsDashboard: React.FC = () => {
       alert('Please enter an incident summary / description.');
       return;
     }
-    const chosenPlant = newPlantName || activePlants[0]?.name || 'Test - P1';
-    const mappedTeam = plantTeamMap[chosenPlant] || chosenPlant;
+
+    const chosenPlant = activePlants.find((p) => p.id === newPlantId) || activePlants[0];
+    if (!chosenPlant) {
+      alert('Please configure at least one active Plant first.');
+      return;
+    }
 
     setIsCreating(true);
     setBanner(null);
@@ -220,8 +230,9 @@ export const IncidentsDashboard: React.FC = () => {
         title: newDescription.trim().slice(0, 45),
         description: newDescription.trim(),
         category: newCategory,
-        plant_name: chosenPlant,
-        assignment_group: mappedTeam,
+        plant_id: chosenPlant.id,
+        plant_name: chosenPlant.name,
+        plant_code: chosenPlant.plant_code || '',
         photo_url: newPhotoBase64 || null,
       };
 
@@ -240,17 +251,19 @@ export const IncidentsDashboard: React.FC = () => {
         setPage(1);
         await fetchPaginatedIncidents();
 
+        const label = chosenPlant.plant_code
+          ? `${chosenPlant.name} (${chosenPlant.plant_code})`
+          : chosenPlant.name;
+
         if (data.email_dispatched) {
           setBanner({
             type: 'ok',
-            text: `New incident created for "${chosenPlant}" and email alert dispatched to ${(
-              data.email_recipients || []
-            ).join(', ')}.`,
+            text: `Incident created for ${label} and alert dispatched to ${(data.email_recipients || []).join(', ')}.`,
           });
         } else {
           setBanner({
             type: 'err',
-            text: `Incident created for "${chosenPlant}", but auto-email reported: ${
+            text: `Incident created for ${label}, but auto-email reported: ${
               data.email_error || 'No users with email assigned to this plant'
             }`,
           });
@@ -278,10 +291,10 @@ export const IncidentsDashboard: React.FC = () => {
     return 'Field Patrol Guard';
   };
 
-  const resolvePlantDisplay = (item: IncidentRecord) => {
-    const pName = (item.plant_name || '').trim() || (item.assignment_group || '').trim() || 'Test - P1';
-    const team = plantTeamMap[pName] || (item.assignment_group && item.assignment_group !== pName ? item.assignment_group : null);
-    return { pName, team };
+  const formatPlantLabel = (item: IncidentRecord) => {
+    const pName = (item.plant_name || '').trim() || 'Test Plant';
+    const pCode = (item.plant_code || '').trim() || plantCodeByName[pName.toLowerCase()] || '';
+    return pCode ? `${pName} (${pCode})` : pName;
   };
 
   const pageNumbers = useMemo(() => {
@@ -313,7 +326,7 @@ export const IncidentsDashboard: React.FC = () => {
               Incidents &amp; Plant Triage Queue
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Unified plant-based incident routing with automated email alerts to assigned plant teams.
+              Plant-based incident routing with configurable Plant Codes and automated email alerts.
             </p>
           </div>
 
@@ -359,13 +372,7 @@ export const IncidentsDashboard: React.FC = () => {
           <PlantManagementPanel
             guards={guards}
             authHeaders={authHeaders}
-            onPlantsChanged={(updated) => {
-              setPlants(updated);
-              const firstActive = updated.find((p) => p.is_active !== false);
-              if (firstActive && !updated.some((p) => p.name === newPlantName && p.is_active !== false)) {
-                setNewPlantName(firstActive.name);
-              }
-            }}
+            onPlantsChanged={handlePlantsChanged}
           />
         ) : (
           <>
@@ -483,7 +490,7 @@ export const IncidentsDashboard: React.FC = () => {
                     <option value="ALL">All Plants</option>
                     {plants.map((p) => (
                       <option key={p.id} value={p.name}>
-                        {p.name}{p.is_active === false ? ' (Disabled)' : ''}
+                        {p.name}{p.plant_code ? ` (${p.plant_code})` : ''}{p.is_active === false ? ' · Inactive' : ''}
                       </option>
                     ))}
                   </select>
@@ -524,14 +531,14 @@ export const IncidentsDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Unified Incidents Table (Plant Name + Mapped Team merged) */}
+            {/* Incidents Table: Plant Name (Plant Code) only */}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[920px] border-collapse text-left">
+                <table className="w-full min-w-[900px] border-collapse text-left">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                       <th className="w-[125px] py-3.5 pl-5 pr-3">Case ID</th>
-                      <th className="w-[220px] px-3 py-3.5">Plant &amp; Assigned Team</th>
+                      <th className="w-[210px] px-3 py-3.5">Plant</th>
                       <th className="px-4 py-3.5">Incident Summary</th>
                       <th className="w-[165px] px-3 py-3.5">Reported By</th>
                       <th className="w-[115px] px-3 py-3.5">Status</th>
@@ -559,7 +566,6 @@ export const IncidentsDashboard: React.FC = () => {
                         const caseCode = getCaseCode(item);
                         const targetId = item.client_incident_id || item.incident_id || item.id || '';
                         const isResolved = (item.status || '').toUpperCase() === 'RESOLVED';
-                        const { pName, team } = resolvePlantDisplay(item);
 
                         return (
                           <tr
@@ -573,16 +579,11 @@ export const IncidentsDashboard: React.FC = () => {
                                 <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
                               </span>
                             </td>
-                            <td className="px-3 py-3.5">
-                              <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+                            <td className="whitespace-nowrap px-3 py-3.5">
+                              <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
                                 <Building2 className="h-3 w-3" />
-                                {pName}
+                                {formatPlantLabel(item)}
                               </span>
-                              {team && (
-                                <div className="mt-0.5 truncate text-[10px] font-semibold text-slate-500">
-                                  {team}
-                                </div>
-                              )}
                             </td>
                             <td className="max-w-md xl:max-w-xl px-4 py-3.5">
                               <div className="truncate font-bold text-slate-900">{item.title || 'Patrol Incident'}</div>
@@ -729,14 +730,14 @@ export const IncidentsDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Create Incident Modal */}
+      {/* Create Incident Modal (Plant selection only) */}
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">Log New Security Incident</h2>
-                <p className="text-[11px] text-slate-500">Automatically routes &amp; emails all users assigned to the selected Plant.</p>
+                <p className="text-[11px] text-slate-500">Select the Plant to automatically route and email all assigned users.</p>
               </div>
               <button
                 type="button"
@@ -782,15 +783,15 @@ export const IncidentsDashboard: React.FC = () => {
               </div>
 
               <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant Name *</label>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
                 <select
-                  value={newPlantName}
-                  onChange={(e) => setNewPlantName(e.target.value)}
+                  value={newPlantId}
+                  onChange={(e) => setNewPlantId(e.target.value)}
                   className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
                 >
                   {activePlants.map((plant) => (
-                    <option key={plant.id} value={plant.name}>
-                      {plant.name}{plant.team_name ? ` — ${plant.team_name}` : ''}
+                    <option key={plant.id} value={plant.id}>
+                      {plant.name}{plant.plant_code ? ` (${plant.plant_code})` : ''}
                     </option>
                   ))}
                 </select>

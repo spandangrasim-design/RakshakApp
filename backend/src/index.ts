@@ -4421,9 +4421,9 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
 // 5B. PLANT MANAGEMENT CRUD API
 // ==========================================
 const DEFAULT_PLANT_SEEDS = [
-  { name: 'Test - P1', team_name: 'Security Operations L1 Team' },
-  { name: 'Test2 - P2', team_name: 'Quick Response Team (QRT)' },
-  { name: 'Test3 - P3', team_name: 'Regional Security Team' },
+  { name: 'Test Plant', plant_code: 'P1' },
+  { name: 'Warehouse', plant_code: 'Q1' },
+  { name: 'Factory', plant_code: 'P2' },
 ];
 
 async function ensureTenantPlants(supabase: any, tenantId: string) {
@@ -4437,8 +4437,9 @@ async function ensureTenantPlants(supabase: any, tenantId: string) {
   const rows = DEFAULT_PLANT_SEEDS.map((p) => ({
     tenant_id: tenantId,
     name: p.name,
-    team_name: p.team_name,
+    plant_code: p.plant_code,
     assigned_guard_ids: [],
+    email_notifications_enabled: true,
     is_active: true,
   }));
   const { data: seeded } = await supabase.from('plants').insert(rows).select('*');
@@ -4471,15 +4472,17 @@ app.post('/api/v1/plants', async (c) => {
     const name = String(body.name || '').trim();
     if (!name) return c.json({ success: false, message: 'Plant Name is required.' }, 400);
 
-    const team_name = String(body.team_name || '').trim() || null;
+    const plant_code = String(body.plant_code || '').trim();
+    if (!plant_code) return c.json({ success: false, message: 'Plant Code is required.' }, 400);
     const assigned_guard_ids = Array.isArray(body.assigned_guard_ids)
       ? body.assigned_guard_ids.map((id: any) => String(id).trim()).filter(Boolean)
       : [];
+    const email_notifications_enabled = body.email_notifications_enabled !== false;
     const is_active = body.is_active !== false;
 
     const { data, error } = await supabase
       .from('plants')
-      .insert([{ tenant_id: tenantId, name, team_name, assigned_guard_ids, is_active }])
+      .insert([{ tenant_id: tenantId, name, plant_code, assigned_guard_ids, email_notifications_enabled, is_active }])
       .select('*')
       .single();
 
@@ -4501,11 +4504,18 @@ app.patch('/api/v1/plants/:id', async (c) => {
       if (!n) return c.json({ success: false, message: 'Plant Name cannot be empty.' }, 400);
       updates.name = n;
     }
-    if (body.team_name !== undefined) updates.team_name = String(body.team_name || '').trim() || null;
+    if (body.plant_code !== undefined) {
+      const pc = String(body.plant_code || '').trim();
+      if (!pc) return c.json({ success: false, message: 'Plant Code cannot be empty.' }, 400);
+      updates.plant_code = pc;
+    }
     if (body.assigned_guard_ids !== undefined) {
       updates.assigned_guard_ids = Array.isArray(body.assigned_guard_ids)
         ? body.assigned_guard_ids.map((id: any) => String(id).trim()).filter(Boolean)
         : [];
+    }
+    if (body.email_notifications_enabled !== undefined) {
+      updates.email_notifications_enabled = Boolean(body.email_notifications_enabled);
     }
     if (body.is_active !== undefined) updates.is_active = Boolean(body.is_active);
 
@@ -4579,7 +4589,9 @@ app.post('/api/v1/incidents', async (c) => {
       title,
       description,
       priority,
+      plant_id,
       plant_name,
+      plant_code,
       category,
       impact,
       urgency,
@@ -4597,14 +4609,17 @@ app.post('/api/v1/incidents', async (c) => {
       : null;
 
     const targetGroup = assignment_group || 'Security Operations L1';
-    const targetPlant = String(plant_name || 'Test - P1').trim();
+    const targetPlant = String(plant_name || 'Test Plant').trim();
+    const targetPlantCode = String(plant_code || '').trim() || null;
 
     const insertRecord: Record<string, any> = {
       client_incident_id: incidentUuid,
       guard_id: resolvedGuardId,
       title: title || (description ? description.substring(0, 40) : 'Security Incident'),
       description: description || title || 'Security Incident',
+      plant_id: plant_id || null,
       plant_name: targetPlant,
+      plant_code: targetPlantCode,
       priority: priority || null,
       category: category || 'Security / Patrol',
       impact: impact || '2 - Medium',
@@ -4939,7 +4954,9 @@ app.patch('/api/v1/incidents/:id', async (c) => {
     if (body.description !== undefined) updates.description = body.description;
     if (body.title !== undefined) updates.title = body.title;
     if (body.priority !== undefined) updates.priority = body.priority;
+    if (body.plant_id !== undefined) updates.plant_id = body.plant_id;
     if (body.plant_name !== undefined) updates.plant_name = body.plant_name;
+    if (body.plant_code !== undefined) updates.plant_code = body.plant_code;
     if (body.status !== undefined) updates.status = body.status;
     if (body.category !== undefined) updates.category = body.category;
     if (body.impact !== undefined) updates.impact = body.impact;
@@ -5360,16 +5377,23 @@ async function sendGroupAssignmentEmail(
   const recipientSet = new Set<string>();
 
   let plantGuardIds = new Set<string>();
+  let matchedPlantCode = '';
   if (targetPlantClean) {
     const { data: plantRows } = await supabase
       .from('plants')
-      .select('name, assigned_guard_ids')
+      .select('name, plant_code, assigned_guard_ids, email_notifications_enabled')
       .eq('tenant_id', params.tenantId);
     const matchedPlant = (plantRows || []).find(
       (p: any) => String(p.name || '').trim().toLowerCase() === targetPlantClean
     );
-    if (matchedPlant && Array.isArray(matchedPlant.assigned_guard_ids)) {
-      plantGuardIds = new Set(matchedPlant.assigned_guard_ids.map((id: any) => String(id)));
+    if (matchedPlant) {
+      if (matchedPlant.email_notifications_enabled === false) {
+        return { ok: false, recipients: [], error: `Email notifications are disabled for plant "${matchedPlant.name}".` };
+      }
+      matchedPlantCode = matchedPlant.plant_code || '';
+      if (Array.isArray(matchedPlant.assigned_guard_ids)) {
+        plantGuardIds = new Set(matchedPlant.assigned_guard_ids.map((id: any) => String(id)));
+      }
     }
   }
 
