@@ -9,7 +9,8 @@ import {
   CheckCircle2,
   Users,
   UserCheck,
-  Trash2
+  Trash2,
+  Building2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
 
@@ -22,6 +23,8 @@ const DEFAULT_GROUPS = [
   'Fire & Safety Response',
 ];
 
+const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
+
 interface GuardUser {
   guard_id: string;
   full_name: string;
@@ -32,6 +35,7 @@ interface GuardUser {
   is_active?: boolean;
   assignment_group?: string | null;
   assignment_groups?: string[];
+  assigned_plants?: string[];
 }
 
 interface Incident {
@@ -39,15 +43,13 @@ interface Incident {
   guard_id?: string;
   title?: string;
   description: string;
-  priority: string;
+  plant_name?: string;
   status: string;
   photo_url: string | null;
   reported_at: string;
   category?: string;
   assignment_group?: string;
   assigned_to?: string | null;
-  impact?: string;
-  urgency?: string;
   resolution_code?: string;
   resolution_notes?: string;
   resolved_by?: string;
@@ -64,18 +66,6 @@ interface IncidentUpdate {
   created_at: string;
 }
 
-const calculatePriority = (impact: string, urgency: string): { label: string; code: string } => {
-  const imp = impact.charAt(0);
-  const urg = urgency.charAt(0);
-
-  if (imp === '1' && urg === '1') return { label: 'P1 - Critical', code: 'P1' };
-  if ((imp === '1' && urg === '2') || (imp === '2' && urg === '1')) return { label: 'P2 - High', code: 'P2' };
-  if ((imp === '1' && urg === '3') || (imp === '2' && urg === '2') || (imp === '3' && urg === '1')) {
-    return { label: 'P3 - Moderate', code: 'P3' };
-  }
-  return { label: 'P4 - Low', code: 'P4' };
-};
-
 export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -84,6 +74,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
   const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
+  const [availablePlants, setAvailablePlants] = useState<string[]>(DEFAULT_PLANTS);
   const [loading, setLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<'notes' | 'resolution'>('notes');
@@ -92,10 +83,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [callerGuardId, setCallerGuardId] = useState('');
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
-  const [impact, setImpact] = useState('2 - Medium');
-  const [urgency, setUrgency] = useState('2 - Medium');
-  const [priorityLabel, setPriorityLabel] = useState('P3 - Moderate');
-  const [priorityCode, setPriorityCode] = useState('P3');
+  const [plantName, setPlantName] = useState(DEFAULT_PLANTS[0]);
   const [state, setState] = useState('Active');
   const [assignmentGroup, setAssignmentGroup] = useState('Security Operations L1');
   const [assignedTo, setAssignedTo] = useState('');
@@ -117,6 +105,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resolutionNotesRef = useRef<HTMLTextAreaElement>(null);
 
+  const authHeaders = useMemo<Record<string, string>>(() => {
+    const token = localStorage.getItem('token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, []);
+
   const getGuardGroups = (g: GuardUser): string[] => {
     if (Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0) {
       return g.assignment_groups;
@@ -127,29 +120,15 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     return ['Security Operations L1'];
   };
 
-  const handleImpactChange = (newImpact: string) => {
-    setImpact(newImpact);
-    const result = calculatePriority(newImpact, urgency);
-    setPriorityLabel(result.label);
-    setPriorityCode(result.code);
-  };
-
-  const handleUrgencyChange = (newUrgency: string) => {
-    setUrgency(newUrgency);
-    const result = calculatePriority(impact, newUrgency);
-    setPriorityLabel(result.label);
-    setPriorityCode(result.code);
-  };
-
   const fetchAllDetails = async () => {
     if (!id) return;
     try {
       setLoading(true);
 
       const [incRes, guardsRes, cfgRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`),
-        fetch(`${API_BASE_URL}/guards`),
-        fetch(`${API_BASE_URL}/admin/configs`),
+        fetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`, { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/guards`, { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/admin/configs`, { headers: authHeaders }),
       ]);
 
       const data = await incRes.json();
@@ -160,28 +139,45 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       setGuards(loadedGuards);
 
       let customGroups: string[] = [...DEFAULT_GROUPS];
+      let customPlants: string[] = [...DEFAULT_PLANTS];
+
       if (cfgData.success && Array.isArray(cfgData.configs)) {
-        const found = cfgData.configs.find(
+        const foundGroups = cfgData.configs.find(
           (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
         );
-        if (found?.key_value) {
+        if (foundGroups?.key_value) {
           try {
-            const parsed = JSON.parse(found.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              customGroups = parsed;
-            }
+            const parsed = JSON.parse(foundGroups.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) customGroups = parsed;
+          } catch (_) {}
+        }
+
+        const foundPlants = cfgData.configs.find(
+          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_PLANTS'
+        );
+        if (foundPlants?.key_value) {
+          try {
+            const parsed = JSON.parse(foundPlants.key_value);
+            if (Array.isArray(parsed) && parsed.length > 0) customPlants = parsed;
           } catch (_) {}
         }
       }
 
       const groupSet = new Set<string>(customGroups);
+      const plantSet = new Set<string>(customPlants);
       loadedGuards.forEach((g) => {
         getGuardGroups(g).forEach((grp) => {
           if (grp) groupSet.add(grp);
         });
+        (g.assigned_plants || []).forEach((p) => {
+          if (p) plantSet.add(p);
+        });
       });
+
       const allGroupsList = Array.from(groupSet);
+      const allPlantsList = Array.from(plantSet);
       setAvailableGroups(allGroupsList);
+      setAvailablePlants(allPlantsList);
 
       let currentInc: Incident | null = null;
       let rawUpdates: IncidentUpdate[] = [];
@@ -190,7 +186,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         currentInc = data.incident;
         rawUpdates = data.updates || [];
       } else {
-        const allRes = await fetch(`${API_BASE_URL}/incidents`);
+        const allRes = await fetch(`${API_BASE_URL}/incidents`, { headers: authHeaders });
         const allData = await allRes.json();
         const list: Incident[] = allData.incidents || [];
 
@@ -205,7 +201,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           }) || null;
 
         if (currentInc) {
-          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id}`);
+          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id}`, {
+            headers: authHeaders,
+          });
           const updatesData = await updatesRes.json();
           rawUpdates = updatesData.updates || [];
         }
@@ -217,14 +215,14 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         setShortDescription(currentInc.description || currentInc.title || 'Security Patrol Incident');
         setCategory(currentInc.category || 'Security / Patrol');
 
-        const initImpact = currentInc.impact || '2 - Medium';
-        const initUrgency = currentInc.urgency || '2 - Medium';
-        setImpact(initImpact);
-        setUrgency(initUrgency);
-
-        const calculated = calculatePriority(initImpact, initUrgency);
-        setPriorityLabel(calculated.label);
-        setPriorityCode(calculated.code);
+        const resolvedPlant =
+          currentInc.plant_name && allPlantsList.includes(currentInc.plant_name)
+            ? currentInc.plant_name
+            : currentInc.plant_name || allPlantsList[0] || 'Test - P1';
+        setPlantName(resolvedPlant);
+        if (resolvedPlant && !allPlantsList.includes(resolvedPlant)) {
+          setAvailablePlants((prev) => [...prev, resolvedPlant]);
+        }
 
         setState(
           currentInc.status === 'RESOLVED'
@@ -239,7 +237,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             ? currentInc.assignment_group
             : allGroupsList[0] || 'Security Operations L1';
         setAssignmentGroup(grp);
-        // Keep blank if not explicitly assigned
         setAssignedTo(currentInc.assigned_to || '');
 
         if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
@@ -264,20 +261,23 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchAllDetails();
   }, [id]);
 
-  // Filter Assignees strictly to guards who belong to the selected Assignment Group
+  // Filter Assignees to guards belonging to the selected Assignment Group or Plant
   const eligibleGuardsForGroup = useMemo(() => {
     const activeGuards = guards.filter((g) => g.is_active !== false);
-    return activeGuards.filter((g) => getGuardGroups(g).includes(assignmentGroup));
-  }, [assignmentGroup, guards]);
+    return activeGuards.filter(
+      (g) =>
+        getGuardGroups(g).includes(assignmentGroup) ||
+        (Array.isArray(g.assigned_plants) && g.assigned_plants.includes(plantName))
+    );
+  }, [assignmentGroup, plantName, guards]);
 
-  // If the currently assigned person is not a member of the selected group, clear to blank (do NOT auto-assign)
   useEffect(() => {
     if (!assignedTo) return;
     const isCurrentValid = eligibleGuardsForGroup.some((g) => g.full_name === assignedTo);
     if (!isCurrentValid) {
       setAssignedTo('');
     }
-  }, [assignmentGroup, eligibleGuardsForGroup]);
+  }, [assignmentGroup, plantName, eligibleGuardsForGroup]);
 
   const handleUpdateIncident = async () => {
     if (!incident) return;
@@ -288,9 +288,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       const payload = {
         description: shortDescription,
         category,
-        impact,
-        urgency,
-        priority: priorityCode,
+        plant_name: plantName,
         status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
         assignment_group: assignmentGroup,
         assigned_to: assignedTo.trim() || null,
@@ -301,7 +299,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify(payload),
       });
 
@@ -319,14 +317,14 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
           if (data.email_dispatched) {
             setStatusBanner({
               type: 'ok',
-              text: `Case updated. Automatic dispatch email sent to "${assignmentGroup}" (${(
+              text: `Case updated. Dispatch email sent for "${plantName}" / "${assignmentGroup}" (${(
                 data.email_recipients || []
               ).join(', ')}).`,
             });
           } else {
             setStatusBanner({
               type: 'err',
-              text: `Case saved, but auto-email to "${assignmentGroup}" failed: ${data.email_error}`,
+              text: `Case saved, but auto-email failed: ${data.email_error}`,
             });
           }
         } else {
@@ -367,7 +365,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}/resolve`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify(payload),
       });
 
@@ -401,6 +399,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     try {
       const res = await fetch(`${API_BASE_URL}/incidents/${incident.client_incident_id}`, {
         method: 'DELETE',
+        headers: authHeaders,
       });
       const data = await res.json();
       if (data.success) {
@@ -437,7 +436,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const res = await fetch(`${API_BASE_URL}/incidents/${incident?.client_incident_id}/updates`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify(payload),
       });
 
@@ -485,7 +484,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] font-sans text-xs text-slate-800 pb-12">
-      {/* Clean Rakshak SOC Command Header Bar */}
+      {/* Header Bar */}
       <div className="bg-slate-900 text-white px-6 py-4 shadow-md">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -501,8 +500,9 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 <span className="px-2.5 py-0.5 rounded-md bg-blue-600 font-mono font-black text-xs">
                   {caseDisplayCode}
                 </span>
-                <span className="px-2.5 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 text-amber-300 font-bold text-[11px]">
-                  {priorityLabel}
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-indigo-500/20 border border-indigo-400/40 text-indigo-200 font-bold text-[11px]">
+                  <Building2 className="w-3 h-3" />
+                  {plantName}
                 </span>
                 <span className="px-2.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-bold text-[11px]">
                   {state}
@@ -565,12 +565,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
         {/* 2-Card Dispatch Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Card 1: Reporter & Threat Classification */}
+          {/* Card 1: Reporter & Plant Classification */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
             <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
               <UserCheck className="w-4 h-4 text-blue-600" />
               <h2 className="text-sm font-black uppercase tracking-wider text-slate-800">
-                1. Field Reporter & Classification
+                1. Field Reporter &amp; Plant
               </h2>
             </div>
 
@@ -617,7 +617,24 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
+                  Plant Name
+                </label>
+                <select
+                  value={plantName}
+                  onChange={(e) => setPlantName(e.target.value)}
+                  className="w-full border border-indigo-300 bg-indigo-50/50 rounded-xl px-2.5 py-2 font-bold text-indigo-950 outline-none"
+                >
+                  {availablePlants.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
                   Category
@@ -633,36 +650,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   <option>Access Control</option>
                 </select>
               </div>
-
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Impact
-                </label>
-                <select
-                  value={impact}
-                  onChange={(e) => handleImpactChange(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold outline-none"
-                >
-                  <option>1 - High</option>
-                  <option>2 - Medium</option>
-                  <option>3 - Low</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Urgency
-                </label>
-                <select
-                  value={urgency}
-                  onChange={(e) => handleUrgencyChange(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold outline-none"
-                >
-                  <option>1 - High</option>
-                  <option>2 - Medium</option>
-                  <option>3 - Low</option>
-                </select>
-              </div>
             </div>
           </div>
 
@@ -672,42 +659,28 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-600" />
                 <h2 className="text-sm font-black uppercase tracking-wider text-slate-800">
-                  2. Group Routing & Bound Assignee
+                  2. Group Routing &amp; Bound Assignee
                 </h2>
               </div>
               <span className="text-[11px] font-bold text-slate-500">
-                {eligibleGuardsForGroup.length} staff in group
+                {eligibleGuardsForGroup.length} staff eligible
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Operational State
-                </label>
-                <select
-                  value={state}
-                  onChange={(e) => setState(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white font-bold text-slate-800 outline-none"
-                >
-                  <option>Active</option>
-                  <option>In Progress</option>
-                  <option>Resolved</option>
-                  <option>Closed</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Computed Severity
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={priorityLabel}
-                  className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-bold"
-                />
-              </div>
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
+                Operational State
+              </label>
+              <select
+                value={state}
+                onChange={(e) => setState(e.target.value)}
+                className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white font-bold text-slate-800 outline-none"
+              >
+                <option>Active</option>
+                <option>In Progress</option>
+                <option>Resolved</option>
+                <option>Closed</option>
+              </select>
             </div>
 
             <div>
@@ -718,7 +691,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                 value={assignmentGroup}
                 onChange={(e) => {
                   setAssignmentGroup(e.target.value);
-                  setAssignedTo(''); // Always reset Assigned To to blank when group changes
+                  setAssignedTo('');
                 }}
                 className="w-full border border-blue-300 bg-blue-50/50 rounded-xl px-3 py-2 font-bold text-blue-950 outline-none"
               >
@@ -737,11 +710,11 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Assigned To (Members of "{assignmentGroup}")
+                Assigned To (Members of &ldquo;{plantName}&rdquo; or &ldquo;{assignmentGroup}&rdquo;)
               </label>
               {eligibleGuardsForGroup.length === 0 ? (
                 <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
-                  No guards are currently assigned to <strong>{assignmentGroup}</strong>. Assign staff to this group on the <strong>Guards</strong> page.
+                  No staff assigned to <strong>{plantName}</strong> or <strong>{assignmentGroup}</strong>. Assign staff on the <strong>API Integrations / Plants</strong> or <strong>Guards</strong> page.
                 </div>
               ) : (
                 <select
@@ -815,7 +788,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   : 'text-slate-600 hover:text-slate-900'
               } ${resolutionError ? 'text-rose-600' : ''}`}
             >
-              Resolution & Closure Details
+              Resolution &amp; Closure Details
               {state === 'Resolved' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
               {resolutionError && <AlertCircle className="w-3.5 h-3.5 text-rose-500" />}
             </button>
@@ -846,7 +819,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
                   rows={3}
                   value={workNoteMessage}
                   onChange={(e) => setWorkNoteMessage(e.target.value)}
-                  placeholder="Enter instructions for the assigned response group..."
+                  placeholder="Enter instructions for the assigned plant team..."
                   className="w-full border border-slate-300 rounded-xl bg-slate-50 p-3 outline-none focus:bg-white focus:border-blue-600 text-slate-800"
                 />
 
@@ -881,7 +854,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
               <div className="space-y-3 pt-4 border-t border-slate-100">
                 <span className="font-bold text-slate-600 uppercase tracking-wider text-[11px] block">
-                  Case Audit & Dispatch History
+                  Case Audit &amp; Dispatch History
                 </span>
 
                 {updates.length === 0 ? (

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../api.dart';
 import '../session.dart';
 import '../util.dart';
+import 'camera_capture_screen.dart';
 import 'completed_screen.dart';
 import 'incident_screen.dart';
 import 'scanner_screen.dart';
@@ -44,7 +46,7 @@ class _RunScreenState extends State<RunScreen> {
   String? _error;
   Timer? _clock;
 
-  late final List<Map<String, dynamic>> _cps;
+  late final List> _cps;
   final Set<String> _scanned = {};
 
   @override
@@ -52,7 +54,12 @@ class _RunScreenState extends State<RunScreen> {
     super.initState();
     _cps = ((widget.route['checkpoints'] as List?) ?? [])
         .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
+        .toList()
+      ..sort((a, b) {
+        final sa = int.tryParse((a['sequence_order'] ?? '').toString()) ?? 9999;
+        final sb = int.tryParse((b['sequence_order'] ?? '').toString()) ?? 9999;
+        return sa.compareTo(sb);
+      });
     for (final c in _cps) {
       if (c['scanned'] == true) _scanned.add(c['id'].toString());
     }
@@ -178,6 +185,29 @@ class _RunScreenState extends State<RunScreen> {
       return;
     }
 
+    // Step 1: Capture Selfie (front camera)
+    final selfieBytes = await captureImage(
+      context,
+      title: 'Step 1 of 2: Take a Selfie',
+      startFront: true,
+    );
+    if (selfieBytes == null || !mounted) {
+      _snack('Selfie is required to verify "$cpName".');
+      return;
+    }
+
+    // Step 2: Capture Field / Site Photo (rear camera)
+    final siteBytes = await captureImage(
+      context,
+      title: 'Step 2 of 2: Take Site Photo',
+      startFront: false,
+    );
+    if (siteBytes == null || !mounted) {
+      _snack('Site photo is required to verify "$cpName".');
+      return;
+    }
+
+    // Step 3: Complete QR verification only after both photos are captured
     setState(() => _busy = true);
     try {
       final pos = await _position();
@@ -189,6 +219,8 @@ class _RunScreenState extends State<RunScreen> {
         guardLat: pos.latitude,
         guardLng: pos.longitude,
         clientScanId: const Uuid().v4(),
+        selfieBase64: base64Encode(selfieBytes),
+        locationPhotoBase64: base64Encode(siteBytes),
       );
       if (!mounted) return;
       setState(() {
@@ -462,14 +494,24 @@ class _RunScreenState extends State<RunScreen> {
                               border: Border.all(color: ok ? Colors.green.shade200 : Colors.grey.shade200),
                             ),
                             child: ListTile(
-                              leading: Icon(
-                                ok ? Icons.check_circle : Icons.qr_code_2,
-                                color: ok ? Colors.green.shade700 : Colors.blueGrey,
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: ok ? Colors.green.shade700 : Colors.blueGrey.shade100,
+                                child: ok
+                                    ? const Icon(Icons.check, color: Colors.white, size: 18)
+                                    : Text(
+                                        '${i + 1}',
+                                        style: TextStyle(
+                                          color: Colors.blueGrey.shade900,
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 13,
+                                        ),
+                                      ),
                               ),
                               title: Text(cp['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w600)),
                               subtitle: Text(ok
                                   ? 'Verified${by.isEmpty ? '' : ' · $by'}${at.isEmpty ? '' : ' · $at'}'
-                                  : 'Waiting to be scanned'),
+                                  : 'Step ${i + 1} · Waiting to be scanned'),
                             ),
                           );
                         },

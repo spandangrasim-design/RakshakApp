@@ -1,8 +1,26 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { Eye, EyeOff, CheckCircle2, Power, HelpCircle, Send, AlertCircle, Mail, MessageSquare, Radio, RefreshCw, Save, Layers } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  Power,
+  HelpCircle,
+  Send,
+  AlertCircle,
+  Mail,
+  MessageSquare,
+  Radio,
+  RefreshCw,
+  Save,
+  Layers,
+  Building2,
+  Plus,
+  Trash2
+} from 'lucide-react';
 
 const API_BASE_URL = "https://rakshak-api.spandangrasim.workers.dev";
 const MASK = "********";
+const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
 
 export default function AdminConfigsPage() {
   const [configs, setConfigs] = useState<Record<string, string>>({});
@@ -13,7 +31,12 @@ export default function AdminConfigsPage() {
   const [showTokens, setShowTokens] = useState<Record<string, boolean>>({});
   const [showOAuthGuide, setShowOAuthGuide] = useState<boolean>(false);
 
-  // Check which integration channels are licensed for this user/tenant
+  // Plant Name & User Assignment State
+  const [plants, setPlants] = useState<string[]>(DEFAULT_PLANTS);
+  const [newPlantInput, setNewPlantInput] = useState<string>('');
+  const [guards, setGuards] = useState<any[]>([]);
+  const [savingPlantUser, setSavingPlantUser] = useState<string | null>(null);
+
   const visibleModules = React.useMemo(() => {
     try {
       const saved = localStorage.getItem('visible_modules');
@@ -42,16 +65,29 @@ export default function AdminConfigsPage() {
   const fetchConfigs = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_BASE_URL}/api/v1/admin/configs`, {
-        headers: getAuthHeaders(),
-      });
-      const data = await response.json();
-      
+      const [cfgRes, guardsRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/v1/admin/configs`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE_URL}/api/v1/guards`, { headers: getAuthHeaders() }),
+      ]);
+      const data = await cfgRes.json();
+      const gData = await guardsRes.json().catch(() => ({ guards: [] }));
+
+      if (gData.success && Array.isArray(gData.guards)) {
+        setGuards(gData.guards);
+      }
+
       if (data.success) {
         const configMap: Record<string, string> = {};
         (data.configs || []).forEach((item: { key_name: string; key_value: string }) => {
           configMap[item.key_name] = item.key_value;
         });
+
+        if (configMap['CUSTOM_PLANTS']) {
+          try {
+            const parsed = JSON.parse(configMap['CUSTOM_PLANTS']);
+            if (Array.isArray(parsed) && parsed.length > 0) setPlants(parsed);
+          } catch {}
+        }
 
         if (allowGmail && configMap['ENABLE_GMAIL'] === undefined) {
           configMap['ENABLE_GMAIL'] =
@@ -84,6 +120,45 @@ export default function AdminConfigsPage() {
     setConfigs(prev => ({ ...prev, [key]: value }));
   };
 
+  const handleAddPlant = () => {
+    const trimmed = newPlantInput.trim();
+    if (!trimmed || plants.includes(trimmed)) return;
+    const next = [...plants, trimmed];
+    setPlants(next);
+    handleChange('CUSTOM_PLANTS', JSON.stringify(next));
+    setNewPlantInput('');
+  };
+
+  const handleRemovePlant = (plant: string) => {
+    if (plants.length <= 1) return;
+    const next = plants.filter((p) => p !== plant);
+    setPlants(next);
+    handleChange('CUSTOM_PLANTS', JSON.stringify(next));
+  };
+
+  const handleToggleGuardPlant = async (guard: any, plant: string) => {
+    setSavingPlantUser(guard.guard_id);
+    const current: string[] = Array.isArray(guard.assigned_plants) ? guard.assigned_plants : [];
+    const next = current.includes(plant)
+      ? current.filter((p) => p !== plant)
+      : [...current, plant];
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/guards/${guard.guard_id}`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ assigned_plants: next }),
+      });
+      if (res.ok) {
+        setGuards((prev) =>
+          prev.map((g) => (g.guard_id === guard.guard_id ? { ...g, assigned_plants: next } : g))
+        );
+      }
+    } finally {
+      setSavingPlantUser(null);
+    }
+  };
+
   const handleToggleIntegration = (enableKey: string) => {
     setConfigs(prev => ({
       ...prev,
@@ -95,7 +170,6 @@ export default function AdminConfigsPage() {
     setShowTokens(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Only include keys that belong to licensed channels and skip unchanged masked secrets
   const buildAllowedPayload = () => {
     return Object.keys(configs)
       .filter((key) => {
@@ -145,14 +219,12 @@ export default function AdminConfigsPage() {
     setTestingEmail(true);
     setMessage({ text: '', type: '' });
 
-    // 1. Save current inputs first and verify save succeeded
     const savedOk = await handleSave();
     if (!savedOk) {
       setTestingEmail(false);
       return;
     }
 
-    // 2. Trigger test email dispatch
     try {
       const res = await fetch(`${API_BASE_URL}/api/v1/admin/test-gmail`, {
         method: 'POST',
@@ -203,14 +275,14 @@ export default function AdminConfigsPage() {
   return (
     <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
       <form onSubmit={handleSave} className="mx-auto max-w-[1600px] space-y-5">
-        {/* Tactical Calm Header */}
+        {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-              Notification Channels &amp; API Integrations
+              Plant Routing, Notification Channels &amp; API Integrations
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Configure enterprise email, WhatsApp, and Telegram gateways for automated patrol digests and SLA escalations.
+              Manage Plant Names and user alert assignments, plus configure enterprise email, WhatsApp, and Telegram gateways.
             </p>
           </div>
 
@@ -350,6 +422,104 @@ export default function AdminConfigsPage() {
           </div>
         )}
 
+        {/* Plant Names & Automated Email Alert Assignments */}
+        <div className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2.5">
+              <Building2 className="h-5 w-5 text-indigo-600" />
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">
+                  Plant Names &amp; Incident Email Alert Assignments
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Add plants (e.g., Test - P1, Test2 - P2) and assign users below. When an incident is created for a plant, all assigned users receive an automatic email alert.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newPlantInput}
+                onChange={(e) => setNewPlantInput(e.target.value)}
+                placeholder="e.g. Test3 - P3"
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold outline-none focus:border-indigo-500 focus:bg-white"
+              />
+              <button
+                type="button"
+                onClick={handleAddPlant}
+                className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add Plant
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {plants.map((plant) => (
+              <span
+                key={plant}
+                className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-800"
+              >
+                {plant}
+                {plants.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemovePlant(plant)}
+                    className="text-indigo-400 hover:text-rose-600"
+                    title="Remove plant"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+
+          {guards.length > 0 && (
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase text-slate-500">
+                    <th className="px-3 py-2.5">User / Guard</th>
+                    <th className="px-3 py-2.5">Email</th>
+                    {plants.map((p) => (
+                      <th key={p} className="px-3 py-2.5 text-center">
+                        {p}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {guards.map((g) => {
+                    const assigned: string[] = Array.isArray(g.assigned_plants) ? g.assigned_plants : [];
+                    return (
+                      <tr key={g.guard_id} className="hover:bg-slate-50/70">
+                        <td className="px-3 py-2 font-bold text-slate-800">
+                          {g.full_name}{' '}
+                          <span className="font-mono text-[10px] text-slate-400">({g.employee_code})</span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-500">{g.email || 'No email set'}</td>
+                        {plants.map((p) => (
+                          <td key={p} className="px-3 py-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={assigned.includes(p)}
+                              disabled={savingPlantUser === g.guard_id}
+                              onChange={() => handleToggleGuardPlant(g, p)}
+                              className="h-4 w-4 cursor-pointer accent-indigo-600"
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         <div className="space-y-5">
           {/* 1. Google Gmail OAuth2 Refresh Token Settings */}
           {allowGmail && (channelFilter === 'ALL' || channelFilter === 'GMAIL') && (
@@ -369,7 +539,7 @@ export default function AdminConfigsPage() {
                       </span>
                     </h2>
                     <p className="mt-0.5 text-xs text-slate-500">
-                      Uses OAuth2 Refresh Token to automatically mint fresh access tokens and email all guards in an Assignment Group.
+                      Uses OAuth2 Refresh Token to automatically mint fresh access tokens and email all users assigned to a Plant or Group.
                     </p>
                   </div>
                 </div>
@@ -421,10 +591,10 @@ export default function AdminConfigsPage() {
 
                     {showOAuthGuide && (
                       <div className="space-y-1.5 rounded-xl bg-slate-900 p-4 text-xs leading-relaxed text-slate-200">
-                        <p><strong>1. Google Cloud Console:</strong> Go to <em>APIs &amp; Services → OAuth consent screen</em> and set Publishing Status to <strong>&ldquo;In production&rdquo;</strong> (so your Refresh Token never expires).</p>
+                        <p><strong>1. Google Cloud Console:</strong> Go to <em>APIs &amp; Services → OAuth consent screen</em> and set Publishing Status to <strong>&ldquo;In production&rdquo;</strong>.</p>
                         <p><strong>2. Create OAuth Client ID:</strong> Go to <em>Credentials → Create Credentials → OAuth client ID (Web application)</em>. Add <code className="text-emerald-300">https://developers.google.com/oauthplayground</code> to <strong>Authorized redirect URIs</strong>.</p>
-                        <p><strong>3. OAuth2 Playground:</strong> Open <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-sky-400 underline">developers.google.com/oauthplayground</a> → Click the top-right Gear icon ⚙️ → Check <strong>&ldquo;Use your own OAuth credentials&rdquo;</strong> and paste your Client ID &amp; Client Secret.</p>
-                        <p><strong>4. Authorize &amp; Exchange:</strong> In Step 1 on the left, enter scope <code className="text-emerald-300">https://www.googleapis.com/auth/gmail.send</code> → Click <strong>Authorize APIs</strong> → In Step 2, click <strong>Exchange authorization code for tokens</strong> → Copy the <strong>Refresh token</strong> (`1//04...`) below!</p>
+                        <p><strong>3. OAuth2 Playground:</strong> Open <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noreferrer" className="text-sky-400 underline">developers.google.com/oauthplayground</a> → Click the Gear icon → Check <strong>&ldquo;Use your own OAuth credentials&rdquo;</strong> and paste your Client ID &amp; Client Secret.</p>
+                        <p><strong>4. Authorize &amp; Exchange:</strong> Enter scope <code className="text-emerald-300">https://www.googleapis.com/auth/gmail.send</code> → Click <strong>Authorize APIs</strong> → Exchange authorization code for tokens → Copy the <strong>Refresh token</strong> below.</p>
                       </div>
                     )}
 

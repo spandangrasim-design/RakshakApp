@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import QRCode from 'qrcode';
 import { pdf } from '@react-pdf/renderer';
-import { 
-  Shield, Download, Plus, Loader2, MapPin, X, ZoomIn, 
+import {
+  Shield, Download, Plus, Loader2, MapPin, X,
   Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw,
   ChevronLeft, ChevronRight, Search, Clock
 } from 'lucide-react';
@@ -18,10 +19,16 @@ interface Checkpoint {
   lat: string;
   lng: string;
   qr_payload?: string | null;
+  sequence_order?: number;
 }
 
-// The signing secret lives ONLY on the server. We reuse the signature the server stored for the checkpoint,
-// or ask the server to sign it. Nothing secret is ever shipped to the browser.
+interface SearchResult {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+}
+
 const buildQrPayload = async (cp: Checkpoint): Promise<string> => {
   const parts = String(cp.qr_payload || '').split('|');
   if (parts.length >= 4 && parts[0] === cp.id && parts[3]) {
@@ -45,7 +52,6 @@ interface PatrolRound {
   renewed_at?: string | null;
 }
 
-// How often a route starts a fresh round on its own. Anything can also be renewed on demand.
 const REPEAT_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Daily (midnight)' },
   { value: '60', label: 'Every 1 hour' },
@@ -62,6 +68,34 @@ declare global {
     L?: any;
   }
 }
+
+const createSelectedPinIcon = (leaflet: any) =>
+  leaflet.divIcon({
+    className: 'rakshak-selected-pin',
+    html: `
+      <div style="width:34px;height:42px;filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45));">
+        <svg width="34" height="42" viewBox="0 0 24 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 0C5.37258 0 0 5.37258 0 12C0 20.25 10.5 29.25 11.25 29.85C11.67 30.18 12.33 30.18 12.75 29.85C13.5 29.25 24 20.25 24 12C24 5.37258 18.6274 0 12 0Z" fill="#dc2626"/>
+          <circle cx="12" cy="11" r="5" fill="#ffffff"/>
+          <circle cx="12" cy="11" r="2.5" fill="#dc2626"/>
+        </svg>
+      </div>
+    `,
+    iconSize: [34, 42],
+    iconAnchor: [17, 42],
+  });
+
+const createNumberedStopIcon = (leaflet: any, num: number) =>
+  leaflet.divIcon({
+    className: 'rakshak-stop-pin',
+    html: `
+      <div style="width:28px;height:28px;border-radius:9999px;background:#0f172a;color:#ffffff;border:2.5px solid #ffffff;box-shadow:0 2px 6px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;font-family:monospace;">
+        ${num}
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
 
 const QRGenerator: React.FC = () => {
   const [roundName, setRoundName] = useState('');
@@ -81,15 +115,49 @@ const QRGenerator: React.FC = () => {
 
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [mapType, setMapType] = useState<'street' | 'satellite'>('street');
-  const [enlargedQR, setEnlargedQR] = useState<QRData | null>(null);
   const [viewingRound, setViewingRound] = useState<PatrolRound | null>(null);
   const [viewingQRs, setViewingQRs] = useState<QRData[]>([]);
+
+  // Location Search Bar State
+  const [locationQuery, setLocationQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const markerInstanceRef = useRef<any>(null);
+  const stopMarkersRef = useRef<any[]>([]);
   const streetLayerRef = useRef<any>(null);
   const satelliteLayerRef = useRef<any>(null);
+
+  const placeSelectionMarker = (lat: number, lng: number, panTo = false) => {
+    const map = mapInstanceRef.current;
+    const leaflet = window.L || L;
+    if (!map || !leaflet) return;
+
+    const icon = createSelectedPinIcon(leaflet);
+    if (!markerInstanceRef.current) {
+      const m = leaflet.marker([lat, lng], { icon, draggable: true }).addTo(map);
+      m.on('dragend', () => {
+        const pos = m.getLatLng();
+        setCpLat(pos.lat.toFixed(6));
+        setCpLng(pos.lng.toFixed(6));
+      });
+      markerInstanceRef.current = m;
+    } else {
+      markerInstanceRef.current.setLatLng([lat, lng]);
+    }
+
+    if (panTo) {
+      map.setView([lat, lng], Math.max(map.getZoom(), 17));
+    }
+
+    setCpLat(lat.toFixed(6));
+    setCpLng(lng.toFixed(6));
+    const generatedId = `CP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    setCpId((prev) => (prev ? prev : generatedId));
+  };
 
   // Fetch all rounds from Hono Backend API
   const fetchRounds = async () => {
@@ -111,7 +179,6 @@ const QRGenerator: React.FC = () => {
     fetchRounds();
   }, []);
 
-  // Leaflet is bundled with the app (no CDN), so the map is ready immediately.
   useEffect(() => {
     window.L = window.L || L;
     setIsMapLoaded(true);
@@ -121,17 +188,17 @@ const QRGenerator: React.FC = () => {
   useEffect(() => {
     if (!isMapLoaded || !mapContainerRef.current || mapInstanceRef.current || !window.L) return;
 
-    const L = window.L;
+    const leaflet = window.L;
     const initialCenter = [22.2751, 73.1560];
 
-    const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
+    const map = leaflet.map(mapContainerRef.current).setView(initialCenter, 16);
 
-    streetLayerRef.current = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    streetLayerRef.current = leaflet.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap',
       maxZoom: 19,
     });
 
-    satelliteLayerRef.current = L.tileLayer(
+    satelliteLayerRef.current = leaflet.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       { attribution: 'Tiles &copy; Esri', maxZoom: 19 }
     );
@@ -139,41 +206,74 @@ const QRGenerator: React.FC = () => {
     streetLayerRef.current.addTo(map);
     mapInstanceRef.current = map;
 
-    const customPinIcon = L.divIcon({
-      className: 'custom-leaflet-marker',
-      html: `
-        <div style="transform: translate(-50%, -100%);">
-          <svg width="34" height="42" viewBox="0 0 24 30" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 0C5.37258 0 0 5.37258 0 12C0 20.25 10.5 29.25 11.25 29.85C11.67 30.18 12.33 30.18 12.75 29.85C13.5 29.25 24 20.25 24 12C24 5.37258 18.6274 0 12 0Z" fill="#2563eb"/>
-            <circle cx="12" cy="11" r="5" fill="white"/>
-            <circle cx="12" cy="11" r="2.5" fill="#1d4ed8"/>
-          </svg>
-        </div>
-      `,
-      iconSize: [0, 0],
-    });
-
     map.on('click', (e: any) => {
       const { lat, lng } = e.latlng;
-
-      if (!markerInstanceRef.current) {
-        markerInstanceRef.current = L.marker([lat, lng], { icon: customPinIcon }).addTo(map);
-      } else {
-        markerInstanceRef.current.setLatLng([lat, lng]);
-      }
-
-      setCpLat(lat.toFixed(6));
-      setCpLng(lng.toFixed(6));
-
-      const generatedId = `CP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-      setCpId((prev) => (prev ? prev : generatedId));
+      placeSelectionMarker(lat, lng, false);
     });
 
     return () => {
       map.remove();
       mapInstanceRef.current = null;
+      markerInstanceRef.current = null;
+      stopMarkersRef.current = [];
     };
   }, [isMapLoaded]);
+
+  // Render numbered stop markers for all checkpoints currently in the circuit
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const leaflet = window.L || L;
+    if (!map || !leaflet) return;
+
+    stopMarkersRef.current.forEach((m) => map.removeLayer(m));
+    stopMarkersRef.current = [];
+
+    currentCheckpoints.forEach((cp, idx) => {
+      const lat = parseFloat(cp.lat);
+      const lng = parseFloat(cp.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const m = leaflet
+          .marker([lat, lng], { icon: createNumberedStopIcon(leaflet, idx + 1) })
+          .bindTooltip(`${idx + 1}. ${cp.name}`, { direction: 'top', offset: [0, -14] })
+          .addTo(map);
+        stopMarkersRef.current.push(m);
+      }
+    });
+  }, [currentCheckpoints, isMapLoaded]);
+
+  // Location Search via OpenStreetMap Nominatim
+  const handleLocationSearch = async () => {
+    const q = locationQuery.trim();
+    if (!q) return;
+    setIsSearchingLocation(true);
+    setSearchError(null);
+    setSearchResults([]);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5`
+      );
+      const data: SearchResult[] = await res.json();
+      if (!Array.isArray(data) || data.length === 0) {
+        setSearchError('No matching locations found. Try a more specific address or landmark.');
+      } else {
+        setSearchResults(data);
+      }
+    } catch {
+      setSearchError('Location search failed. Check your internet connection.');
+    } finally {
+      setIsSearchingLocation(false);
+    }
+  };
+
+  const handleSelectSearchResult = (item: SearchResult) => {
+    const lat = parseFloat(item.lat);
+    const lng = parseFloat(item.lon);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      placeSelectionMarker(lat, lng, true);
+    }
+    setSearchResults([]);
+    setLocationQuery(item.display_name);
+  };
 
   const toggleMapLayer = (type: 'street' | 'satellite') => {
     if (!mapInstanceRef.current) return;
@@ -313,7 +413,6 @@ const QRGenerator: React.FC = () => {
     }
   };
 
-  // Auto-renew when a brand-new guard joins from the Field app (only offered if the industry has that feature)
   const canGuestEnroll = (() => { try { return JSON.parse(localStorage.getItem('visible_modules') || '{}').guest_enrollment === true; } catch { return false; } })();
   const [renewOnJoin, setRenewOnJoin] = useState(false);
   useEffect(() => {
@@ -323,6 +422,7 @@ const QRGenerator: React.FC = () => {
       setRenewOnJoin(row?.key_value === 'true');
     }).catch(() => {});
   }, [canGuestEnroll]);
+
   const toggleRenewOnJoin = async () => {
     const next = !renewOnJoin;
     setRenewOnJoin(next);
@@ -352,7 +452,6 @@ const QRGenerator: React.FC = () => {
     }
   };
 
-  // Generate QR codes & open View Modal
   const handleViewRound = async (round: PatrolRound) => {
     setViewingRound(round);
     const generated: QRData[] = [];
@@ -368,7 +467,6 @@ const QRGenerator: React.FC = () => {
     setViewingQRs(generated);
   };
 
-  // Download PDF (1 QR per page)
   const handleDownloadRoundPDF = async (round: PatrolRound, specificQR?: QRData) => {
     setIsDownloading(true);
     try {
@@ -386,7 +484,6 @@ const QRGenerator: React.FC = () => {
         generatedList.push({ id: cp.id, name: cp.name, lat: cp.lat, lng: cp.lng, qrDataUri: dataUri });
       }
 
-      // Retrieve dynamic industry branding & address
       const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
       const customBrand = JSON.parse(localStorage.getItem('active_tenant_branding') || 'null');
       const brandLogo = customBrand?.logo_url || storedUser.tenant_logo_url || null;
@@ -463,7 +560,7 @@ const QRGenerator: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#f8fafc] p-4 md:p-6 font-sans text-xs text-slate-800">
       <div className="mx-auto max-w-[1600px] space-y-5">
-        {/* Tactical Calm Header with Workspace Dropdown */}
+        {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
           <div>
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
@@ -600,7 +697,7 @@ const QRGenerator: React.FC = () => {
           </button>
         </div>
 
-        {/* ROUTE BUILDER CARD (Kept mounted so Leaflet map retains dimensions cleanly) */}
+        {/* ROUTE BUILDER CARD */}
         <div className={routeWorkspace === 'builder' ? 'rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-5' : 'hidden'}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
             <div>
@@ -608,7 +705,7 @@ const QRGenerator: React.FC = () => {
                 {editingRoundId ? `Editing Route: ${roundName}` : 'Create New Patrol Route & GPS Checkpoints'}
               </h2>
               <p className="text-xs text-slate-500">
-                Click anywhere on the map to drop a pin and auto-populate Latitude, Longitude, and Checkpoint ID.
+                Search for a location or click anywhere on the map to drop a visible marker pin and auto-populate coordinates.
               </p>
             </div>
             <button
@@ -633,15 +730,86 @@ const QRGenerator: React.FC = () => {
             />
           </div>
 
-          {/* Map Section */}
-          <div>
-            <div className="mb-2 flex items-center justify-between">
+          {/* Map Section with Location Search Bar */}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-                <MapPin className="h-3.5 w-3.5 text-brand-600" /> Pick Checkpoint Location on Map
+                <MapPin className="h-3.5 w-3.5 text-rose-600" /> Pick Checkpoint Location on Map
               </label>
               <span className="text-[11px] text-slate-400">
-                Click map to auto-fill Lat, Lng &amp; Checkpoint ID
+                Search a place or click/drag the red pin to auto-fill Lat, Lng &amp; Checkpoint ID
               </span>
+            </div>
+
+            {/* Location Search Bar */}
+            <div className="relative">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={locationQuery}
+                    onChange={(e) => {
+                      setLocationQuery(e.target.value);
+                      if (!e.target.value.trim()) {
+                        setSearchResults([]);
+                        setSearchError(null);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleLocationSearch();
+                      }
+                    }}
+                    placeholder="Search location, plant, gate, street, or city..."
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500 focus:bg-white"
+                  />
+                  {locationQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLocationQuery('');
+                        setSearchResults([]);
+                        setSearchError(null);
+                      }}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-700"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLocationSearch}
+                  disabled={isSearchingLocation || !locationQuery.trim()}
+                  className="inline-flex h-[34px] items-center gap-1.5 rounded-xl bg-slate-900 px-4 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {isSearchingLocation ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                  Search
+                </button>
+              </div>
+
+              {searchError && (
+                <p className="mt-1 text-[11px] font-semibold text-rose-600">{searchError}</p>
+              )}
+
+              {searchResults.length > 0 && (
+                <ul className="absolute left-0 right-0 top-[40px] z-[1100] max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg divide-y divide-slate-100">
+                  {searchResults.map((item) => (
+                    <li key={item.place_id}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectSearchResult(item)}
+                        className="flex w-full items-start gap-2 px-3.5 py-2.5 text-left text-xs text-slate-700 transition hover:bg-slate-50"
+                      >
+                        <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-600" />
+                        <span className="line-clamp-2 font-medium">{item.display_name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-inner">
@@ -732,7 +900,7 @@ const QRGenerator: React.FC = () => {
           {currentCheckpoints.length > 0 && (
             <div className="border-t border-slate-200 pt-4">
               <h3 className="mb-2 text-xs font-extrabold uppercase tracking-wider text-slate-600">
-                Checkpoints in Circuit ({currentCheckpoints.length})
+                Checkpoints in Sequential Order ({currentCheckpoints.length})
               </h3>
               <ul className="mb-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/60 px-3">
                 {currentCheckpoints.map((cp, idx) => (
@@ -791,7 +959,6 @@ const QRGenerator: React.FC = () => {
         {/* SAVED ROUNDS WORKSPACE */}
         {routeWorkspace === 'routes' && (
           <div className="space-y-4">
-            {/* Clean Filter & Search Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
               <div className="flex flex-wrap items-center gap-1.5">
                 {([
@@ -857,7 +1024,6 @@ const QRGenerator: React.FC = () => {
               </div>
             </div>
 
-            {/* Wide Proportional Saved Rounds Table */}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[920px] border-collapse text-left text-xs">
@@ -971,7 +1137,7 @@ const QRGenerator: React.FC = () => {
                 </table>
               </div>
 
-              {/* Numbered Pagination Footer */}
+              {/* Pagination Footer */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-5 py-3">
                 <div className="flex items-center gap-3 text-xs text-slate-600">
                   <span>
@@ -1051,7 +1217,7 @@ const QRGenerator: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <div>
                 <h3 className="text-xl font-extrabold text-slate-900">{viewingRound.name}</h3>
-                <p className="text-xs text-slate-500">{viewingRound.checkpoints?.length || 0} Checkpoints</p>
+                <p className="text-xs text-slate-500">{viewingRound.checkpoints?.length || 0} Checkpoints (Sequential Order)</p>
               </div>
               <div className="flex gap-2">
                 <button
@@ -1068,8 +1234,11 @@ const QRGenerator: React.FC = () => {
             </div>
 
             <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-              {viewingQRs.map((cp) => (
+              {viewingQRs.map((cp, idx) => (
                 <div key={cp.id} className="flex flex-col items-center rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <span className="mb-1 self-start rounded-full bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-bold text-white">
+                    #{idx + 1}
+                  </span>
                   <img src={cp.qrDataUri} alt={cp.name} className="mb-2 h-32 w-32 rounded bg-white" />
                   <span className="text-center text-sm font-bold text-slate-800">{cp.name}</span>
                   <span className="font-mono text-xs text-slate-500">{cp.id}</span>
