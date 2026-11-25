@@ -4681,6 +4681,7 @@ app.post('/api/v1/incidents', async (c) => {
         incidentId: incidentUuid,
         priority: body.priority || '',
         plantName: targetPlant,
+        plantCode: targetPlantCode || '',
         description: description || title || 'Security Incident',
         photoUrl: finalPhotoUrl,
         assignmentGroup: targetGroup,
@@ -4692,7 +4693,7 @@ app.post('/api/v1/incidents', async (c) => {
     }
 
     const emailLogLine = emailResult.ok
-      ? `Incident created & Auto-Email Dispatched to [${targetGroup}] members (${emailResult.recipients.join(', ')})`
+      ? `Incident created for Plant [${targetPlant}] & Auto-Email Dispatched to (${emailResult.recipients.join(', ')})`
       : `Incident created. Auto-Email Notice: ${emailResult.error}`;
 
     await supabase.from('incident_updates').insert([{
@@ -5047,6 +5048,7 @@ app.patch('/api/v1/incidents/:id', async (c) => {
         incidentId,
         priority: body.priority || current.priority || '',
         plantName: targetPlant,
+        plantCode: body.plant_code || current.plant_code || '',
         description: body.description || current.description || 'Security Incident',
         photoUrl: current.photo_url || null,
         assignmentGroup: targetGroup,
@@ -5058,8 +5060,8 @@ app.patch('/api/v1/incidents/:id', async (c) => {
       });
 
       emailLogLine = emailDispatchResult.ok
-        ? `Auto-Email Dispatched to [${targetGroup}] members (${emailDispatchResult.recipients.join(', ')})`
-        : `Auto-Email Notice for [${targetGroup}]: ${emailDispatchResult.error}`;
+        ? `Auto-Email Dispatched for Plant [${targetPlant}] to (${emailDispatchResult.recipients.join(', ')})`
+        : `Auto-Email Notice for Plant [${targetPlant}]: ${emailDispatchResult.error}`;
     }
 
     let createdActivity = null;
@@ -5341,6 +5343,7 @@ async function sendGroupAssignmentEmail(
     incidentId: string;
     priority: string;
     plantName?: string;
+    plantCode?: string;
     description: string;
     photoUrl: string | null;
     assignmentGroup: string;
@@ -5430,7 +5433,7 @@ async function sendGroupAssignmentEmail(
     return {
       ok: false,
       recipients: [],
-      error: `No members in "${params.assignmentGroup}" have an email address configured on the Guards page.`,
+      error: `No users assigned to plant "${params.plantName || 'Unassigned Plant'}" have an email address configured.`,
     };
   }
 
@@ -5442,7 +5445,10 @@ async function sendGroupAssignmentEmail(
   const caseNumber = params.caseNumber
     ? `RKS-${String(params.caseNumber).padStart(6, '0')}`
     : `RKS-${params.incidentId.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`;
-  const plantLabel = params.plantName ? `Plant: ${params.plantName}` : params.assignmentGroup;
+  const finalPlantCode = (params.plantCode || matchedPlantCode || '').trim();
+  const plantLabel = params.plantName
+    ? `${params.plantName}${finalPlantCode ? ` (${finalPlantCode})` : ''}`
+    : 'Unassigned Plant';
   const subjectText = `[Rakshak Alert - ${plantLabel}] Case ${caseNumber}`;
   const encodedSubject = `=?utf-8?B?${utf8ToBase64(subjectText)}?=`;
 
@@ -5452,19 +5458,27 @@ async function sendGroupAssignmentEmail(
       <div style="background: #0f172a; color: #ffffff; padding: 16px 20px;">
         <h2 style="margin: 0; font-size: 17px;">Rakshak Security Dispatch Alert</h2>
         <p style="margin: 4px 0 0; font-size: 12px; color: #94a3b8;">
-          Assignment Group: <strong style="color:#38bdf8;">${esc(params.assignmentGroup)}</strong> • Case: ${caseNumber}
+          Plant Name: <strong style="color:#38bdf8;">${esc(params.plantName || 'Unassigned Plant')}</strong>${finalPlantCode ? ` • Plant ID: <strong style="color:#38bdf8;">${esc(finalPlantCode)}</strong>` : ''} • Case: ${caseNumber}
         </p>
       </div>
       <div style="padding: 20px; color: #1e293b; font-size: 13px; line-height: 1.6; background: #ffffff;">
-        <p style="margin-top:0;">This security incident has been assigned to <strong>${esc(params.assignmentGroup)}</strong>.</p>
+        <p style="margin-top:0;">This security incident has been routed to <strong>${esc(params.plantName || 'Unassigned Plant')}${finalPlantCode ? ` (${esc(finalPlantCode)})` : ''}</strong>.</p>
         <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold; width: 35%;">Case ID</td>
             <td style="padding: 6px 8px; border: 1px solid #e2e8f0; font-family: monospace;">${caseNumber}</td>
           </tr>
           <tr>
-            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Plant Name / Status</td>
-            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${esc(params.plantName || 'Unassigned Plant')}</strong> (${esc(params.status)})</td>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Plant Name</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;"><strong>${esc(params.plantName || 'Unassigned Plant')}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Plant ID</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0; font-family: monospace;"><strong>${esc(finalPlantCode || '—')}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Status</td>
+            <td style="padding: 6px 8px; border: 1px solid #e2e8f0;">${esc(params.status)}</td>
           </tr>
           <tr>
             <td style="padding: 6px 8px; background: #f8fafc; border: 1px solid #e2e8f0; font-weight: bold;">Assignment Group</td>

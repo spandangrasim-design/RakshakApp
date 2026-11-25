@@ -728,7 +728,7 @@ export const GuardsView: React.FC = () => {
               People &amp; App Access
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Manage security personnel, custom response units, patrol routes, and granular mobile app permissions.
+              Manage security personnel, patrol routes, and granular mobile app permissions.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -827,7 +827,7 @@ export const GuardsView: React.FC = () => {
             className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300"
           >
             <div>
-              <div className="text-[11px] font-bold uppercase text-blue-700">Response Units</div>
+              <div className="hidden text-[11px] font-bold uppercase text-blue-700">Response Units</div>
               <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{availableGroups.length}</div>
             </div>
             <Sliders className="h-5 w-5 text-blue-600" />

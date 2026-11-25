@@ -81,6 +81,7 @@ export const IncidentsDashboard: React.FC = () => {
   const [newCallerGuardId, setNewCallerGuardId] = useState('');
   const [newCategory, setNewCategory] = useState('Security / Patrol');
   const [newPlantId, setNewPlantId] = useState('');
+  const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newPhotoBase64, setNewPhotoBase64] = useState<string | null>(null);
   const [newPhotoName, setNewPhotoName] = useState<string | null>(null);
@@ -227,7 +228,7 @@ export const IncidentsDashboard: React.FC = () => {
     try {
       const payload = {
         guard_id: newCallerGuardId || null,
-        title: newDescription.trim().slice(0, 45),
+        title: newTitle.trim() || newDescription.trim().slice(0, 45),
         description: newDescription.trim(),
         category: newCategory,
         plant_id: chosenPlant.id,
@@ -245,6 +246,7 @@ export const IncidentsDashboard: React.FC = () => {
       const data = await res.json();
       if (data.success && data.incident) {
         setShowCreateModal(false);
+        setNewTitle('');
         setNewDescription('');
         setNewPhotoBase64(null);
         setNewPhotoName(null);
@@ -798,7 +800,19 @@ export const IncidentsDashboard: React.FC = () => {
               </div>
 
               <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-700">Incident Description *</label>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">Incident Summary / Title *</label>
+                <input
+                  type="text"
+                  required
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g. Gate 2 perimeter alarm, CCTV offline, unauthorized entry..."
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">Details Note *</label>
                 <textarea
                   rows={3}
                   required
