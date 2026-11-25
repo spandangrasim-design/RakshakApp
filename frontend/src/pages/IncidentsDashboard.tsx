@@ -14,30 +14,21 @@ import {
   X,
   Paperclip,
   Building2,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Settings2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
+import { PlantManagementPanel, PlantRecord } from '../components/PlantManagementPanel';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
-
-const DEFAULT_GROUPS = [
-  'Security Operations L1',
-  'Quick Response Team (QRT)',
-  'Site Supervisors L2',
-  'Fire & Safety Response',
-];
-
-const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
 
 interface GuardUser {
   guard_id: string;
   full_name: string;
   employee_code: string;
+  email?: string | null;
   site_location?: string;
   is_active?: boolean;
-  assignment_group?: string | null;
-  assignment_groups?: string[];
-  assigned_plants?: string[];
 }
 
 interface IncidentRecord {
@@ -60,11 +51,11 @@ interface IncidentRecord {
 
 export const IncidentsDashboard: React.FC = () => {
   const navigate = useNavigate();
+  const [activeView, setActiveView] = useState<'queue' | 'plants'>('queue');
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
   const [guardsMap, setGuardsMap] = useState<Record<string, string>>({});
-  const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
-  const [availablePlants, setAvailablePlants] = useState<string[]>(DEFAULT_PLANTS);
+  const [plants, setPlants] = useState<PlantRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   // Server-side Filter & Pagination State
@@ -88,8 +79,7 @@ export const IncidentsDashboard: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [newCallerGuardId, setNewCallerGuardId] = useState('');
   const [newCategory, setNewCategory] = useState('Security / Patrol');
-  const [newPlantName, setNewPlantName] = useState(DEFAULT_PLANTS[0]);
-  const [newAssignmentGroup, setNewAssignmentGroup] = useState('Security Operations L1');
+  const [newPlantName, setNewPlantName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newPhotoBase64, setNewPhotoBase64] = useState<string | null>(null);
   const [newPhotoName, setNewPhotoName] = useState<string | null>(null);
@@ -102,17 +92,17 @@ export const IncidentsDashboard: React.FC = () => {
     return headers;
   }, []);
 
-  const getGuardGroups = (g: GuardUser): string[] => {
-    if (Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0) {
-      return g.assignment_groups;
-    }
-    if (g.assignment_group && g.assignment_group.trim() !== '') {
-      return [g.assignment_group.trim()];
-    }
-    return ['Security Operations L1'];
-  };
+  const activePlants = useMemo(() => plants.filter((p) => p.is_active !== false), [plants]);
 
-  // Debounce search input so typing doesn't spam API requests
+  const plantTeamMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    plants.forEach((p) => {
+      if (p.team_name) map[p.name] = p.team_name;
+    });
+    return map;
+  }, [plants]);
+
+  // Debounce search input
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedQuery(searchInput.trim());
@@ -121,12 +111,12 @@ export const IncidentsDashboard: React.FC = () => {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Load Guards, Assignment Groups & Configured Plants once
+  // Load Guards & Plants once
   useEffect(() => {
     Promise.all([
       fetch(`${API_BASE}/guards`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ guards: [] })),
-      fetch(`${API_BASE}/admin/configs`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ configs: [] })),
-    ]).then(([gData, cfgData]) => {
+      fetch(`${API_BASE}/plants`, { headers: authHeaders }).then((r) => r.json()).catch(() => ({ plants: [] })),
+    ]).then(([gData, pData]) => {
       const loadedGuards: GuardUser[] = gData.guards || [];
       setGuards(loadedGuards);
       if (loadedGuards.length > 0) {
@@ -139,57 +129,14 @@ export const IncidentsDashboard: React.FC = () => {
       });
       setGuardsMap(gMap);
 
-      let customGroups: string[] = [...DEFAULT_GROUPS];
-      let customPlants: string[] = [...DEFAULT_PLANTS];
-
-      if (cfgData.success && Array.isArray(cfgData.configs)) {
-        const foundGroups = cfgData.configs.find(
-          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
-        );
-        if (foundGroups?.key_value) {
-          try {
-            const parsed = JSON.parse(foundGroups.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) customGroups = parsed;
-          } catch (_) {}
-        }
-
-        const foundPlants = cfgData.configs.find(
-          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_PLANTS'
-        );
-        if (foundPlants?.key_value) {
-          try {
-            const parsed = JSON.parse(foundPlants.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) customPlants = parsed;
-          } catch (_) {}
-        }
-      }
-
-      const groupSet = new Set<string>(customGroups);
-      const plantSet = new Set<string>(customPlants);
-      loadedGuards.forEach((g) => {
-        getGuardGroups(g).forEach((grp) => {
-          if (grp) groupSet.add(grp);
-        });
-        (g.assigned_plants || []).forEach((p) => {
-          if (p) plantSet.add(p);
-        });
-      });
-
-      const allGroups = Array.from(groupSet);
-      const allPlants = Array.from(plantSet);
-      setAvailableGroups(allGroups);
-      setAvailablePlants(allPlants);
-
-      if (allGroups.length > 0 && !allGroups.includes(newAssignmentGroup)) {
-        setNewAssignmentGroup(allGroups[0]);
-      }
-      if (allPlants.length > 0 && !allPlants.includes(newPlantName)) {
-        setNewPlantName(allPlants[0]);
-      }
+      const loadedPlants: PlantRecord[] = pData.plants || [];
+      setPlants(loadedPlants);
+      const firstActive = loadedPlants.find((p) => p.is_active !== false);
+      if (firstActive) setNewPlantName(firstActive.name);
     });
   }, [authHeaders]);
 
-  // Fetch Paginated Page of Incidents from Server
+  // Fetch Paginated Incidents
   const fetchPaginatedIncidents = useCallback(async () => {
     try {
       setLoading(true);
@@ -261,6 +208,8 @@ export const IncidentsDashboard: React.FC = () => {
       alert('Please enter an incident summary / description.');
       return;
     }
+    const chosenPlant = newPlantName || activePlants[0]?.name || 'Test - P1';
+    const mappedTeam = plantTeamMap[chosenPlant] || chosenPlant;
 
     setIsCreating(true);
     setBanner(null);
@@ -271,8 +220,8 @@ export const IncidentsDashboard: React.FC = () => {
         title: newDescription.trim().slice(0, 45),
         description: newDescription.trim(),
         category: newCategory,
-        plant_name: newPlantName,
-        assignment_group: newAssignmentGroup,
+        plant_name: chosenPlant,
+        assignment_group: mappedTeam,
         photo_url: newPhotoBase64 || null,
       };
 
@@ -294,22 +243,22 @@ export const IncidentsDashboard: React.FC = () => {
         if (data.email_dispatched) {
           setBanner({
             type: 'ok',
-            text: `New incident created for "${newPlantName}" and alert dispatched to ${(
+            text: `New incident created for "${chosenPlant}" and email alert dispatched to ${(
               data.email_recipients || []
             ).join(', ')}.`,
           });
         } else {
           setBanner({
             type: 'err',
-            text: `Incident created for "${newPlantName}", but auto-email reported: ${
-              data.email_error || 'No emails configured for this plant/group'
+            text: `Incident created for "${chosenPlant}", but auto-email reported: ${
+              data.email_error || 'No users with email assigned to this plant'
             }`,
           });
         }
       } else {
         alert(data.message || 'Failed to create incident.');
       }
-    } catch (err) {
+    } catch {
       alert('Network error while creating incident.');
     } finally {
       setIsCreating(false);
@@ -329,14 +278,12 @@ export const IncidentsDashboard: React.FC = () => {
     return 'Field Patrol Guard';
   };
 
-  const renderPlantBadge = (plant?: string) => (
-    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
-      <Building2 className="h-3 w-3" />
-      {plant || 'Unassigned Plant'}
-    </span>
-  );
+  const resolvePlantDisplay = (item: IncidentRecord) => {
+    const pName = (item.plant_name || '').trim() || (item.assignment_group || '').trim() || 'Test - P1';
+    const team = plantTeamMap[pName] || (item.assignment_group && item.assignment_group !== pName ? item.assignment_group : null);
+    return { pName, team };
+  };
 
-  // Compute compact numbered page window
   const pageNumbers = useMemo(() => {
     const pages: (number | 'ellipsis')[] = [];
     if (totalPages <= 7) {
@@ -366,362 +313,401 @@ export const IncidentsDashboard: React.FC = () => {
               Incidents &amp; Plant Triage Queue
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Paginated security incident log routed by Plant Name with automated email alerts to assigned plant teams.
+              Unified plant-based incident routing with automated email alerts to assigned plant teams.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
-              onClick={fetchPaginatedIncidents}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+              onClick={() => setActiveView((v) => (v === 'queue' ? 'plants' : 'queue'))}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
+                activeView === 'plants'
+                  ? 'border-indigo-600 bg-indigo-600 text-white shadow-xs'
+                  : 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
+              }`}
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-brand-600' : ''}`} />
-              Refresh
+              <Settings2 className="h-3.5 w-3.5" />
+              {activeView === 'plants' ? '← Back to Incident Queue' : `Manage Plants (${plants.length})`}
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowCreateModal(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
-            >
-              <Plus className="h-4 w-4 text-emerald-400" />
-              Log Incident
-            </button>
-          </div>
-        </div>
+            {activeView === 'queue' && (
+              <>
+                <button
+                  type="button"
+                  onClick={fetchPaginatedIncidents}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin text-brand-600' : ''}`} />
+                  Refresh
+                </button>
 
-        {banner && (
-          <div
-            className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-xs font-bold ${
-              banner.type === 'ok'
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                : 'border-rose-200 bg-rose-50 text-rose-900'
-            }`}
-          >
-            <span>{banner.text}</span>
-            <button onClick={() => setBanner(null)} className="rounded p-1 hover:bg-black/5">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Summary KPI Strip */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <button
-            type="button"
-            onClick={() => {
-              setStatusTab('ALL');
-              setPlantFilter('ALL');
-              setPage(1);
-            }}
-            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
-              statusTab === 'ALL' && plantFilter === 'ALL'
-                ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div>
-              <div className={`text-[11px] font-bold uppercase ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
-                All Logged Cases
-              </div>
-              <div className="mt-1 font-mono text-2xl font-extrabold">{summaryCounts.total}</div>
-            </div>
-            <ShieldAlert className={`h-5 w-5 ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setStatusTab('OPEN');
-              setPage(1);
-            }}
-            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
-              statusTab === 'OPEN'
-                ? 'border-amber-500 bg-amber-50/70 ring-2 ring-amber-500/20'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div>
-              <div className="text-[11px] font-bold uppercase text-amber-700">Open / Active</div>
-              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{summaryCounts.open}</div>
-            </div>
-            <Clock className="h-5 w-5 text-amber-600" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setStatusTab('RESOLVED');
-              setPage(1);
-            }}
-            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
-              statusTab === 'RESOLVED'
-                ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div>
-              <div className="text-[11px] font-bold uppercase text-emerald-700">Resolved</div>
-              <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{summaryCounts.resolved}</div>
-            </div>
-            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-          </button>
-        </div>
-
-        {/* Filter & Search Toolbar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(['ALL', 'OPEN', 'RESOLVED'] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  setStatusTab(tab);
-                  setPage(1);
-                }}
-                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                  statusTab === tab
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {tab === 'ALL' ? 'All Status' : tab === 'OPEN' ? 'Open' : 'Resolved'}
-              </button>
-            ))}
-
-            <div className="mx-1 h-4 w-px bg-slate-200" />
-
-            <div className="inline-flex items-center gap-1.5 text-slate-500">
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <select
-                value={plantFilter}
-                onChange={(e) => {
-                  setPlantFilter(e.target.value);
-                  setPage(1);
-                }}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 outline-none"
-              >
-                <option value="ALL">All Plants</option>
-                {availablePlants.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Search */}
-          <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 focus-within:border-brand-500 focus-within:bg-white">
-            <select
-              value={searchField}
-              onChange={(e) => {
-                setSearchField(e.target.value as any);
-                setPage(1);
-              }}
-              className="border-r border-slate-200 bg-transparent px-2.5 py-1.5 text-xs font-bold text-slate-700 outline-none"
-            >
-              <option value="number">Case ID</option>
-              <option value="short_description">Description</option>
-              <option value="caller">Guard</option>
-            </select>
-            <input
-              type="text"
-              placeholder="Search across all pages..."
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              className="w-44 bg-transparent px-3 py-1.5 text-xs text-slate-800 outline-none sm:w-56"
-            />
-            {searchInput ? (
-              <button
-                type="button"
-                onClick={() => setSearchInput('')}
-                className="pr-2.5 text-slate-400 hover:text-slate-700"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : (
-              <Search className="mr-2.5 h-3.5 w-3.5 text-slate-400" />
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-slate-800"
+                >
+                  <Plus className="h-4 w-4 text-emerald-400" />
+                  Log Incident
+                </button>
+              </>
             )}
           </div>
         </div>
 
-        {/* Paginated Incidents Table */}
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                  <th className="w-[125px] py-3.5 pl-5 pr-3">Case ID</th>
-                  <th className="w-[155px] px-3 py-3.5">Plant Name</th>
-                  <th className="px-4 py-3.5">Incident Summary</th>
-                  <th className="w-[165px] px-3 py-3.5">Reported By</th>
-                  <th className="w-[205px] px-3 py-3.5">Response Group</th>
-                  <th className="w-[115px] px-3 py-3.5">Status</th>
-                  <th className="w-[145px] px-3 py-3.5">Reported At</th>
-                  <th className="w-[100px] py-3.5 pl-3 pr-5 text-right">Evidence</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {loading ? (
-                  Array.from({ length: 6 }).map((_, idx) => (
-                    <tr key={idx}>
-                      <td colSpan={8} className="px-4 py-3.5">
-                        <div className="h-5 w-full animate-pulse rounded-lg bg-slate-100" />
-                      </td>
-                    </tr>
-                  ))
-                ) : incidents.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-slate-400">
-                      No incidents found matching your current filter criteria.
-                    </td>
-                  </tr>
-                ) : (
-                  incidents.map((item) => {
-                    const caseCode = getCaseCode(item);
-                    const targetId = item.client_incident_id || item.incident_id || item.id || '';
-                    const isResolved = (item.status || '').toUpperCase() === 'RESOLVED';
+        {activeView === 'plants' ? (
+          <PlantManagementPanel
+            guards={guards}
+            authHeaders={authHeaders}
+            onPlantsChanged={(updated) => {
+              setPlants(updated);
+              const firstActive = updated.find((p) => p.is_active !== false);
+              if (firstActive && !updated.some((p) => p.name === newPlantName && p.is_active !== false)) {
+                setNewPlantName(firstActive.name);
+              }
+            }}
+          />
+        ) : (
+          <>
+            {banner && (
+              <div
+                className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-xs font-bold ${
+                  banner.type === 'ok'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : 'border-rose-200 bg-rose-50 text-rose-900'
+                }`}
+              >
+                <span>{banner.text}</span>
+                <button onClick={() => setBanner(null)} className="rounded p-1 hover:bg-black/5">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
 
-                    return (
-                      <tr
-                        key={targetId || caseCode}
-                        onClick={() => targetId && navigate(`/incidents/${encodeURIComponent(targetId)}`)}
-                        className="group cursor-pointer transition hover:bg-slate-50/90"
-                      >
-                        <td className="whitespace-nowrap py-3.5 pl-5 pr-3 font-mono text-xs font-extrabold text-brand-700">
-                          <span className="inline-flex items-center gap-1">
-                            {caseCode}
-                            <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3.5">{renderPlantBadge(item.plant_name)}</td>
-                        <td className="max-w-md xl:max-w-xl px-4 py-3.5">
-                          <div className="truncate font-bold text-slate-900">{item.title || 'Patrol Incident'}</div>
-                          <div className="truncate text-[11px] text-slate-500">{item.description}</div>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3.5 font-semibold text-slate-700">
-                          {resolveCallerName(item)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3.5 text-slate-600">
-                          {item.assignment_group || 'Security Operations L1'}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3.5">
-                          <span
-                            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
-                              isResolved
-                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                : 'border-amber-200 bg-amber-50 text-amber-800'
-                            }`}
-                          >
-                            {item.status || 'OPEN'}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-500">
-                          {item.reported_at
-                            ? new Date(item.reported_at).toLocaleString([], {
-                                month: 'short',
-                                day: '2-digit',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })
-                            : '—'}
-                        </td>
-                        <td
-                          className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {item.photo_url ? (
-                            <button
-                              type="button"
-                              onClick={() => setPreviewPhoto(getSecureMediaUrl(item.photo_url!))}
-                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100"
-                            >
-                              <ImageIcon className="h-3.5 w-3.5 text-brand-600" />
-                              Photo
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-300">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+            {/* Summary KPI Strip */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusTab('ALL');
+                  setPlantFilter('ALL');
+                  setPage(1);
+                }}
+                className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                  statusTab === 'ALL' && plantFilter === 'ALL'
+                    ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div>
+                  <div className={`text-[11px] font-bold uppercase ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-slate-300' : 'text-slate-500'}`}>
+                    All Logged Cases
+                  </div>
+                  <div className="mt-1 font-mono text-2xl font-extrabold">{summaryCounts.total}</div>
+                </div>
+                <ShieldAlert className={`h-5 w-5 ${statusTab === 'ALL' && plantFilter === 'ALL' ? 'text-sky-400' : 'text-slate-400'}`} />
+              </button>
 
-          {/* Pagination Footer */}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3">
-            <div className="flex items-center gap-3 text-xs text-slate-600">
-              <span>
-                Showing <strong className="font-mono text-slate-900">{startItem}</strong>–
-                <strong className="font-mono text-slate-900">{endItem}</strong> of{' '}
-                <strong className="font-mono text-slate-900">{totalRecords}</strong> cases
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusTab('OPEN');
+                  setPage(1);
+                }}
+                className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                  statusTab === 'OPEN'
+                    ? 'border-amber-500 bg-amber-50/70 ring-2 ring-amber-500/20'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div>
+                  <div className="text-[11px] font-bold uppercase text-amber-700">Open / Active</div>
+                  <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{summaryCounts.open}</div>
+                </div>
+                <Clock className="h-5 w-5 text-amber-600" />
+              </button>
 
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-400">Per page:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusTab('RESOLVED');
+                  setPage(1);
+                }}
+                className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+                  statusTab === 'RESOLVED'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div>
+                  <div className="text-[11px] font-bold uppercase text-emerald-700">Resolved</div>
+                  <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{summaryCounts.resolved}</div>
+                </div>
+                <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+              </button>
+            </div>
+
+            {/* Filter & Search Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(['ALL', 'OPEN', 'RESOLVED'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => {
+                      setStatusTab(tab);
+                      setPage(1);
+                    }}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                      statusTab === tab
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {tab === 'ALL' ? 'All Status' : tab === 'OPEN' ? 'Open' : 'Resolved'}
+                  </button>
+                ))}
+
+                <div className="mx-1 h-4 w-px bg-slate-200" />
+
+                <div className="inline-flex items-center gap-1.5 text-slate-500">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <select
+                    value={plantFilter}
+                    onChange={(e) => {
+                      setPlantFilter(e.target.value);
+                      setPage(1);
+                    }}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 outline-none"
+                  >
+                    <option value="ALL">All Plants</option>
+                    {plants.map((p) => (
+                      <option key={p.id} value={p.name}>
+                        {p.name}{p.is_active === false ? ' (Disabled)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 focus-within:border-brand-500 focus-within:bg-white">
                 <select
-                  value={pageSize}
+                  value={searchField}
                   onChange={(e) => {
-                    setPageSize(Number(e.target.value));
+                    setSearchField(e.target.value as any);
                     setPage(1);
                   }}
-                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                  className="border-r border-slate-200 bg-transparent px-2.5 py-1.5 text-xs font-bold text-slate-700 outline-none"
                 >
-                  <option value={20}>20</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
+                  <option value="number">Case ID</option>
+                  <option value="short_description">Description</option>
+                  <option value="caller">Guard</option>
                 </select>
+                <input
+                  type="text"
+                  placeholder="Search across all pages..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  className="w-44 bg-transparent px-3 py-1.5 text-xs text-slate-800 outline-none sm:w-56"
+                />
+                {searchInput ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearchInput('')}
+                    className="pr-2.5 text-slate-400 hover:text-slate-700"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <Search className="mr-2.5 h-3.5 w-3.5 text-slate-400" />
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                disabled={page <= 1 || loading}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
-              >
-                <ChevronLeft className="h-3.5 w-3.5" /> Prev
-              </button>
+            {/* Unified Incidents Table (Plant Name + Mapped Team merged) */}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[920px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                      <th className="w-[125px] py-3.5 pl-5 pr-3">Case ID</th>
+                      <th className="w-[220px] px-3 py-3.5">Plant &amp; Assigned Team</th>
+                      <th className="px-4 py-3.5">Incident Summary</th>
+                      <th className="w-[165px] px-3 py-3.5">Reported By</th>
+                      <th className="w-[115px] px-3 py-3.5">Status</th>
+                      <th className="w-[145px] px-3 py-3.5">Reported At</th>
+                      <th className="w-[100px] py-3.5 pl-3 pr-5 text-right">Evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {loading ? (
+                      Array.from({ length: 6 }).map((_, idx) => (
+                        <tr key={idx}>
+                          <td colSpan={7} className="px-4 py-3.5">
+                            <div className="h-5 w-full animate-pulse rounded-lg bg-slate-100" />
+                          </td>
+                        </tr>
+                      ))
+                    ) : incidents.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-400">
+                          No incidents found matching your current filter criteria.
+                        </td>
+                      </tr>
+                    ) : (
+                      incidents.map((item) => {
+                        const caseCode = getCaseCode(item);
+                        const targetId = item.client_incident_id || item.incident_id || item.id || '';
+                        const isResolved = (item.status || '').toUpperCase() === 'RESOLVED';
+                        const { pName, team } = resolvePlantDisplay(item);
 
-              {pageNumbers.map((pNum, idx) =>
-                pNum === 'ellipsis' ? (
-                  <span key={`el-${idx}`} className="px-2 text-slate-400">
-                    …
+                        return (
+                          <tr
+                            key={targetId || caseCode}
+                            onClick={() => targetId && navigate(`/incidents/${encodeURIComponent(targetId)}`)}
+                            className="group cursor-pointer transition hover:bg-slate-50/90"
+                          >
+                            <td className="whitespace-nowrap py-3.5 pl-5 pr-3 font-mono text-xs font-extrabold text-brand-700">
+                              <span className="inline-flex items-center gap-1">
+                                {caseCode}
+                                <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
+                              </span>
+                            </td>
+                            <td className="px-3 py-3.5">
+                              <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+                                <Building2 className="h-3 w-3" />
+                                {pName}
+                              </span>
+                              {team && (
+                                <div className="mt-0.5 truncate text-[10px] font-semibold text-slate-500">
+                                  {team}
+                                </div>
+                              )}
+                            </td>
+                            <td className="max-w-md xl:max-w-xl px-4 py-3.5">
+                              <div className="truncate font-bold text-slate-900">{item.title || 'Patrol Incident'}</div>
+                              <div className="truncate text-[11px] text-slate-500">{item.description}</div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3.5 font-semibold text-slate-700">
+                              {resolveCallerName(item)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3.5">
+                              <span
+                                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                                  isResolved
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'border-amber-200 bg-amber-50 text-amber-800'
+                                }`}
+                              >
+                                {item.status || 'OPEN'}
+                              </span>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3.5 font-mono text-[11px] text-slate-500">
+                              {item.reported_at
+                                ? new Date(item.reported_at).toLocaleString([], {
+                                    month: 'short',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : '—'}
+                            </td>
+                            <td
+                              className="whitespace-nowrap py-3.5 pl-3 pr-5 text-right"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {item.photo_url ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewPhoto(getSecureMediaUrl(item.photo_url!))}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100"
+                                >
+                                  <ImageIcon className="h-3.5 w-3.5 text-brand-600" />
+                                  Photo
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-slate-300">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3">
+                <div className="flex items-center gap-3 text-xs text-slate-600">
+                  <span>
+                    Showing <strong className="font-mono text-slate-900">{startItem}</strong>–
+                    <strong className="font-mono text-slate-900">{endItem}</strong> of{' '}
+                    <strong className="font-mono text-slate-900">{totalRecords}</strong> cases
                   </span>
-                ) : (
-                  <button
-                    key={pNum}
-                    type="button"
-                    onClick={() => setPage(pNum)}
-                    className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
-                      page === pNum
-                        ? 'bg-slate-900 text-white shadow-xs'
-                        : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    {pNum}
-                  </button>
-                )
-              )}
 
-              <button
-                type="button"
-                disabled={page >= totalPages || loading}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
-              >
-                Next <ChevronRight className="h-3.5 w-3.5" />
-              </button>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400">Per page:</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setPage(1);
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 outline-none"
+                    >
+                      <option value={20}>20</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={page <= 1 || loading}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                  </button>
+
+                  {pageNumbers.map((pNum, idx) =>
+                    pNum === 'ellipsis' ? (
+                      <span key={`el-${idx}`} className="px-2 text-slate-400">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={pNum}
+                        type="button"
+                        onClick={() => setPage(pNum)}
+                        className={`min-w-[2rem] rounded-lg px-2.5 py-1.5 font-mono text-xs font-bold transition ${
+                          page === pNum
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {pNum}
+                      </button>
+                    )
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={page >= totalPages || loading}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    Next <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
       {/* Photo Lightbox Modal */}
@@ -750,7 +736,7 @@ export const IncidentsDashboard: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h2 className="text-base font-extrabold text-slate-900">Log New Security Incident</h2>
-                <p className="text-[11px] text-slate-500">Automatically alerts all users assigned to the selected Plant Name.</p>
+                <p className="text-[11px] text-slate-500">Automatically routes &amp; emails all users assigned to the selected Plant.</p>
               </div>
               <button
                 type="button"
@@ -795,36 +781,19 @@ export const IncidentsDashboard: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant Name *</label>
-                  <select
-                    value={newPlantName}
-                    onChange={(e) => setNewPlantName(e.target.value)}
-                    className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
-                  >
-                    {availablePlants.map((plant) => (
-                      <option key={plant} value={plant}>
-                        {plant}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Assignment Group</label>
-                  <select
-                    value={newAssignmentGroup}
-                    onChange={(e) => setNewAssignmentGroup(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
-                  >
-                    {availableGroups.map((grp) => (
-                      <option key={grp} value={grp}>
-                        {grp}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant Name *</label>
+                <select
+                  value={newPlantName}
+                  onChange={(e) => setNewPlantName(e.target.value)}
+                  className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
+                >
+                  {activePlants.map((plant) => (
+                    <option key={plant.id} value={plant.name}>
+                      {plant.name}{plant.team_name ? ` — ${plant.team_name}` : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>

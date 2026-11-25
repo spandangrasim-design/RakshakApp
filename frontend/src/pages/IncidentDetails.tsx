@@ -13,17 +13,9 @@ import {
   Building2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
+import { PlantRecord } from '../components/PlantManagementPanel';
 
 const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
-
-const DEFAULT_GROUPS = [
-  'Security Operations L1',
-  'Quick Response Team (QRT)',
-  'Site Supervisors L2',
-  'Fire & Safety Response',
-];
-
-const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
 
 interface GuardUser {
   guard_id: string;
@@ -33,9 +25,6 @@ interface GuardUser {
   role?: string;
   site_location?: string;
   is_active?: boolean;
-  assignment_group?: string | null;
-  assignment_groups?: string[];
-  assigned_plants?: string[];
 }
 
 interface Incident {
@@ -73,8 +62,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [incident, setIncident] = useState<Incident | null>(null);
   const [updates, setUpdates] = useState<IncidentUpdate[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
-  const [availableGroups, setAvailableGroups] = useState<string[]>(DEFAULT_GROUPS);
-  const [availablePlants, setAvailablePlants] = useState<string[]>(DEFAULT_PLANTS);
+  const [plants, setPlants] = useState<PlantRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<'notes' | 'resolution'>('notes');
@@ -83,9 +71,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
   const [callerGuardId, setCallerGuardId] = useState('');
   const [shortDescription, setShortDescription] = useState('');
   const [category, setCategory] = useState('Security / Patrol');
-  const [plantName, setPlantName] = useState(DEFAULT_PLANTS[0]);
+  const [plantName, setPlantName] = useState('Test - P1');
   const [state, setState] = useState('Active');
-  const [assignmentGroup, setAssignmentGroup] = useState('Security Operations L1');
   const [assignedTo, setAssignedTo] = useState('');
 
   // Resolution Fields
@@ -112,74 +99,37 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     return headers;
   }, []);
 
-  const getGuardGroups = (g: GuardUser): string[] => {
-    if (Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0) {
-      return g.assignment_groups;
-    }
-    if (g.assignment_group && g.assignment_group.trim() !== '') {
-      return [g.assignment_group.trim()];
-    }
-    return ['Security Operations L1'];
-  };
+  const selectedPlantObj = useMemo(
+    () => plants.find((p) => p.name === plantName) || null,
+    [plants, plantName]
+  );
+
+  const eligibleGuardsForPlant = useMemo(() => {
+    const activeGuards = guards.filter((g) => g.is_active !== false);
+    const ids = selectedPlantObj?.assigned_guard_ids || [];
+    if (ids.length === 0) return activeGuards;
+    return activeGuards.filter((g) => ids.includes(g.guard_id));
+  }, [guards, selectedPlantObj]);
 
   const fetchAllDetails = async () => {
     if (!id) return;
     try {
       setLoading(true);
 
-      const [incRes, guardsRes, cfgRes] = await Promise.all([
+      const [incRes, guardsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`, { headers: authHeaders }),
         fetch(`${API_BASE_URL}/guards`, { headers: authHeaders }),
-        fetch(`${API_BASE_URL}/admin/configs`, { headers: authHeaders }),
+        fetch(`${API_BASE_URL}/plants`, { headers: authHeaders }),
       ]);
 
       const data = await incRes.json();
       const guardsData = await guardsRes.json();
-      const cfgData = await cfgRes.json();
+      const plantsData = await plantsRes.json();
 
       const loadedGuards: GuardUser[] = guardsData.guards || [];
+      const loadedPlants: PlantRecord[] = plantsData.plants || [];
       setGuards(loadedGuards);
-
-      let customGroups: string[] = [...DEFAULT_GROUPS];
-      let customPlants: string[] = [...DEFAULT_PLANTS];
-
-      if (cfgData.success && Array.isArray(cfgData.configs)) {
-        const foundGroups = cfgData.configs.find(
-          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_ASSIGNMENT_GROUPS'
-        );
-        if (foundGroups?.key_value) {
-          try {
-            const parsed = JSON.parse(foundGroups.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) customGroups = parsed;
-          } catch (_) {}
-        }
-
-        const foundPlants = cfgData.configs.find(
-          (c: { key_name: string; key_value: string }) => c.key_name === 'CUSTOM_PLANTS'
-        );
-        if (foundPlants?.key_value) {
-          try {
-            const parsed = JSON.parse(foundPlants.key_value);
-            if (Array.isArray(parsed) && parsed.length > 0) customPlants = parsed;
-          } catch (_) {}
-        }
-      }
-
-      const groupSet = new Set<string>(customGroups);
-      const plantSet = new Set<string>(customPlants);
-      loadedGuards.forEach((g) => {
-        getGuardGroups(g).forEach((grp) => {
-          if (grp) groupSet.add(grp);
-        });
-        (g.assigned_plants || []).forEach((p) => {
-          if (p) plantSet.add(p);
-        });
-      });
-
-      const allGroupsList = Array.from(groupSet);
-      const allPlantsList = Array.from(plantSet);
-      setAvailableGroups(allGroupsList);
-      setAvailablePlants(allPlantsList);
+      setPlants(loadedPlants);
 
       let currentInc: Incident | null = null;
       let rawUpdates: IncidentUpdate[] = [];
@@ -187,28 +137,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
       if (data.success && data.incident) {
         currentInc = data.incident;
         rawUpdates = data.updates || [];
-      } else {
-        const allRes = await fetch(`${API_BASE_URL}/incidents`, { headers: authHeaders });
-        const allData = await allRes.json();
-        const list: Incident[] = allData.incidents || [];
-
-        currentInc =
-          list.find((inc: any) => {
-            const cId = (inc.client_incident_id || '').toLowerCase();
-            const target = id.toLowerCase();
-            if (cId === target) return true;
-            if (cId && (cId.includes(target) || target.includes(cId))) return true;
-            const incNum = `inc${cId.replace(/[^0-9]/g, '').padEnd(7, '0').slice(0, 7)}`;
-            return incNum === target;
-          }) || null;
-
-        if (currentInc) {
-          const updatesRes = await fetch(`${API_BASE_URL}/incidents/${currentInc.client_incident_id}`, {
-            headers: authHeaders,
-          });
-          const updatesData = await updatesRes.json();
-          rawUpdates = updatesData.updates || [];
-        }
       }
 
       if (currentInc) {
@@ -218,13 +146,10 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         setCategory(currentInc.category || 'Security / Patrol');
 
         const resolvedPlant =
-          currentInc.plant_name && allPlantsList.includes(currentInc.plant_name)
-            ? currentInc.plant_name
-            : currentInc.plant_name || allPlantsList[0] || 'Test - P1';
+          (currentInc.plant_name || '').trim() ||
+          loadedPlants.find((p) => p.is_active !== false)?.name ||
+          'Test - P1';
         setPlantName(resolvedPlant);
-        if (resolvedPlant && !allPlantsList.includes(resolvedPlant)) {
-          setAvailablePlants((prev) => [...prev, resolvedPlant]);
-        }
 
         setState(
           currentInc.status === 'RESOLVED'
@@ -233,12 +158,6 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             ? 'Closed'
             : 'Active'
         );
-
-        const grp =
-          currentInc.assignment_group && allGroupsList.includes(currentInc.assignment_group)
-            ? currentInc.assignment_group
-            : allGroupsList[0] || 'Security Operations L1';
-        setAssignmentGroup(grp);
         setAssignedTo(currentInc.assigned_to || '');
 
         if (currentInc.resolution_code) setResolutionCode(currentInc.resolution_code);
@@ -263,36 +182,20 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
     fetchAllDetails();
   }, [id]);
 
-  // Filter Assignees to guards belonging to the selected Assignment Group or Plant
-  const eligibleGuardsForGroup = useMemo(() => {
-    const activeGuards = guards.filter((g) => g.is_active !== false);
-    return activeGuards.filter(
-      (g) =>
-        getGuardGroups(g).includes(assignmentGroup) ||
-        (Array.isArray(g.assigned_plants) && g.assigned_plants.includes(plantName))
-    );
-  }, [assignmentGroup, plantName, guards]);
-
-  useEffect(() => {
-    if (!assignedTo) return;
-    const isCurrentValid = eligibleGuardsForGroup.some((g) => g.full_name === assignedTo);
-    if (!isCurrentValid) {
-      setAssignedTo('');
-    }
-  }, [assignmentGroup, plantName, eligibleGuardsForGroup]);
-
   const handleUpdateIncident = async () => {
     if (!incident) return;
     setIsUpdating(true);
     setStatusBanner(null);
+
+    const mappedTeam = selectedPlantObj?.team_name || plantName;
 
     try {
       const payload = {
         description: shortDescription,
         category,
         plant_name: plantName,
+        assignment_group: mappedTeam,
         status: state === 'Resolved' ? 'RESOLVED' : state === 'Closed' ? 'CLOSED' : 'OPEN',
-        assignment_group: assignmentGroup,
         assigned_to: assignedTo.trim() || null,
         guard_id: callerGuardId,
         updated_by: user?.full_name || 'SOC Command Admin',
@@ -307,19 +210,15 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
       const data = await res.json();
       if (data.success) {
-        if (data.incident) {
-          setIncident(data.incident);
-        }
-        if (data.activity) {
-          setUpdates((prev) => [data.activity, ...prev]);
-        }
+        if (data.incident) setIncident(data.incident);
+        if (data.activity) setUpdates((prev) => [data.activity, ...prev]);
         setWorkNoteMessage('');
 
         if (data.email_triggered) {
           if (data.email_dispatched) {
             setStatusBanner({
               type: 'ok',
-              text: `Case updated. Dispatch email sent for "${plantName}" / "${assignmentGroup}" (${(
+              text: `Case updated. Dispatch email sent to "${plantName}" team (${(
                 data.email_recipients || []
               ).join(', ')}).`,
             });
@@ -330,15 +229,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
             });
           }
         } else {
-          setStatusBanner({
-            type: 'ok',
-            text: 'Case updated successfully.',
-          });
+          setStatusBanner({ type: 'ok', text: 'Case updated successfully.' });
         }
       } else {
         setStatusBanner({ type: 'err', text: data.message || 'Failed to update case.' });
       }
-    } catch (err) {
+    } catch {
       setStatusBanner({ type: 'err', text: 'Network error while saving changes.' });
     } finally {
       setIsUpdating(false);
@@ -385,9 +281,7 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         );
         setState('Resolved');
 
-        if (data.activity) {
-          setUpdates((prev) => [data.activity, ...prev]);
-        }
+        if (data.activity) setUpdates((prev) => [data.activity, ...prev]);
         setActiveTab('notes');
         setStatusBanner({ type: 'ok', text: 'Case resolved and logged to dispatch timeline.' });
       }
@@ -404,10 +298,8 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
         headers: authHeaders,
       });
       const data = await res.json();
-      if (data.success) {
-        navigate('/incidents');
-      }
-    } catch (_) {}
+      if (data.success) navigate('/incidents');
+    } catch {}
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -567,12 +459,12 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
         {/* 2-Card Dispatch Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Card 1: Reporter & Plant Classification */}
+          {/* Card 1: Reporter & Category */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
             <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
               <UserCheck className="w-4 h-4 text-blue-600" />
               <h2 className="text-sm font-black uppercase tracking-wider text-slate-800">
-                1. Field Reporter &amp; Plant
+                1. Field Reporter &amp; Classification
               </h2>
             </div>
 
@@ -619,53 +511,34 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Plant Name
-                </label>
-                <select
-                  value={plantName}
-                  onChange={(e) => setPlantName(e.target.value)}
-                  className="w-full border border-indigo-300 bg-indigo-50/50 rounded-xl px-2.5 py-2 font-bold text-indigo-950 outline-none"
-                >
-                  {availablePlants.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                  Category
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold outline-none"
-                >
-                  <option>Security / Patrol</option>
-                  <option>Asset Breach</option>
-                  <option>Fire / Hazard</option>
-                  <option>Access Control</option>
-                </select>
-              </div>
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
+                Category
+              </label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold outline-none"
+              >
+                <option>Security / Patrol</option>
+                <option>Asset Breach</option>
+                <option>Fire / Hazard</option>
+                <option>Access Control</option>
+              </select>
             </div>
           </div>
 
-          {/* Card 2: Group Routing & Bound Responder */}
+          {/* Card 2: Unified Plant Routing & Bound Responder */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-600" />
                 <h2 className="text-sm font-black uppercase tracking-wider text-slate-800">
-                  2. Group Routing &amp; Bound Assignee
+                  2. Plant Routing &amp; Bound Assignee
                 </h2>
               </div>
               <span className="text-[11px] font-bold text-slate-500">
-                {eligibleGuardsForGroup.length} staff eligible
+                {eligibleGuardsForPlant.length} staff eligible
               </span>
             </div>
 
@@ -687,52 +560,44 @@ export const IncidentDetails: React.FC<{ user?: any }> = ({ user }) => {
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Assignment Group
+                Plant Name &amp; Mapped Team
               </label>
               <select
-                value={assignmentGroup}
+                value={plantName}
                 onChange={(e) => {
-                  setAssignmentGroup(e.target.value);
+                  setPlantName(e.target.value);
                   setAssignedTo('');
                 }}
-                className="w-full border border-blue-300 bg-blue-50/50 rounded-xl px-3 py-2 font-bold text-blue-950 outline-none"
+                className="w-full border border-indigo-300 bg-indigo-50/50 rounded-xl px-3 py-2 font-bold text-indigo-950 outline-none"
               >
-                {availableGroups.map((grp) => {
-                  const count = guards.filter(
-                    (g) => g.is_active !== false && getGuardGroups(g).includes(grp)
-                  ).length;
-                  return (
-                    <option key={grp} value={grp}>
-                      {grp} ({count} members)
-                    </option>
-                  );
-                })}
+                {plants.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}{p.team_name ? ` — ${p.team_name}` : ''}{p.is_active === false ? ' (Disabled)' : ''}
+                  </option>
+                ))}
+                {!plants.some((p) => p.name === plantName) && (
+                  <option value={plantName}>{plantName}</option>
+                )}
               </select>
             </div>
 
             <div>
               <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                Assigned To (Members of &ldquo;{plantName}&rdquo; or &ldquo;{assignmentGroup}&rdquo;)
+                Assigned Responder (Mapped to &ldquo;{plantName}&rdquo;)
               </label>
-              {eligibleGuardsForGroup.length === 0 ? (
-                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
-                  No staff assigned to <strong>{plantName}</strong> or <strong>{assignmentGroup}</strong>. Assign staff on the <strong>API Integrations / Plants</strong> or <strong>Guards</strong> page.
-                </div>
-              ) : (
-                <select
-                  value={assignedTo}
-                  onChange={(e) => setAssignedTo(e.target.value)}
-                  className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
-                >
-                  <option value="">-- Unassigned --</option>
-                  {eligibleGuardsForGroup.map((g) => (
-                    <option key={g.guard_id} value={g.full_name}>
-                      {g.full_name} ({g.employee_code}) — {g.role || 'Guard'}
-                      {g.email ? ` • ${g.email}` : ''}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <select
+                value={assignedTo}
+                onChange={(e) => setAssignedTo(e.target.value)}
+                className="w-full border border-emerald-300 bg-emerald-50/40 rounded-xl px-3 py-2 font-bold text-emerald-950 outline-none"
+              >
+                <option value="">-- Unassigned (Plant Team Queue) --</option>
+                {eligibleGuardsForPlant.map((g) => (
+                  <option key={g.guard_id} value={g.full_name}>
+                    {g.full_name} ({g.employee_code}) — {g.role || 'Guard'}
+                    {g.email ? ` • ${g.email}` : ''}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </div>

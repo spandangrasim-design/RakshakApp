@@ -703,6 +703,9 @@ app.on('GET',    '/api/v1/checkpoints/:id/qr', adminTiers, requireModule('module
 app.on('GET',    '/api/v1/guards', adminTiers)
 app.on('POST',   '/api/v1/guards', adminTiers)
 app.on('PATCH',  '/api/v1/guards/:id', adminTiers)
+app.on('POST',   '/api/v1/plants', adminTiers)
+app.on('PATCH',  '/api/v1/plants/:id', adminTiers, ownedRow('plants', 'id', 'id'))
+app.on('DELETE', '/api/v1/plants/:id', adminTiers, ownedRow('plants', 'id', 'id'))
 
 app.on('POST',   '/api/v1/incidents', incidentsMod, requirePermission('report_incident'))
 app.on('GET',    '/api/v1/incidents', incidentsMod, requirePermission('incident_tickets'))
@@ -2013,12 +2016,11 @@ app.get('/api/v1/field/routes', async (c) => {
     ]);
     const shift = currentShift(c.env, parseShifts(cfg['DAILY_REPORT_SHIFTS']));
     let plants: string[] = ['Test - P1', 'Test2 - P2'];
-    if (cfg['CUSTOM_PLANTS']) {
-      try {
-        const parsedPlants = JSON.parse(cfg['CUSTOM_PLANTS']);
-        if (Array.isArray(parsedPlants) && parsedPlants.length > 0) plants = parsedPlants;
-      } catch {}
-    }
+    try {
+      const plantRows = await ensureTenantPlants(supabase, a.tenant_id);
+      const activeNames = plantRows.filter((p: any) => p.is_active !== false).map((p: any) => p.name);
+      if (activeNames.length > 0) plants = activeNames;
+    } catch {}
     return c.json({
       success: true,
       routes: board,
@@ -4414,6 +4416,124 @@ app.get('/api/v1/guards/my-assigned-route', async (c) => {
   }
 });
 
+
+// ==========================================
+// 5B. PLANT MANAGEMENT CRUD API
+// ==========================================
+const DEFAULT_PLANT_SEEDS = [
+  { name: 'Test - P1', team_name: 'Security Operations L1 Team' },
+  { name: 'Test2 - P2', team_name: 'Quick Response Team (QRT)' },
+  { name: 'Test3 - P3', team_name: 'Regional Security Team' },
+];
+
+async function ensureTenantPlants(supabase: any, tenantId: string) {
+  const { data } = await supabase
+    .from('plants')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('name', { ascending: true });
+  if (data && data.length > 0) return data;
+
+  const rows = DEFAULT_PLANT_SEEDS.map((p) => ({
+    tenant_id: tenantId,
+    name: p.name,
+    team_name: p.team_name,
+    assigned_guard_ids: [],
+    is_active: true,
+  }));
+  const { data: seeded } = await supabase.from('plants').insert(rows).select('*');
+  return seeded || [];
+}
+
+app.get('/api/v1/plants', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
+    if (!tenantId) return c.json({ success: true, plants: [] });
+
+    let plants = await ensureTenantPlants(supabase, tenantId);
+    if (c.req.query('active_only') === 'true') {
+      plants = plants.filter((p: any) => p.is_active !== false);
+    }
+    return c.json({ success: true, plants });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to load plants') }, 500);
+  }
+});
+
+app.post('/api/v1/plants', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const tenantId = await resolveAdminTenantId(c, supabase);
+    if (!tenantId) return c.json({ success: false, message: 'tenant_id is required.' }, 400);
+
+    const body = await c.req.json();
+    const name = String(body.name || '').trim();
+    if (!name) return c.json({ success: false, message: 'Plant Name is required.' }, 400);
+
+    const team_name = String(body.team_name || '').trim() || null;
+    const assigned_guard_ids = Array.isArray(body.assigned_guard_ids)
+      ? body.assigned_guard_ids.map((id: any) => String(id).trim()).filter(Boolean)
+      : [];
+    const is_active = body.is_active !== false;
+
+    const { data, error } = await supabase
+      .from('plants')
+      .insert([{ tenant_id: tenantId, name, team_name, assigned_guard_ids, is_active }])
+      .select('*')
+      .single();
+
+    if (error) return c.json({ success: false, message: 'A plant with this name may already exist.' }, 400);
+    return c.json({ success: true, plant: data }, 201);
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to create plant') }, 500);
+  }
+});
+
+app.patch('/api/v1/plants/:id', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const body = await c.req.json();
+    const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+
+    if (body.name !== undefined) {
+      const n = String(body.name).trim();
+      if (!n) return c.json({ success: false, message: 'Plant Name cannot be empty.' }, 400);
+      updates.name = n;
+    }
+    if (body.team_name !== undefined) updates.team_name = String(body.team_name || '').trim() || null;
+    if (body.assigned_guard_ids !== undefined) {
+      updates.assigned_guard_ids = Array.isArray(body.assigned_guard_ids)
+        ? body.assigned_guard_ids.map((id: any) => String(id).trim()).filter(Boolean)
+        : [];
+    }
+    if (body.is_active !== undefined) updates.is_active = Boolean(body.is_active);
+
+    const { data, error } = await supabase
+      .from('plants')
+      .update(updates)
+      .eq('id', c.req.param('id'))
+      .select('*')
+      .single();
+
+    if (error) throw error;
+    return c.json({ success: true, plant: data });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to update plant') }, 500);
+  }
+});
+
+app.delete('/api/v1/plants/:id', async (c) => {
+  try {
+    const supabase = getSupabase(c.env);
+    const { error } = await supabase.from('plants').delete().eq('id', c.req.param('id'));
+    if (error) throw error;
+    return c.json({ success: true, message: 'Plant deleted' });
+  } catch (error) {
+    return c.json({ success: false, message: errMsg(error, 'Failed to delete plant') }, 500);
+  }
+});
+
 // ==========================================
 // 6. TICKETING & INCIDENT COMMAND (WITH DUAL-LAYER GATING ENFORCEMENT)
 // ==========================================
@@ -5237,13 +5357,25 @@ async function sendGroupAssignmentEmail(
   }
 
   const targetPlantClean = (params.plantName || '').trim().toLowerCase();
-  const targetGroupClean = (params.assignmentGroup || '').trim().toLowerCase();
   const recipientSet = new Set<string>();
+
+  let plantGuardIds = new Set<string>();
+  if (targetPlantClean) {
+    const { data: plantRows } = await supabase
+      .from('plants')
+      .select('name, assigned_guard_ids')
+      .eq('tenant_id', params.tenantId);
+    const matchedPlant = (plantRows || []).find(
+      (p: any) => String(p.name || '').trim().toLowerCase() === targetPlantClean
+    );
+    if (matchedPlant && Array.isArray(matchedPlant.assigned_guard_ids)) {
+      plantGuardIds = new Set(matchedPlant.assigned_guard_ids.map((id: any) => String(id)));
+    }
+  }
 
   (guardsRes.data || []).forEach((g: any) => {
     if (g.is_active === false) return;
     const ext = extProfilesMap[g.guard_id] || {};
-
     const gPlants: string[] =
       Array.isArray(g.assigned_plants) && g.assigned_plants.length > 0
         ? g.assigned_plants
@@ -5251,25 +5383,13 @@ async function sendGroupAssignmentEmail(
         ? ext.assigned_plants
         : [];
 
-    const gGroups: string[] =
-      Array.isArray(g.assignment_groups) && g.assignment_groups.length > 0
-        ? g.assignment_groups
-        : Array.isArray(ext.assignment_groups) && ext.assignment_groups.length > 0
-        ? ext.assignment_groups
-        : g.assignment_group
-        ? [g.assignment_group]
-        : ['Security Operations L1'];
-
-    const belongsToTargetPlant =
+    const assignedInPlantTable = plantGuardIds.has(String(g.guard_id));
+    const assignedInGuardProfile =
       targetPlantClean !== '' &&
       gPlants.some((p) => (p || '').trim().toLowerCase() === targetPlantClean);
 
-    const belongsToTargetGroup = gGroups.some(
-      (grp) => (grp || '').trim().toLowerCase() === targetGroupClean
-    );
-
     const memberEmail = safeEmail(g.email || ext.email || '');
-    if ((belongsToTargetPlant || belongsToTargetGroup) && memberEmail) {
+    if ((assignedInPlantTable || assignedInGuardProfile) && memberEmail) {
       recipientSet.add(memberEmail);
     }
   });
