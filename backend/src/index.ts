@@ -2939,8 +2939,7 @@ function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[
     content += text(58, 691, 9, 'TITLE', '0.35 0.42 0.52');
     content += text(58, 672, 13, incident.title || 'Security incident');
     const fields: [string, string][] = [
-      ['PLANT', `${incident.plant_name || tenantName}${incident.plant_code ? ` (${incident.plant_code})` : ''}`],
-      ['PLANT ID', incident.plant_id || '—'],
+      ['PLANT', `${incident.plant_name || 'Unspecified plant'}${incident.plant_code ? ` (${incident.plant_code})` : ''}`],
       ['CATEGORY', incident.category || '—'],
       ['PRIORITY / STATUS', `${incident.priority || 'P3'}  /  ${incident.status || 'OPEN'}`],
       ['IMPACT / URGENCY', `${incident.impact || '—'}  /  ${incident.urgency || '—'}`],
@@ -2973,18 +2972,21 @@ function buildIncidentPdf(tenantName: string, dateLabel: string, incidents: any[
       const swaps = orientation >= 5 && orientation <= 8;
       const naturalW = swaps ? photo.height : photo.width;
       const naturalH = swaps ? photo.width : photo.height;
-      const maxW = 500, maxH = 610;
+      // Keep the evidence image well clear of the page heading and caption.
+      // The reserved photo panel is x=56..556, y=126..650 (500 x 524 points).
+      const maxW = 480, maxH = 500;
       const scale = Math.min(maxW / naturalW, maxH / naturalH, 1);
       const w = Math.max(1, Math.round(naturalW * scale));
       const h = Math.max(1, Math.round(naturalH * scale));
-      const x = (612 - w) / 2, yPhoto = 105 + (610 - h) / 2;
+      const x = (612 - w) / 2, yPhoto = 138 + (500 - h) / 2;
       let matrix = `${w} 0 0 ${h} ${x} ${yPhoto} cm`;
       if (orientation === 3) matrix = `${-w} 0 0 ${-h} ${x + w} ${yPhoto + h} cm`;
       else if (orientation === 6) matrix = `0 ${-h} ${w} 0 ${x} ${yPhoto + h} cm`;
       else if (orientation === 8) matrix = `0 ${h} ${-w} 0 ${x + w} ${yPhoto} cm`;
       content = header('INCIDENT EVIDENCE', `${caseLabel} - Photo`) +
-        text(42, 710, 9, 'Original incident photograph; orientation and aspect ratio preserved.', '0.38 0.43 0.50') +
-        rect(42, 94, 528, 590, '0.97 0.98 0.99') +
+        text(42, 710, 9, 'Photo evidence supplied with this incident', '0.38 0.43 0.50') +
+        rect(42, 112, 528, 552, '0.97 0.98 0.99') +
+        rect(56, 126, 500, 524, '1 1 1') +
         `q\n${matrix}\n/Im1 Do\nQ\n` +
         text(42, 48, 8, `Rakshak  |  ${caseLabel}`, '0.45 0.49 0.55');
       pageSpecs.push({ content, image: photo });
