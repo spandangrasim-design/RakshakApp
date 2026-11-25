@@ -145,7 +145,6 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
         description,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
       );
       await controller.initialize();
       if (!mounted) {
@@ -198,6 +197,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
     try {
       final photo = await c.takePicture();
       final bytes = await photo.readAsBytes();
+      _controller = null;
+      try {
+        await c.dispose();
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _shot = bytes;
@@ -291,7 +294,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> with WidgetsB
                     style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
                     onPressed: () {
                       setState(() => _shot = null);
-                      if (_controller == null) _openWithRetry(_lens);
+                      _openWithRetry(_lens);
                     },
                     child: const Text('Retake'),
                   ),
