@@ -560,17 +560,31 @@ export default function AdminConfigsPage() {
 
               {isGmailEnabled && (
                 <div className="space-y-4 border-t border-slate-100 px-5 pb-5 pt-4">
-                  <div className="max-w-xl">
-                    <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
-                      Manager / Fallback Notification Email
-                    </label>
-                    <input
-                      type="email"
-                      value={configs['MANAGER_EMAIL'] || ''}
-                      onChange={(e) => handleChange('MANAGER_EMAIL', e.target.value)}
-                      placeholder="spandangrasim@gmail.com"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
-                    />
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
+                        Manager / Fallback Notification Email
+                      </label>
+                      <input
+                        type="email"
+                        value={configs['MANAGER_EMAIL'] || ''}
+                        onChange={(e) => handleChange('MANAGER_EMAIL', e.target.value)}
+                        placeholder="spandangrasim@gmail.com"
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
+                        Sender Display Name (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={configs['GMAIL_SENDER_NAME'] || ''}
+                        onChange={(e) => handleChange('GMAIL_SENDER_NAME', e.target.value)}
+                        placeholder="e.g. Rakshak Alerts"
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                      />
+                    </div>
                   </div>
 
                   {/* Enterprise OAuth2 Refresh Token Block */}
