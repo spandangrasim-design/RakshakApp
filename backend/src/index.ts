@@ -4438,7 +4438,7 @@ async function ensureTenantPlants(supabase: any, tenantId: string) {
     .select('*')
     .eq('tenant_id', tenantId)
     .order('name', { ascending: true });
-  if (data && data.length > 0) return data;
+  return data || [];
 
   const rows = DEFAULT_PLANT_SEEDS.map((p) => ({
     tenant_id: tenantId,
