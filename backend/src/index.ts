@@ -1,3 +1,4 @@
+import { connect } from 'cloudflare:sockets';
 import * as XLSX from 'xlsx';
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
@@ -186,6 +187,7 @@ const getSupabase = (env: Bindings) =>
 
 // --- HELPER: Extended profile storage ---
 interface GuardExtendedProfile {
+  selfie_url?: string | null;
   email?: string | null;
   phone?: string | null;
   assigned_plants?: string[];
@@ -416,7 +418,7 @@ async function clearLoginFailures(supabase: any, key: string) {
 
 // ---------- per-tenant configuration (admin_configurations rows are stored as "t:<tenantId>:<KEY>") ----------
 const cfgKey = (tenantId: string, key: string) => `t:${tenantId}:${key}`
-const SECRET_KEYS = new Set(['GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_ACCESS_TOKEN', 'WHATSAPP_API_TOKEN', 'TELEGRAM_BOT_TOKEN'])
+const SECRET_KEYS = new Set(['GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_ACCESS_TOKEN', 'SMTP_PASS', 'WHATSAPP_API_TOKEN', 'TELEGRAM_BOT_TOKEN'])
 const MASK = '********'
 
 /** Which keys may this tenant even see or write? Unpurchased channel keys do not exist for them. */
@@ -425,7 +427,7 @@ function configKeyAllowed(key: string, f: ReturnType<typeof normalizeTenantFeatu
   if (key.startsWith('DAILY_REPORT_')) return f.module_patrol.allow_daily_reports
   if (key === 'RENEW_ON_NEW_GUARD') return f.module_patrol.allow_guest_enrollment
   const ch = f.module_integrations.channels
-  if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
+  if (key.startsWith('GMAIL_') || key.startsWith('SMTP_') || key === 'EMAIL_PROVIDER' || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
   if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return ch.whatsapp_api
   if (key.startsWith('TELEGRAM_') || key === 'ENABLE_TELEGRAM') return ch.telegram_bot
   return true // non-integration settings
@@ -1600,7 +1602,6 @@ app.get('/api/v1/guards', async (c) => {
         tier: g.tier,
         is_guest: g.is_guest === true,
         selfie_url: g.selfie_url || ext.selfie_url || null,
-        selfie_url: g.selfie_url || ext.selfie_url || null,
         tenant_name: tenantNames.get(g.tenant_id) || null,
         app_permissions: callerAuth.tier === 'SUPER_ADMIN' ? hybrid.permissions : resolveAccess(callerAuth.tenant_features, hybrid.permissions).active_permissions,
         app_permissions_override: rawOverrides,
@@ -2636,6 +2637,165 @@ function chunkBase64(str: string, size = 76): string {
 }
 
 
+
+function resolveEmailProvider(cfg: Record<string, string>): 'SMTP' | 'GMAIL_OAUTH' {
+  const explicit = String(cfg['EMAIL_PROVIDER'] || '').trim().toUpperCase();
+  if (explicit === 'SMTP' || explicit === 'OFFICE365' || explicit === 'CUSTOM_SMTP') return 'SMTP';
+  if (explicit === 'GMAIL_OAUTH' || explicit === 'OAUTH') return 'GMAIL_OAUTH';
+  if (String(cfg['SMTP_HOST'] || '').trim()) return 'SMTP';
+  return 'GMAIL_OAUTH';
+}
+
+async function sendViaSmtp(
+  cfg: Record<string, string>,
+  params: {
+    to: string[];
+    subject: string;
+    html: string;
+    senderName?: string;
+    senderEmail?: string;
+    attachment?: EmailAttachment;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const host = String(cfg['SMTP_HOST'] || '').trim();
+  const port = Number(String(cfg['SMTP_PORT'] || '587').trim()) || 587;
+  const user = String(cfg['SMTP_USER'] || '').trim();
+  const pass = String(cfg['SMTP_PASS'] || '');
+  const modeRaw = String(cfg['SMTP_SECURE'] || (port === 465 ? 'ssl' : 'starttls')).trim().toLowerCase();
+  const useImplicitTls = modeRaw === 'ssl' || modeRaw === 'tls' || modeRaw === 'on' || port === 465;
+  const useStartTls = !useImplicitTls && (modeRaw === 'starttls' || port === 587);
+
+  const envelopeFrom = String(params.senderEmail || cfg['SMTP_FROM_EMAIL'] || user || cfg['GMAIL_SENDER_EMAIL'] || cfg['MANAGER_EMAIL'] || '').trim();
+  if (!host) return { ok: false, error: 'SMTP Host is required.' };
+  if (!envelopeFrom) return { ok: false, error: 'SMTP Sender / From Email is required.' };
+  if (!params.to.length) return { ok: false, error: 'No recipients provided.' };
+
+  const displayName = String(params.senderName || cfg['GMAIL_SENDER_NAME'] || '').trim();
+  const fromHeader = displayName
+    ? `From: =?utf-8?B?${utf8ToBase64(displayName)}?= <${envelopeFrom}>`
+    : `From: <${envelopeFrom}>`;
+
+  let mimeBody = '';
+  if (params.attachment) {
+    const boundary = '----=_Part_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+    const htmlBase64 = chunkBase64(utf8ToBase64(params.html));
+    const attachBase64 = chunkBase64(params.attachment.contentBase64);
+    mimeBody = [
+      fromHeader,
+      `To: ${params.to.join(', ')}`,
+      `Subject: =?utf-8?B?${utf8ToBase64(params.subject)}?=`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      htmlBase64,
+      '',
+      `--${boundary}`,
+      `Content-Type: ${params.attachment.contentType}; name="${params.attachment.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${params.attachment.filename}"`,
+      '',
+      attachBase64,
+      '',
+      `--${boundary}--`,
+    ].join('\r\n');
+  } else {
+    mimeBody = [
+      fromHeader,
+      `To: ${params.to.join(', ')}`,
+      `Subject: =?utf-8?B?${utf8ToBase64(params.subject)}?=`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      chunkBase64(utf8ToBase64(params.html)),
+    ].join('\r\n');
+  }
+
+  // Dot-stuffing per RFC 5321 Section 4.5.2
+  const dataLines = mimeBody.split('\r\n').map((line) => (line.startsWith('.') ? '.' + line : line));
+  const payloadData = dataLines.join('\r\n') + '\r\n.\r\n';
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  let sock: any = connect(
+    { hostname: host, port },
+    { secureTransport: useImplicitTls ? 'on' : useStartTls ? 'starttls' : 'off', allowHalfOpen: false }
+  );
+
+  let reader = sock.readable.getReader();
+  let writer = sock.writable.getWriter();
+  let buf = '';
+
+  const readReply = async (expectedCodes: string[]): Promise<string> => {
+    while (true) {
+      const lines = buf.split('\r\n');
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (/^\d{3} /.test(line)) {
+          const code = line.slice(0, 3);
+          buf = lines.slice(i + 1).join('\r\n');
+          if (!expectedCodes.includes(code)) {
+            throw new Error(`SMTP unexpected response (${code}): ${line}`);
+          }
+          return line;
+        }
+      }
+      const { value, done } = await reader.read();
+      if (done) {
+        throw new Error(`SMTP connection closed prematurely. Last buffer: ${buf}`);
+      }
+      buf += decoder.decode(value, { stream: true });
+    }
+  };
+
+  const sendCmd = async (cmd: string, expectedCodes: string[]): Promise<string> => {
+    await writer.write(encoder.encode(cmd + '\r\n'));
+    return readReply(expectedCodes);
+  };
+
+  try {
+    await readReply(['220']);
+    await sendCmd(`EHLO rakshakapp.local`, ['250']);
+
+    if (useStartTls) {
+      await sendCmd('STARTTLS', ['220']);
+      reader.releaseLock();
+      writer.releaseLock();
+      sock = sock.startTls();
+      reader = sock.readable.getReader();
+      writer = sock.writable.getWriter();
+      buf = '';
+      await sendCmd(`EHLO rakshakapp.local`, ['250']);
+    }
+
+    if (user && pass) {
+      const authPlain = utf8ToBase64(`\0${user}\0${pass}`);
+      await sendCmd(`AUTH PLAIN ${authPlain}`, ['235']);
+    }
+
+    await sendCmd(`MAIL FROM:<${envelopeFrom}>`, ['250']);
+    for (const rcpt of params.to) {
+      await sendCmd(`RCPT TO:<${rcpt}>`, ['250', '251']);
+    }
+    await sendCmd('DATA', ['354']);
+    await writer.write(encoder.encode(payloadData));
+    await readReply(['250']);
+    try { await sendCmd('QUIT', ['221', '250']); } catch (_) {}
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'SMTP delivery failed' };
+  } finally {
+    try { reader.releaseLock(); } catch (_) {}
+    try { writer.releaseLock(); } catch (_) {}
+    try { sock.close(); } catch (_) {}
+  }
+}
+
 function buildFromHeader(senderName?: string, senderEmail?: string): string[] {
   const name = String(senderName || "").trim();
   const email = String(senderEmail || "").trim();
@@ -2653,6 +2813,16 @@ async function sendTenantEmail(
 ): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabase(env);
   const cfg = await loadTenantConfig(supabase, tenantId);
+  if (resolveEmailProvider(cfg) === 'SMTP') {
+    return sendViaSmtp(cfg, {
+      to: recipients,
+      subject,
+      html,
+      senderName: cfg['GMAIL_SENDER_NAME'],
+      senderEmail: cfg['SMTP_FROM_EMAIL'] || cfg['SMTP_USER'] || cfg['GMAIL_SENDER_EMAIL'] || cfg['MANAGER_EMAIL'],
+      attachment,
+    });
+  }
   const tokenResult = await getValidGmailAccessToken(supabase, cfg, `t:${tenantId}:`);
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
   const fromHeaders = buildFromHeader(cfg['GMAIL_SENDER_NAME'], cfg['GMAIL_SENDER_EMAIL'] || cfg['MANAGER_EMAIL']);
@@ -5657,12 +5827,6 @@ async function sendPlantIncidentEmail(
     };
   }
 
-  const tokenResult = await getValidGmailAccessToken(supabase, configMap, `t:${params.tenantId}:`);
-  if (!tokenResult.token) {
-    return { ok: false, recipients, error: tokenResult.error };
-  }
-  const incidentFromHeaders = buildFromHeader(configMap['GMAIL_SENDER_NAME'], configMap['GMAIL_SENDER_EMAIL'] || configMap['MANAGER_EMAIL']);
-
   const caseNumber = params.caseNumber
     ? `RKS-${String(params.caseNumber).padStart(6, '0')}`
     : `RKS-${params.incidentId.replace(/[^0-9]/g, '').padEnd(6, '0').slice(0, 6)}`;
@@ -5719,6 +5883,23 @@ async function sendPlantIncidentEmail(
       </div>
     </div>
   `;
+
+  if (resolveEmailProvider(configMap) === 'SMTP') {
+    const smtpRes = await sendViaSmtp(configMap, {
+      to: recipients,
+      subject: subjectText,
+      html: htmlBody,
+      senderName: configMap['GMAIL_SENDER_NAME'],
+      senderEmail: configMap['SMTP_FROM_EMAIL'] || configMap['SMTP_USER'] || configMap['GMAIL_SENDER_EMAIL'] || configMap['MANAGER_EMAIL'],
+    });
+    return { ok: smtpRes.ok, recipients, error: smtpRes.error };
+  }
+
+  const tokenResult = await getValidGmailAccessToken(supabase, configMap, `t:${params.tenantId}:`);
+  if (!tokenResult.token) {
+    return { ok: false, recipients, error: tokenResult.error };
+  }
+  const incidentFromHeaders = buildFromHeader(configMap['GMAIL_SENDER_NAME'], configMap['GMAIL_SENDER_EMAIL'] || configMap['MANAGER_EMAIL']);
 
   const emailLines = [
     ...incidentFromHeaders,

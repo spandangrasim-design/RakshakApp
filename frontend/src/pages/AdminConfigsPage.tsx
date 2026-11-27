@@ -174,7 +174,7 @@ export default function AdminConfigsPage() {
     return Object.keys(configs)
       .filter((key) => {
         if (configs[key] === MASK) return false;
-        if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return allowGmail;
+        if (key.startsWith('GMAIL_') || key.startsWith('SMTP_') || key === 'EMAIL_PROVIDER' || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return allowGmail;
         if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return allowWhatsapp;
         if (key.startsWith('TELEGRAM_') || key === 'ENABLE_TELEGRAM') return allowTelegram;
         return true;
@@ -597,6 +597,142 @@ export default function AdminConfigsPage() {
                         className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
                       />
                     </div>
+                  </div>
+
+                  {/* Email Provider Selector: SMTP (Office 365 / Gmail / Custom) vs Gmail OAuth2 */}
+                  <div className="space-y-4 rounded-2xl border border-blue-200 bg-blue-50/40 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900">
+                          Email Delivery Provider (Office 365 / Gmail / Custom SMTP or Gmail OAuth2)
+                        </span>
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          SMTP supports Office 365, Gmail SMTP, and custom SMTP servers with exact Sender Display Name control.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <select
+                          value={configs['EMAIL_PROVIDER'] || (configs['SMTP_HOST'] ? 'SMTP' : 'GMAIL_OAUTH')}
+                          onChange={(e) => handleChange('EMAIL_PROVIDER', e.target.value)}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-900 outline-none focus:border-brand-500"
+                        >
+                          <option value="SMTP">SMTP (Office 365 / Gmail / Custom)</option>
+                          <option value="GMAIL_OAUTH">Google Gmail OAuth2 API</option>
+                        </select>
+                        {(configs['EMAIL_PROVIDER'] || (configs['SMTP_HOST'] ? 'SMTP' : 'GMAIL_OAUTH')) === 'SMTP' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleChange('EMAIL_PROVIDER', 'SMTP');
+                                handleChange('SMTP_HOST', 'smtp.office365.com');
+                                handleChange('SMTP_PORT', '587');
+                                handleChange('SMTP_SECURE', 'starttls');
+                              }}
+                              className="rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50"
+                            >
+                              Office 365 Preset
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleChange('EMAIL_PROVIDER', 'SMTP');
+                                handleChange('SMTP_HOST', 'smtp.gmail.com');
+                                handleChange('SMTP_PORT', '465');
+                                handleChange('SMTP_SECURE', 'ssl');
+                              }}
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
+                            >
+                              Gmail SMTP Preset
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {(configs['EMAIL_PROVIDER'] || (configs['SMTP_HOST'] ? 'SMTP' : 'GMAIL_OAUTH')) === 'SMTP' && (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3 pt-1">
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            SMTP Host
+                          </label>
+                          <input
+                            type="text"
+                            value={configs['SMTP_HOST'] || ''}
+                            onChange={(e) => handleChange('SMTP_HOST', e.target.value)}
+                            placeholder="smtp.office365.com"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            SMTP Port &amp; Security
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={configs['SMTP_PORT'] || '587'}
+                              onChange={(e) => handleChange('SMTP_PORT', e.target.value)}
+                              placeholder="587"
+                              className="w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-semibold outline-none focus:border-brand-500"
+                            />
+                            <select
+                              value={configs['SMTP_SECURE'] || 'starttls'}
+                              onChange={(e) => handleChange('SMTP_SECURE', e.target.value)}
+                              className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                            >
+                              <option value="starttls">STARTTLS (587)</option>
+                              <option value="ssl">SSL/TLS (465)</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            From / Sender Email
+                          </label>
+                          <input
+                            type="email"
+                            value={configs['SMTP_FROM_EMAIL'] || configs['SMTP_USER'] || ''}
+                            onChange={(e) => handleChange('SMTP_FROM_EMAIL', e.target.value)}
+                            placeholder="alerts@yourdomain.com"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            SMTP Username
+                          </label>
+                          <input
+                            type="text"
+                            value={configs['SMTP_USER'] || ''}
+                            onChange={(e) => handleChange('SMTP_USER', e.target.value)}
+                            placeholder="user@yourdomain.com"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500"
+                          />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            SMTP Password / App Password
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type={showTokens['SMTP_PASS'] ? 'text' : 'password'}
+                              value={configs['SMTP_PASS'] || ''}
+                              onChange={(e) => handleChange('SMTP_PASS', e.target.value)}
+                              placeholder="Enter SMTP password or app password"
+                              className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-mono font-semibold outline-none focus:border-brand-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => toggleTokenVisibility('SMTP_PASS')}
+                              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                            >
+                              {showTokens['SMTP_PASS'] ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Enterprise OAuth2 Refresh Token Block */}
