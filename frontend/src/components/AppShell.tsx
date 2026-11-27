@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, FileText, AlertTriangle, Users, QrCode, Sliders, Building2,
@@ -11,14 +12,6 @@ import {
  *   tablets (768-1023) : slim icon rail
  *   desktop (≥1024)    : full sidebar, collapsible to the rail
  */
-interface VisibleModules {
-  module_patrol?: boolean;
-  module_incidents?: boolean;
-  module_qr_generator?: boolean;
-  module_integrations?: boolean;
-  daily_reports?: boolean;
-}
-
 interface NavItem {
   to: string;
   label: string;
@@ -50,12 +43,8 @@ const tierLabel = (user: any) =>
 
 const ic = 'h-[20px] w-[20px]';
 
-export const AppShell: React.FC<{
-  user: any;
-  modules: VisibleModules;
-  onLogout: () => void;
-  children: React.ReactNode;
-}> = ({ user, modules, onLogout, children }) => {
+export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, modules, isSuper, logout: onLogout } = useAuth();
   const location = useLocation();
   const path = location.pathname;
 
@@ -93,7 +82,6 @@ export const AppShell: React.FC<{
     return () => clearInterval(t);
   }, []);
 
-  const isSuper = user?.tier === 'SUPER_ADMIN';
 
   const groups: { title: string; items: NavItem[] }[] = [
     {

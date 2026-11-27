@@ -1,6 +1,6 @@
 import { API_BASE_URL } from '../lib/api';
 const API_BASE =
-  ((import.meta as any).env?.VITE_API_URL ? `${(import.meta as any).env.VITE_API_URL.replace(/\/+$/, '')}/api/v1` : import.meta.env.VITE_API_BASE_URL) || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+  ((import.meta as any).env?.VITE_API_URL ? `${(import.meta as any).env.VITE_API_URL.replace(/\/+$/, '')}/api/v1` : import.meta.env.VITE_API_BASE_URL) || 'https://rakshak-api.placeholder.invalid/api/v1';
 
 /**
  * Converts any R2 image URL, relative key, or legacy link into an authenticated Worker stream URL.
@@ -48,7 +48,7 @@ export function getSecureMediaUrl(rawUrl?: string | null): string | null {
   // Case 3: Other external HTTP/HTTPS links
   else if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     // If it points to your API domain but not via /api/v1/media, extract after the origin
-    if (trimmed.includes('spandangrasim.workers.dev')) {
+    if (trimmed.includes('placeholder.invalid')) {
       const parts = trimmed.split('workers.dev/');
       fileKey = parts[1]?.replace(/^api\/v1\/media\//, '')?.split('?')[0];
     } else {

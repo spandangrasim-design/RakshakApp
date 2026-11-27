@@ -2905,7 +2905,7 @@ async function guardsActiveBetween(supabase: any, tenantId: string, wStart: stri
 // =====================================================================
 type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 
-function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
+function buildStaticRouteMapSvg(checkpoints: any[], scans: any[], apiOrigin = 'https://rakshak-api.spandangrasim.workers.dev'): string {
   const qrPts: { lat: number; lng: number; id: string; name: string }[] = [];
   const scanPts: { lat: number; lng: number; drift?: number; qrIdx: number }[] = [];
 
@@ -2956,7 +2956,7 @@ function buildStaticRouteMapSvg(checkpoints: any[], scans: any[]): string {
   const qrParam = qrPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(';');
   const capParam = scanPts.slice(0, 30).map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)},${Math.round(p.drift ?? 0)},${p.qrIdx}`).join(';');
 
-  const compositeMapUrl = `https://rakshak-api.spandangrasim.workers.dev/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}&z=${zoom}`;
+  const compositeMapUrl = `${apiOrigin}/api/v1/public/route-map.svg?qr=${encodeURIComponent(qrParam)}&cap=${encodeURIComponent(capParam)}&z=${zoom}`;
   const gmapsRouteUrl = `https://www.google.com/maps/search/?api=1&query=${centerLat.toFixed(6)},${centerLng.toFixed(6)}`;
 
   const pinBadgesHtml = qrPts.slice(0, 12).map((qp, idx) => {

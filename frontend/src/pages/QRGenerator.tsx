@@ -3,13 +3,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import QRCode from 'qrcode';
-import { pdf } from '@react-pdf/renderer';
 import {
   Shield, Download, Plus, Loader2, MapPin, X,
   Layers, Trash2, Edit2, Eye, CheckCircle2, Save, RefreshCw,
   ChevronLeft, ChevronRight, Search, Clock
 } from 'lucide-react';
-import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
+import type { QRData } from '../components/QRSheetPDF';
 
 // Point this to your backend domain (leave empty string '' if same origin)
 const API_BASE = API_ROOT;
@@ -582,6 +581,7 @@ const QRGenerator: React.FC = () => {
       const defaultSpandanLogo = window.location.origin + '/branding/spandan-it-logo.png';
       const spandanLogo = customBrand?.spandan_logo_url || defaultSpandanLogo;
 
+      const [{ pdf }, { QRSheetPDF }] = await Promise.all([import('@react-pdf/renderer'), import('../components/QRSheetPDF')]);
       const blob = await pdf(
         <QRSheetPDF
           checkpoints={generatedList}
