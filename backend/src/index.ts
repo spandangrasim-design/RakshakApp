@@ -4447,10 +4447,7 @@ app.patch('/api/v1/guards/:id', async (c) => {
         } catch {}
       }
 
-      const unknownNames = requestedNames.filter((name: string) => !matchedNames.has(name.toLocaleLowerCase()));
-      if (unknownNames.length) {
-        return c.json({ success: false, message: `Unknown plant assignment: ${unknownNames.join(', ')}` }, 400);
-      }
+      // Allow both DB plants and custom plant names; sync matching DB plant rows below.
       plantsForAssignmentSync = tenantPlants || [];
       normalizedRequestedPlants = new Set(requestedNames.map((name: string) => name.toLocaleLowerCase()));
       parsed.assigned_plants = requestedNames as any;

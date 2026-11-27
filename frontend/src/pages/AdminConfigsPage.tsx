@@ -142,7 +142,7 @@ export default function AdminConfigsPage() {
     handleChange('CUSTOM_PLANTS', JSON.stringify(next));
     try {
       await fetch(`${API_BASE_URL}/api/v1/admin/configs`, {
-        method: 'PUT',
+        method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ configs: { CUSTOM_PLANTS: JSON.stringify(next) } }),
       });
@@ -173,7 +173,6 @@ export default function AdminConfigsPage() {
   };
 
   const handleRemovePlant = async (plant: string) => {
-    if (plants.length <= 1) return;
     const next = plants.filter((p) => p !== plant);
     if (modalPlant === plant) {
       setModalPlant(null);
@@ -439,7 +438,7 @@ export default function AdminConfigsPage() {
         </div>
 
         {/* Channel Status KPI Strip */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <button
             type="button"
             onClick={() => setChannelFilter('ALL')}
@@ -582,15 +581,6 @@ export default function AdminConfigsPage() {
               </button>
 
               <div className="flex items-center gap-2">
-                <select
-                  value={plantSectionOpen ? 'OPEN' : 'CLOSED'}
-                  onChange={(e) => setPlantSectionOpen(e.target.value === 'OPEN')}
-                  aria-label="Toggle Plant Names & Incident Email Alert Assignments"
-                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
-                >
-                  <option value="CLOSED">Collapsed</option>
-                  <option value="OPEN">Expanded</option>
-                </select>
                 <button
                   type="button"
                   onClick={() => setPlantSectionOpen((prev) => !prev)}
@@ -610,7 +600,7 @@ export default function AdminConfigsPage() {
             </div>
 
             {plantSectionOpen && (
-              <div className="space-y-4 border-t border-slate-100 pt-4">
+              <div className="space-y-4 border-t border-slate-100 px-5 pb-5 pt-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                     Plant Names (Click a plant to manage users)
@@ -667,7 +657,7 @@ export default function AdminConfigsPage() {
                           </div>
                         </button>
 
-                        {plants.length > 1 && (
+                        {
                           <button
                             type="button"
                             onClick={() => handleRemovePlant(plant)}
@@ -676,7 +666,7 @@ export default function AdminConfigsPage() {
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                        )}
+                        }
                       </div>
                     );
                   })}
