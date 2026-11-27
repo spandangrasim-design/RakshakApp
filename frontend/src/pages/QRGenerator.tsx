@@ -1,3 +1,4 @@
+import { API_ROOT } from '../lib/api';
 import React, { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -11,7 +12,7 @@ import {
 import { QRSheetPDF, QRData } from '../components/QRSheetPDF';
 
 // Point this to your backend domain (leave empty string '' if same origin)
-const API_BASE = (import.meta as any).env?.VITE_API_URL || '';
+const API_BASE = API_ROOT;
 
 interface Checkpoint {
   id: string;
