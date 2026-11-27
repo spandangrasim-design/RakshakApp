@@ -3646,7 +3646,7 @@ app.post('/api/v1/daily-reports/send-now', async (c) => {
 
     const totalVerifiedScans = scansList.filter((s) => s.is_verified).length;
     const reportDateStr = localDate(c.env, wStartMs);
-    const plantName = tenant?.name || 'Grasim Industrial Plant';
+    const plantName = tenant?.name || 'Example Industrial Plant';
     const subject = `[Daily Digest] Security & Patrol Briefing - ${plantName} - ${reportDateStr}`;
 
     const cellHead = "padding:10px 12px;background:#f8fafc;font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e2e8f0;text-align:left;";

@@ -909,7 +909,7 @@ export default function AdminConfigsPage() {
                         type="email"
                         value={configs['MANAGER_EMAIL'] || ''}
                         onChange={(e) => handleChange('MANAGER_EMAIL', e.target.value)}
-                        placeholder="spandangrasim@gmail.com"
+                        placeholder="alerts@example.com"
                         className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
                       />
                     </div>
@@ -933,7 +933,7 @@ export default function AdminConfigsPage() {
                         type="email"
                         value={configs['GMAIL_SENDER_EMAIL'] || ''}
                         onChange={(e) => handleChange('GMAIL_SENDER_EMAIL', e.target.value)}
-                        placeholder="spandangrasim@gmail.com"
+                        placeholder="alerts@example.com"
                         className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold outline-none focus:border-brand-500"
                       />
                     </div>

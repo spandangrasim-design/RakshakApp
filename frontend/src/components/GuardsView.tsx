@@ -1502,7 +1502,7 @@ export const GuardsView: React.FC = () => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Kaushik Vegad"
+                  placeholder="e.g. John Doe"
                   value={newGuard.full_name}
                   onChange={(e) => setNewGuard({ ...newGuard, full_name: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 text-slate-800"
@@ -1515,7 +1515,7 @@ export const GuardsView: React.FC = () => {
                   <input
                     type="text"
                     required
-                    placeholder="e.g. kaushik"
+                    placeholder="e.g. jdoe"
                     value={newGuard.employee_code}
                     onChange={(e) => setNewGuard({ ...newGuard, employee_code: e.target.value })}
                     className="w-full border border-slate-300 rounded-lg p-2 outline-none focus:border-blue-500 font-mono text-slate-800"
