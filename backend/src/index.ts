@@ -2636,21 +2636,10 @@ function chunkBase64(str: string, size = 76): string {
 }
 
 
-async function resolveFromHeader(accessToken: string, senderName?: string): Promise<string[]> {
+function buildFromHeader(senderName?: string): string[] {
   const name = String(senderName || "").trim();
   if (!name) return [];
-  try {
-    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!r.ok) return [];
-    const data: any = await r.json().catch(() => ({}));
-    const email = String(data?.emailAddress || "").trim();
-    if (!email) return [];
-    return [`From: =?utf-8?B?${utf8ToBase64(name)}?= <${email}>`];
-  } catch {
-    return [];
-  }
+  return [`From: =?utf-8?B?${utf8ToBase64(name)}?=`];
 }
 
 async function sendTenantEmail(
@@ -2665,7 +2654,7 @@ async function sendTenantEmail(
   const cfg = await loadTenantConfig(supabase, tenantId);
   const tokenResult = await getValidGmailAccessToken(supabase, cfg, `t:${tenantId}:`);
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
-  const fromHeaders = await resolveFromHeader(tokenResult.token, cfg['GMAIL_SENDER_NAME']);
+  const fromHeaders = buildFromHeader(cfg['GMAIL_SENDER_NAME']);
 
   let mimeRaw = '';
   if (attachment) {
@@ -5671,7 +5660,7 @@ async function sendPlantIncidentEmail(
   if (!tokenResult.token) {
     return { ok: false, recipients, error: tokenResult.error };
   }
-  const incidentFromHeaders = await resolveFromHeader(tokenResult.token, configMap['GMAIL_SENDER_NAME']);
+  const incidentFromHeaders = buildFromHeader(configMap['GMAIL_SENDER_NAME']);
 
   const caseNumber = params.caseNumber
     ? `RKS-${String(params.caseNumber).padStart(6, '0')}`
