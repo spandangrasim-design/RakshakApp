@@ -18,3 +18,13 @@ bucket_name = "rakshak-images"
 # SLA Escalation Cron Trigger (Every 10 minutes)
 [triggers]
 crons = ["*/10 * * * *", "0 6 */2 * *"]
+
+# Preview Environment Configuration (for dev / non-main branches)
+[previews.vars]
+ENVIRONMENT = "preview"
+GEOFENCE_RADIUS_M = "250"
+SUPABASE_URL = "https://subydhacosoarzfsusxz.supabase.co"
+
+[[previews.r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "rakshak-images"
