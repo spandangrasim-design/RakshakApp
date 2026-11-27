@@ -96,12 +96,12 @@ export default function AdminConfigsPage() {
           configMap[item.key_name] = item.key_value;
         });
 
-        if (configMap['CUSTOM_PLANTS']) {
+        if (configMap['CUSTOM_PLANTS'] !== undefined) {
           try {
             const parsed = JSON.parse(configMap['CUSTOM_PLANTS']);
-            if (Array.isArray(parsed) && parsed.length > 0) {
+            if (Array.isArray(parsed)) {
               setPlants(parsed);
-              setSelectedPlant((prev) => (parsed.includes(prev) ? prev : parsed[0]));
+              setSelectedPlant((prev) => (parsed.includes(prev) ? prev : (parsed[0] || '')));
             }
           } catch {}
         }
@@ -538,6 +538,27 @@ export default function AdminConfigsPage() {
               <Send className={`h-5 w-5 ${isTelegramEnabled ? 'text-sky-600' : 'text-slate-400'}`} />
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setChannelFilter('PLANT_ALERTS');
+              setPlantSectionOpen(true);
+            }}
+            className={`flex items-center justify-between rounded-2xl border p-4 text-left transition ${
+              channelFilter === 'PLANT_ALERTS'
+                ? 'border-indigo-500 bg-indigo-50/70 ring-2 ring-indigo-500/20'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+          >
+            <div>
+              <div className="text-[11px] font-bold uppercase text-indigo-700">Plant Alerts</div>
+              <div className="mt-1 text-base font-extrabold text-slate-900">
+                {plants.length} {plants.length === 1 ? 'Plant' : 'Plants'}
+              </div>
+            </div>
+            <Building2 className={`h-5 w-5 ${plants.length > 0 ? 'text-indigo-600' : 'text-slate-400'}`} />
+          </button>
         </div>
 
         {message.text && (
