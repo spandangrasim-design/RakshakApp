@@ -1,3 +1,4 @@
+import { useAuth } from '../context/AuthContext';
 import React, { useState, useEffect } from 'react';
 import {
   Plus,
@@ -127,8 +128,7 @@ export const GuardsView: React.FC = () => {
   const [savingPerms, setSavingPerms] = useState(false);
 
   // Who is looking at this page? Only the platform Super Admin can change access level / industry.
-  const me = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
-  const isSuper = me?.tier === 'SUPER_ADMIN';
+  const { user: me, isSuper, token: authToken } = useAuth();
   const [tenants, setTenants] = useState<{ id: string; name: string; code?: string }[]>([]);
   const [selectedTenantFilter, setSelectedTenantFilter] = useState<string>('ALL');
   const ADMIN_ROLES = ['Chief Security Officer', 'Admin', 'Security Manager'];
@@ -188,7 +188,7 @@ export const GuardsView: React.FC = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('token') || '';
+      const token = authToken || localStorage.getItem('token') || '';
       const requestHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
       const [guardsRes, roundsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/guards`, { headers: requestHeaders }),
