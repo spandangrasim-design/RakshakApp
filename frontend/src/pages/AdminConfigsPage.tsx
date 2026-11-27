@@ -15,7 +15,12 @@ import {
   Layers,
   Building2,
   Plus,
-  Trash2
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  UserPlus,
+  Users,
+  X
 } from 'lucide-react';
 
 import { API_ROOT as API_BASE_URL } from '../lib/api';
@@ -36,6 +41,11 @@ export default function AdminConfigsPage() {
   const [newPlantInput, setNewPlantInput] = useState<string>('');
   const [guards, setGuards] = useState<any[]>([]);
   const [savingPlantUser, setSavingPlantUser] = useState<string | null>(null);
+  const [plantSectionOpen, setPlantSectionOpen] = useState<boolean>(false);
+  const [modalPlant, setModalPlant] = useState<string | null>(null);
+  const [modalSelectedUserId, setModalSelectedUserId] = useState<string>('');
+  const [selectedPlant, setSelectedPlant] = useState<string>(DEFAULT_PLANTS[0]);
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
 
   const visibleModules = React.useMemo(() => {
     try {
@@ -86,7 +96,10 @@ export default function AdminConfigsPage() {
         if (configMap['CUSTOM_PLANTS']) {
           try {
             const parsed = JSON.parse(configMap['CUSTOM_PLANTS']);
-            if (Array.isArray(parsed) && parsed.length > 0) setPlants(parsed);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setPlants(parsed);
+              setSelectedPlant((prev) => (parsed.includes(prev) ? prev : parsed[0]));
+            }
           } catch {}
         }
 
@@ -121,20 +134,50 @@ export default function AdminConfigsPage() {
     setConfigs(prev => ({ ...prev, [key]: value }));
   };
 
-  const handleAddPlant = () => {
-    const trimmed = newPlantInput.trim();
-    if (!trimmed || plants.includes(trimmed)) return;
-    const next = [...plants, trimmed];
+  const persistPlants = async (next: string[]) => {
     setPlants(next);
     handleChange('CUSTOM_PLANTS', JSON.stringify(next));
-    setNewPlantInput('');
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/admin/configs`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ configs: { CUSTOM_PLANTS: JSON.stringify(next) } }),
+      });
+    } catch {}
   };
 
-  const handleRemovePlant = (plant: string) => {
+
+  const handleAddPlant = async () => {
+    const trimmed = newPlantInput.trim();
+    if (!trimmed) {
+      setMessage({ text: 'Please enter a plant name first.', type: 'error' });
+      return;
+    }
+    const existing = plants.find((p) => p.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      setNewPlantInput('');
+      setModalPlant(existing);
+      setModalSelectedUserId('');
+      setMessage({ text: `Plant "${existing}" already exists.`, type: 'error' });
+      return;
+    }
+    const next = [...plants, trimmed];
+    setNewPlantInput('');
+    await persistPlants(next);
+    setModalPlant(trimmed);
+    setModalSelectedUserId('');
+    setMessage({ text: `Added plant "${trimmed}".`, type: 'success' });
+  };
+
+  const handleRemovePlant = async (plant: string) => {
     if (plants.length <= 1) return;
     const next = plants.filter((p) => p !== plant);
-    setPlants(next);
-    handleChange('CUSTOM_PLANTS', JSON.stringify(next));
+    if (modalPlant === plant) {
+      setModalPlant(null);
+      setModalSelectedUserId('');
+    }
+    await persistPlants(next);
+    setMessage({ text: `Removed plant "${plant}".`, type: 'success' });
   };
 
   const handleToggleGuardPlant = async (guard: any, plant: string) => {
@@ -250,7 +293,7 @@ export default function AdminConfigsPage() {
     }
   };
 
-  const [channelFilter, setChannelFilter] = useState<'ALL' | 'GMAIL' | 'SMTP' | 'WHATSAPP' | 'TELEGRAM'>('ALL');
+  const [channelFilter, setChannelFilter] = useState<'ALL' | 'GMAIL' | 'SMTP' | 'WHATSAPP' | 'TELEGRAM' | 'PLANT_ALERTS'>('ALL');
 
   if (loading) {
     return (
@@ -446,103 +489,249 @@ export default function AdminConfigsPage() {
           </div>
         )}
 
-        {/* Plant Names & Automated Email Alert Assignments */}
-        <div className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-xs space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2.5">
-              <Building2 className="h-5 w-5 text-indigo-600" />
-              <div>
-                <h2 className="text-sm font-extrabold text-slate-900">
-                  Plant Names &amp; Incident Email Alert Assignments
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Add plants (e.g., Test - P1, Test2 - P2) and assign users below. When an incident is created for a plant, all assigned users receive an automatic email alert.
-                </p>
+        {/* Plant Names & Incident Email Alert Assignments (Collapsible + Plant Click Modal) */}
+        {(channelFilter === 'ALL' || channelFilter === 'PLANT_ALERTS') && (
+          <div className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-xs space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setPlantSectionOpen((prev) => !prev)}
+                className="flex items-center gap-3 text-left"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+                  <Building2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-extrabold text-slate-900">
+                      Plant Names &amp; Incident Email Alert Assignments
+                    </h2>
+                    <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+                      {plants.length} {plants.length === 1 ? 'Plant' : 'Plants'}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Click to open plant names, then click any plant to view or add assigned alert users in a popup.
+                  </p>
+                </div>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={plantSectionOpen ? 'OPEN' : 'CLOSED'}
+                  onChange={(e) => setPlantSectionOpen(e.target.value === 'OPEN')}
+                  aria-label="Toggle Plant Names & Incident Email Alert Assignments"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-indigo-500 focus:bg-white"
+                >
+                  <option value="CLOSED">Collapsed</option>
+                  <option value="OPEN">Expanded</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setPlantSectionOpen((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                >
+                  {plantSectionOpen ? (
+                    <>
+                      Close <ChevronUp className="h-4 w-4" />
+                    </>
+                  ) : (
+                    <>
+                      Open <ChevronDown className="h-4 w-4" />
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={newPlantInput}
-                onChange={(e) => setNewPlantInput(e.target.value)}
-                placeholder="e.g. Test3 - P3"
-                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold outline-none focus:border-indigo-500 focus:bg-white"
-              />
-              <button
-                type="button"
-                onClick={handleAddPlant}
-                className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700"
-              >
-                <Plus className="h-3.5 w-3.5" /> Add Plant
-              </button>
-            </div>
-          </div>
+            {plantSectionOpen && (
+              <div className="space-y-4 border-t border-slate-100 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Plant Names (Click a plant to manage users)
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newPlantInput}
+                      onChange={(e) => setNewPlantInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddPlant();
+                        }
+                      }}
+                      placeholder="e.g. Test3 - P3"
+                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold outline-none focus:border-indigo-500 focus:bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddPlant}
+                      className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add Plant
+                    </button>
+                  </div>
+                </div>
 
-          <div className="flex flex-wrap gap-2">
-            {plants.map((plant) => (
-              <span
-                key={plant}
-                className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-800"
-              >
-                {plant}
-                {plants.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemovePlant(plant)}
-                    className="text-indigo-400 hover:text-rose-600"
-                    title="Remove plant"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                )}
-              </span>
-            ))}
-          </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {plants.map((plant) => {
+                    const assignedCount = guards.filter(
+                      (g) => Array.isArray(g.assigned_plants) && g.assigned_plants.includes(plant)
+                    ).length;
 
-          {guards.length > 0 && (
-            <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase text-slate-500">
-                    <th className="px-3 py-2.5">User / Guard</th>
-                    <th className="px-3 py-2.5">Email</th>
-                    {plants.map((p) => (
-                      <th key={p} className="px-3 py-2.5 text-center">
-                        {p}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {guards.map((g) => {
-                    const assigned: string[] = Array.isArray(g.assigned_plants) ? g.assigned_plants : [];
                     return (
-                      <tr key={g.guard_id} className="hover:bg-slate-50/70">
-                        <td className="px-3 py-2 font-bold text-slate-800">
-                          {g.full_name}{' '}
-                          <span className="font-mono text-[10px] text-slate-400">({g.employee_code})</span>
-                        </td>
-                        <td className="px-3 py-2 text-slate-500">{g.email || 'No email set'}</td>
-                        {plants.map((p) => (
-                          <td key={p} className="px-3 py-2 text-center">
-                            <input
-                              type="checkbox"
-                              checked={assigned.includes(p)}
-                              disabled={savingPlantUser === g.guard_id}
-                              onChange={() => handleToggleGuardPlant(g, p)}
-                              className="h-4 w-4 cursor-pointer accent-indigo-600"
-                            />
-                          </td>
-                        ))}
-                      </tr>
+                      <div
+                        key={plant}
+                        className="flex items-center justify-between gap-2 rounded-xl border border-indigo-200 bg-indigo-50/50 p-3.5 transition hover:border-indigo-400 hover:bg-indigo-50"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalPlant(plant);
+                            setModalSelectedUserId('');
+                          }}
+                          className="flex flex-1 items-center justify-between gap-2 text-left"
+                        >
+                          <div>
+                            <div className="text-xs font-extrabold text-slate-900">{plant}</div>
+                            <div className="mt-0.5 flex items-center gap-1 text-[11px] font-semibold text-indigo-700">
+                              <Users className="h-3.5 w-3.5" />
+                              {assignedCount} {assignedCount === 1 ? 'user' : 'users'} assigned — Click to manage
+                            </div>
+                          </div>
+                        </button>
+
+                        {plants.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePlant(plant)}
+                            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-100 hover:text-rose-600"
+                            title="Delete plant"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                </div>
+              </div>
+            )}
+
+            {/* Popup Modal for Selected Plant */}
+            {modalPlant && (() => {
+              const assignedUsers = guards.filter(
+                (g) => Array.isArray(g.assigned_plants) && g.assigned_plants.includes(modalPlant)
+              );
+              const unassignedUsers = guards.filter(
+                (g) => !(Array.isArray(g.assigned_plants) && g.assigned_plants.includes(modalPlant))
+              );
+              const activeUserId = unassignedUsers.some((u) => String(u.guard_id) === String(modalSelectedUserId))
+                ? modalSelectedUserId
+                : (unassignedUsers[0]?.guard_id ? String(unassignedUsers[0].guard_id) : '');
+              const selectedUser = unassignedUsers.find((u) => String(u.guard_id) === String(activeUserId));
+
+              return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
+                  <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                      <div>
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">
+                          Plant Alert Recipients
+                        </div>
+                        <h3 className="text-base font-extrabold text-slate-900">{modalPlant}</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setModalPlant(null)}
+                        className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        aria-label="Close popup"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    {/* Select User Not Yet in This Plant & Add */}
+                    <div className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                        Select User to Add to {modalPlant}
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={activeUserId}
+                          onChange={(e) => setModalSelectedUserId(e.target.value)}
+                          disabled={unassignedUsers.length === 0 || savingPlantUser !== null}
+                          className="min-w-[200px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500 disabled:opacity-50"
+                        >
+                          {unassignedUsers.length === 0 ? (
+                            <option value="">All users are already in {modalPlant}</option>
+                          ) : (
+                            unassignedUsers.map((g) => (
+                              <option key={g.guard_id} value={g.guard_id}>
+                                {g.full_name} ({g.employee_code}) — {g.email || 'No email set'}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!selectedUser || savingPlantUser === selectedUser.guard_id}
+                          onClick={() => selectedUser && handleToggleGuardPlant(selectedUser, modalPlant)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:opacity-40"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          Add User
+                        </button>
+                      </div>
+                      {selectedUser && !selectedUser.email && (
+                        <p className="text-[11px] font-semibold text-amber-700">
+                          {selectedUser.full_name} has no email address set yet.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Users Currently Part of This Plant */}
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Users in {modalPlant} ({assignedUsers.length})
+                      </div>
+                      {assignedUsers.length === 0 ? (
+                        <p className="rounded-xl border border-dashed border-slate-200 py-4 text-center text-xs text-slate-400">
+                          No users are part of {modalPlant} yet.
+                        </p>
+                      ) : (
+                        <div className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
+                          {assignedUsers.map((g) => (
+                            <div
+                              key={g.guard_id}
+                              className="flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs"
+                            >
+                              <div>
+                                <div className="font-bold text-slate-900">{g.full_name}</div>
+                                <div className="text-[11px] text-slate-500">
+                                  {g.employee_code} • {g.email || 'No email set'}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={savingPlantUser === g.guard_id}
+                                onClick={() => handleToggleGuardPlant(g, modalPlant)}
+                                className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-40"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="space-y-5">
           {/* 1. Google Gmail OAuth2 Refresh Token Settings */}

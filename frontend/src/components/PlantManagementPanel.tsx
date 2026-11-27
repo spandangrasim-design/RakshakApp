@@ -62,10 +62,17 @@ export const PlantManagementPanel: React.FC<Props> = ({
 
   const activeGuards = guards.filter((g) => g.is_active !== false);
 
+  const authKey = JSON.stringify(authHeaders || {});
   const loadPlants = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/plants`, { headers: authHeaders });
+      const parsedHeaders = JSON.parse(authKey) as Record<string, string>;
+      const storedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+      const headers: Record<string, string> = {
+        ...(storedToken && !parsedHeaders.Authorization ? { Authorization: `Bearer ${storedToken}` } : {}),
+        ...parsedHeaders,
+      };
+      const res = await fetch(`${API_BASE}/plants`, { headers });
       const data = await res.json();
       if (data.success && Array.isArray(data.plants)) {
         setPlants(data.plants);
@@ -78,7 +85,7 @@ export const PlantManagementPanel: React.FC<Props> = ({
     } finally {
       setLoading(false);
     }
-  }, [authHeaders]);
+  }, [authKey]);
 
   useEffect(() => {
     loadPlants();
