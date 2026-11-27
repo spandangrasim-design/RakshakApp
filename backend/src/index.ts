@@ -5711,7 +5711,7 @@ async function sendPlantIncidentEmail(
   `;
 
   const emailLines = [
-    ...(cfg['GMAIL_SENDER_NAME']?.trim() && cfg['MANAGER_EMAIL']?.trim() ? [`From: =?utf-8?B?${utf8ToBase64(cfg['GMAIL_SENDER_NAME'].trim())}?= <${cfg['MANAGER_EMAIL'].trim()}>`] : []),
+    ...(configMap['GMAIL_SENDER_NAME']?.trim() && configMap['MANAGER_EMAIL']?.trim() ? [`From: =?utf-8?B?${utf8ToBase64(configMap['GMAIL_SENDER_NAME'].trim())}?= <${configMap['MANAGER_EMAIL'].trim()}>`] : []),
       `To: ${recipients.join(', ')}`,
     `Subject: ${encodedSubject}`,
     'MIME-Version: 1.0',
