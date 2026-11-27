@@ -558,27 +558,25 @@ export default function AdminConfigsPage() {
 
         {/* Plant Names & Incident Email Alert Assignments (Collapsible + Plant Click Modal) */}
         {(channelFilter === 'ALL' || channelFilter === 'PLANT_ALERTS') && (
-          <div className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-xs space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className={`rounded-2xl border transition-all ${
+            plantSectionOpen ? 'border-indigo-200 bg-white shadow-xs' : 'border-slate-200 bg-white/80'
+          }`}>
+            <div className="flex flex-wrap items-center justify-between gap-4 p-5">
               <button
                 type="button"
                 onClick={() => setPlantSectionOpen((prev) => !prev)}
                 className="flex items-center gap-3 text-left"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
-                  <Building2 className="h-5 w-5" />
-                </div>
+                <span className={`h-2.5 w-2.5 rounded-full ${plantSectionOpen ? 'bg-indigo-600' : 'bg-slate-400'}`}></span>
                 <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-extrabold text-slate-900">
-                      Plant Names &amp; Incident Email Alert Assignments
-                    </h2>
-                    <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+                  <h2 className="flex flex-wrap items-center gap-2 text-sm font-extrabold text-slate-900">
+                    Plant Names &amp; Incident Email Alert Assignments
+                    <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-indigo-700">
                       {plants.length} {plants.length === 1 ? 'Plant' : 'Plants'}
                     </span>
-                  </div>
+                  </h2>
                   <p className="mt-0.5 text-xs text-slate-500">
-                    Click to open plant names, then click any plant to view or add assigned alert users in a popup.
+                    Manage plant names and select users in a popup to receive automatic incident email alerts.
                   </p>
                 </div>
               </button>

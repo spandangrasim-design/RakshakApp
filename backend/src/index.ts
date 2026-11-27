@@ -4415,13 +4415,42 @@ app.patch('/api/v1/guards/:id', async (c) => {
     let plantsForAssignmentSync: any[] | null = null;
     let normalizedRequestedPlants: Set<string> | null = null;
     if (parsed.assigned_plants !== undefined) {
-      const requestedNames = Array.from(new Set(parsed.assigned_plants.map((name: string) => name.trim()).filter(Boolean)));
-      const { data: tenantPlants, error: plantsError } = await supabase
-        .from('plants').select('id, name, assigned_guard_ids').eq('tenant_id', effectiveTenant || targetRow.tenant_id);
+      const requestedNames = Array.from(new Set(parsed.assigned_plants.map((name: string) => String(name || '').trim()).filter(Boolean)));
+      const tenantIdForPlants = effectiveTenant || targetRow.tenant_id;
+      let plantsQuery = supabase.from('plants').select('id, name, assigned_guard_ids, tenant_id');
+      if (tenantIdForPlants) {
+        plantsQuery = plantsQuery.eq('tenant_id', tenantIdForPlants);
+      }
+      const { data: tenantPlants, error: plantsError } = await plantsQuery;
       if (plantsError) throw plantsError;
-      const matchedNames = new Set((tenantPlants || []).map((plant: any) => String(plant.name || '').trim().toLocaleLowerCase()));
+
+      const matchedNames = new Set(
+        (tenantPlants || []).map((plant: any) => String(plant.name || '').trim().toLocaleLowerCase())
+      );
+
+      // Also include any plants saved under CUSTOM_PLANTS config if present
+      const { data: customPlantCfg } = await supabase
+        .from('admin_configs')
+        .select('config_value')
+        .eq('config_key', 'CUSTOM_PLANTS')
+        .maybeSingle();
+      if (customPlantCfg?.config_value) {
+        try {
+          const parsedCustom = JSON.parse(customPlantCfg.config_value);
+          if (Array.isArray(parsedCustom)) {
+            parsedCustom.forEach((p: any) => {
+              if (typeof p === 'string' && p.trim()) {
+                matchedNames.add(p.trim().toLocaleLowerCase());
+              }
+            });
+          }
+        } catch {}
+      }
+
       const unknownNames = requestedNames.filter((name: string) => !matchedNames.has(name.toLocaleLowerCase()));
-      if (unknownNames.length) return c.json({ success: false, message: `Unknown plant assignment: ${unknownNames.join(', ')}` }, 400);
+      if (unknownNames.length) {
+        return c.json({ success: false, message: `Unknown plant assignment: ${unknownNames.join(', ')}` }, 400);
+      }
       plantsForAssignmentSync = tenantPlants || [];
       normalizedRequestedPlants = new Set(requestedNames.map((name: string) => name.toLocaleLowerCase()));
       parsed.assigned_plants = requestedNames as any;
