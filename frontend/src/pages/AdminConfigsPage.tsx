@@ -20,7 +20,9 @@ import {
   ChevronUp,
   UserPlus,
   Users,
-  X
+  X,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 import { API_ROOT as API_BASE_URL } from '../lib/api';
@@ -43,7 +45,8 @@ export default function AdminConfigsPage() {
   const [savingPlantUser, setSavingPlantUser] = useState<string | null>(null);
   const [plantSectionOpen, setPlantSectionOpen] = useState<boolean>(false);
   const [modalPlant, setModalPlant] = useState<string | null>(null);
-  const [modalSelectedUserId, setModalSelectedUserId] = useState<string>('');
+  const [checkedUserIds, setCheckedUserIds] = useState<string[]>([]);
+  const [bulkAddingUsers, setBulkAddingUsers] = useState<boolean>(false);
   const [selectedPlant, setSelectedPlant] = useState<string>(DEFAULT_PLANTS[0]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
 
@@ -157,7 +160,7 @@ export default function AdminConfigsPage() {
     if (existing) {
       setNewPlantInput('');
       setModalPlant(existing);
-      setModalSelectedUserId('');
+      setCheckedUserIds([]);
       setMessage({ text: `Plant "${existing}" already exists.`, type: 'error' });
       return;
     }
@@ -165,7 +168,7 @@ export default function AdminConfigsPage() {
     setNewPlantInput('');
     await persistPlants(next);
     setModalPlant(trimmed);
-    setModalSelectedUserId('');
+    setCheckedUserIds([]);
     setMessage({ text: `Added plant "${trimmed}".`, type: 'success' });
   };
 
@@ -174,32 +177,95 @@ export default function AdminConfigsPage() {
     const next = plants.filter((p) => p !== plant);
     if (modalPlant === plant) {
       setModalPlant(null);
-      setModalSelectedUserId('');
+      setCheckedUserIds([]);
     }
     await persistPlants(next);
     setMessage({ text: `Removed plant "${plant}".`, type: 'success' });
   };
 
+  const getGuardId = (g: any): string => String(g?.guard_id ?? g?.id ?? '');
+
   const handleToggleGuardPlant = async (guard: any, plant: string) => {
-    setSavingPlantUser(guard.guard_id);
+    const gid = getGuardId(guard);
+    if (!gid || !plant) return;
+    setSavingPlantUser(gid);
     const current: string[] = Array.isArray(guard.assigned_plants) ? guard.assigned_plants : [];
-    const next = current.includes(plant)
-      ? current.filter((p) => p !== plant)
-      : [...current, plant];
+    const adding = !current.includes(plant);
+    const next = adding ? [...current, plant] : current.filter((p) => p !== plant);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/guards/${guard.guard_id}`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/guards/${gid}`, {
         method: 'PATCH',
         headers: getAuthHeaders(),
         body: JSON.stringify({ assigned_plants: next }),
       });
-      if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
         setGuards((prev) =>
-          prev.map((g) => (g.guard_id === guard.guard_id ? { ...g, assigned_plants: next } : g))
+          prev.map((g) => (getGuardId(g) === gid ? { ...g, assigned_plants: next } : g))
         );
+        setCheckedUserIds((prev) => prev.filter((id) => id !== gid));
+        setMessage({
+          text: adding
+            ? `Added ${guard.full_name} to ${plant}.`
+            : `Removed ${guard.full_name} from ${plant}.`,
+          type: 'success',
+        });
+      } else {
+        setMessage({
+          text: data.message || `Could not update ${guard.full_name} for ${plant}.`,
+          type: 'error',
+        });
       }
+    } catch {
+      setMessage({ text: 'Network error while updating plant alert recipients.', type: 'error' });
     } finally {
       setSavingPlantUser(null);
+    }
+  };
+
+  const handleAddCheckedUsersToPlant = async (plant: string, usersToAdd: any[]) => {
+    if (!plant || usersToAdd.length === 0) return;
+    setBulkAddingUsers(true);
+    let addedCount = 0;
+    let lastError = '';
+
+    try {
+      for (const user of usersToAdd) {
+        const gid = getGuardId(user);
+        if (!gid) continue;
+        const current: string[] = Array.isArray(user.assigned_plants) ? user.assigned_plants : [];
+        const next = current.includes(plant) ? current : [...current, plant];
+
+        const res = await fetch(`${API_BASE_URL}/api/v1/guards/${gid}`, {
+          method: 'PATCH',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ assigned_plants: next }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success !== false) {
+          addedCount += 1;
+          setGuards((prev) =>
+            prev.map((g) => (getGuardId(g) === gid ? { ...g, assigned_plants: next } : g))
+          );
+        } else {
+          lastError = data.message || `Failed to assign ${user.full_name}.`;
+        }
+      }
+
+      setCheckedUserIds([]);
+      if (addedCount > 0) {
+        setMessage({
+          text: `Added ${addedCount} ${addedCount === 1 ? 'user' : 'users'} to ${plant}.`,
+          type: 'success',
+        });
+      } else if (lastError) {
+        setMessage({ text: lastError, type: 'error' });
+      }
+    } catch {
+      setMessage({ text: 'Network error while adding users to plant.', type: 'error' });
+    } finally {
+      setBulkAddingUsers(false);
     }
   };
 
@@ -347,6 +413,7 @@ export default function AdminConfigsPage() {
                   {allowSmtp && <option value="SMTP">Office 365 / SMTP</option>}
                   {allowWhatsapp && <option value="WHATSAPP">Meta WhatsApp API</option>}
                   {allowTelegram && <option value="TELEGRAM">Telegram Bot API</option>}
+                  <option value="PLANT_ALERTS">Plant Names &amp; Incident Email Alerts</option>
                 </select>
               </div>
             )}
@@ -372,7 +439,7 @@ export default function AdminConfigsPage() {
         </div>
 
         {/* Channel Status KPI Strip */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <button
             type="button"
             onClick={() => setChannelFilter('ALL')}
@@ -589,7 +656,7 @@ export default function AdminConfigsPage() {
                           type="button"
                           onClick={() => {
                             setModalPlant(plant);
-                            setModalSelectedUserId('');
+                            setCheckedUserIds([]);
                           }}
                           className="flex flex-1 items-center justify-between gap-2 text-left"
                         >
@@ -619,7 +686,7 @@ export default function AdminConfigsPage() {
               </div>
             )}
 
-            {/* Popup Modal for Selected Plant */}
+            {/* Popup Modal for Selected Plant with Multi-User Checkboxes */}
             {modalPlant && (() => {
               const assignedUsers = guards.filter(
                 (g) => Array.isArray(g.assigned_plants) && g.assigned_plants.includes(modalPlant)
@@ -627,14 +694,27 @@ export default function AdminConfigsPage() {
               const unassignedUsers = guards.filter(
                 (g) => !(Array.isArray(g.assigned_plants) && g.assigned_plants.includes(modalPlant))
               );
-              const activeUserId = unassignedUsers.some((u) => String(u.guard_id) === String(modalSelectedUserId))
-                ? modalSelectedUserId
-                : (unassignedUsers[0]?.guard_id ? String(unassignedUsers[0].guard_id) : '');
-              const selectedUser = unassignedUsers.find((u) => String(u.guard_id) === String(activeUserId));
+              const selectedBatchUsers = unassignedUsers.filter((u) =>
+                checkedUserIds.includes(getGuardId(u))
+              );
+
+              const toggleCheckbox = (gid: string) => {
+                setCheckedUserIds((prev) =>
+                  prev.includes(gid) ? prev.filter((id) => id !== gid) : [...prev, gid]
+                );
+              };
+
+              const toggleAllUnassigned = () => {
+                if (selectedBatchUsers.length === unassignedUsers.length) {
+                  setCheckedUserIds([]);
+                } else {
+                  setCheckedUserIds(unassignedUsers.map((u) => getGuardId(u)).filter(Boolean));
+                }
+              };
 
               return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
-                  <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4">
+                  <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4">
                     <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
                       <div>
                         <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">
@@ -644,7 +724,10 @@ export default function AdminConfigsPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => setModalPlant(null)}
+                        onClick={() => {
+                          setModalPlant(null);
+                          setCheckedUserIds([]);
+                        }}
                         className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                         aria-label="Close popup"
                       >
@@ -652,77 +735,112 @@ export default function AdminConfigsPage() {
                       </button>
                     </div>
 
-                    {/* Select User Not Yet in This Plant & Add */}
-                    <div className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-                      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                        Select User to Add to {modalPlant}
-                      </label>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <select
-                          value={activeUserId}
-                          onChange={(e) => setModalSelectedUserId(e.target.value)}
-                          disabled={unassignedUsers.length === 0 || savingPlantUser !== null}
-                          className="min-w-[200px] flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-500 disabled:opacity-50"
-                        >
-                          {unassignedUsers.length === 0 ? (
-                            <option value="">All users are already in {modalPlant}</option>
-                          ) : (
-                            unassignedUsers.map((g) => (
-                              <option key={g.guard_id} value={g.guard_id}>
-                                {g.full_name} ({g.employee_code}) — {g.email || 'No email set'}
-                              </option>
-                            ))
+                    {/* Multi-User Checkbox Selection to Add to Plant */}
+                    <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                          Select Users to Add ({selectedBatchUsers.length} selected)
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {unassignedUsers.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={toggleAllUnassigned}
+                              className="text-[11px] font-bold text-indigo-600 hover:underline"
+                            >
+                              {selectedBatchUsers.length === unassignedUsers.length ? 'Clear All' : 'Select All'}
+                            </button>
                           )}
-                        </select>
-                        <button
-                          type="button"
-                          disabled={!selectedUser || savingPlantUser === selectedUser.guard_id}
-                          onClick={() => selectedUser && handleToggleGuardPlant(selectedUser, modalPlant)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:opacity-40"
-                        >
-                          <UserPlus className="h-3.5 w-3.5" />
-                          Add User
-                        </button>
+                          <button
+                            type="button"
+                            disabled={selectedBatchUsers.length === 0 || bulkAddingUsers}
+                            onClick={() => handleAddCheckedUsersToPlant(modalPlant, selectedBatchUsers)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:opacity-40"
+                          >
+                            <UserPlus className="h-3.5 w-3.5" />
+                            {bulkAddingUsers
+                              ? 'Adding...'
+                              : `Add Selected (${selectedBatchUsers.length})`}
+                          </button>
+                        </div>
                       </div>
-                      {selectedUser && !selectedUser.email && (
-                        <p className="text-[11px] font-semibold text-amber-700">
-                          {selectedUser.full_name} has no email address set yet.
+
+                      {unassignedUsers.length === 0 ? (
+                        <p className="rounded-xl border border-dashed border-slate-200 bg-white py-3 text-center text-xs text-slate-400">
+                          All users are already assigned to {modalPlant}.
                         </p>
+                      ) : (
+                        <div className="max-h-52 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+                          {unassignedUsers.map((g) => {
+                            const gid = getGuardId(g);
+                            const isChecked = checkedUserIds.includes(gid);
+                            return (
+                              <label
+                                key={gid}
+                                className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2 text-xs transition hover:bg-indigo-50/50"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    disabled={bulkAddingUsers}
+                                    onChange={() => toggleCheckbox(gid)}
+                                    className="h-4 w-4 cursor-pointer accent-indigo-600"
+                                  />
+                                  <div>
+                                    <div className="font-bold text-slate-900">
+                                      {g.full_name}{' '}
+                                      <span className="font-mono text-[10px] text-slate-400">
+                                        ({g.employee_code})
+                                      </span>
+                                    </div>
+                                    <div className="text-[11px] text-slate-500">
+                                      {g.email || 'No email set'}
+                                    </div>
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
 
-                    {/* Users Currently Part of This Plant */}
+                    {/* Users Already Part of This Plant */}
                     <div className="space-y-2">
                       <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                         Users in {modalPlant} ({assignedUsers.length})
                       </div>
                       {assignedUsers.length === 0 ? (
-                        <p className="rounded-xl border border-dashed border-slate-200 py-4 text-center text-xs text-slate-400">
+                        <p className="rounded-xl border border-dashed border-slate-200 py-3 text-center text-xs text-slate-400">
                           No users are part of {modalPlant} yet.
                         </p>
                       ) : (
-                        <div className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
-                          {assignedUsers.map((g) => (
-                            <div
-                              key={g.guard_id}
-                              className="flex items-center justify-between gap-2 px-3.5 py-2.5 text-xs"
-                            >
-                              <div>
-                                <div className="font-bold text-slate-900">{g.full_name}</div>
-                                <div className="text-[11px] text-slate-500">
-                                  {g.employee_code} • {g.email || 'No email set'}
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                disabled={savingPlantUser === g.guard_id}
-                                onClick={() => handleToggleGuardPlant(g, modalPlant)}
-                                className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-40"
+                        <div className="max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
+                          {assignedUsers.map((g) => {
+                            const gid = getGuardId(g);
+                            return (
+                              <div
+                                key={gid}
+                                className="flex items-center justify-between gap-2 px-3.5 py-2 text-xs"
                               >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
+                                <div>
+                                  <div className="font-bold text-slate-900">{g.full_name}</div>
+                                  <div className="text-[11px] text-slate-500">
+                                    {g.employee_code} • {g.email || 'No email set'}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={savingPlantUser === gid}
+                                  onClick={() => handleToggleGuardPlant(g, modalPlant)}
+                                  className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-40"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
