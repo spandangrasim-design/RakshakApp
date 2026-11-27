@@ -2635,6 +2635,24 @@ function chunkBase64(str: string, size = 76): string {
   return chunks.join('\r\n');
 }
 
+
+async function resolveFromHeader(accessToken: string, senderName?: string): Promise<string[]> {
+  const name = String(senderName || "").trim();
+  if (!name) return [];
+  try {
+    const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!r.ok) return [];
+    const data: any = await r.json().catch(() => ({}));
+    const email = String(data?.emailAddress || "").trim();
+    if (!email) return [];
+    return [`From: =?utf-8?B?${utf8ToBase64(name)}?= <${email}>`];
+  } catch {
+    return [];
+  }
+}
+
 async function sendTenantEmail(
   env: Bindings,
   tenantId: string,
@@ -2647,6 +2665,7 @@ async function sendTenantEmail(
   const cfg = await loadTenantConfig(supabase, tenantId);
   const tokenResult = await getValidGmailAccessToken(supabase, cfg, `t:${tenantId}:`);
   if (!tokenResult.token) return { ok: false, error: tokenResult.error || 'Gmail is not connected for this industry.' };
+  const fromHeaders = await resolveFromHeader(tokenResult.token, cfg['GMAIL_SENDER_NAME']);
 
   let mimeRaw = '';
   if (attachment) {
@@ -2655,7 +2674,7 @@ async function sendTenantEmail(
     const attachBase64 = chunkBase64(attachment.contentBase64);
 
     mimeRaw = [
-      ...(cfg['GMAIL_SENDER_NAME']?.trim() && cfg['MANAGER_EMAIL']?.trim() ? [`From: =?utf-8?B?${utf8ToBase64(cfg['GMAIL_SENDER_NAME'].trim())}?= <${cfg['MANAGER_EMAIL'].trim()}>`] : []),
+      ...fromHeaders,
       `To: ${recipients.join(', ')}`,
       `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
       'MIME-Version: 1.0',
@@ -2679,7 +2698,7 @@ async function sendTenantEmail(
     ].join('\r\n');
   } else {
     mimeRaw = [
-      ...(cfg['GMAIL_SENDER_NAME']?.trim() && cfg['MANAGER_EMAIL']?.trim() ? [`From: =?utf-8?B?${utf8ToBase64(cfg['GMAIL_SENDER_NAME'].trim())}?= <${cfg['MANAGER_EMAIL'].trim()}>`] : []),
+      ...fromHeaders,
       `To: ${recipients.join(', ')}`,
       `Subject: =?utf-8?B?${utf8ToBase64(subject)}?=`,
       'MIME-Version: 1.0',
@@ -5652,6 +5671,7 @@ async function sendPlantIncidentEmail(
   if (!tokenResult.token) {
     return { ok: false, recipients, error: tokenResult.error };
   }
+  const incidentFromHeaders = await resolveFromHeader(tokenResult.token, configMap['GMAIL_SENDER_NAME']);
 
   const caseNumber = params.caseNumber
     ? `RKS-${String(params.caseNumber).padStart(6, '0')}`
@@ -5711,7 +5731,7 @@ async function sendPlantIncidentEmail(
   `;
 
   const emailLines = [
-    ...(configMap['GMAIL_SENDER_NAME']?.trim() && configMap['MANAGER_EMAIL']?.trim() ? [`From: =?utf-8?B?${utf8ToBase64(configMap['GMAIL_SENDER_NAME'].trim())}?= <${configMap['MANAGER_EMAIL'].trim()}>`] : []),
+    ...incidentFromHeaders,
       `To: ${recipients.join(', ')}`,
     `Subject: ${encodedSubject}`,
     'MIME-Version: 1.0',
