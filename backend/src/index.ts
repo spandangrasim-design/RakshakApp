@@ -427,7 +427,9 @@ function configKeyAllowed(key: string, f: ReturnType<typeof normalizeTenantFeatu
   if (key.startsWith('DAILY_REPORT_')) return f.module_patrol.allow_daily_reports
   if (key === 'RENEW_ON_NEW_GUARD') return f.module_patrol.allow_guest_enrollment
   const ch = f.module_integrations.channels
-  if (key.startsWith('GMAIL_') || key.startsWith('SMTP_') || key === 'EMAIL_PROVIDER' || key === 'ENABLE_GMAIL' || key === 'MANAGER_EMAIL') return ch.gmail_oauth
+  if (key.startsWith('GMAIL_') || key === 'ENABLE_GMAIL') return ch.gmail_oauth
+  if (key.startsWith('SMTP_') || key === 'ENABLE_SMTP' || key === 'EMAIL_PROVIDER') return ch.smtp_email || ch.gmail_oauth
+  if (key === 'MANAGER_EMAIL') return ch.gmail_oauth || ch.smtp_email
   if (key.startsWith('WHATSAPP_') || key === 'ENABLE_WHATSAPP' || key === 'MANAGER_PHONE') return ch.whatsapp_api
   if (key.startsWith('TELEGRAM_') || key === 'ENABLE_TELEGRAM') return ch.telegram_bot
   return true // non-integration settings
@@ -696,9 +698,9 @@ app.on('GET',    '/api/v1/checkpoints/:id/qr', adminTiers, requireModule('module
 app.on('GET',    '/api/v1/guards', adminTiers)
 app.on('POST',   '/api/v1/guards', adminTiers)
 app.on('PATCH',  '/api/v1/guards/:id', adminTiers)
-app.on('POST',   '/api/v1/plants', adminTiers)
-app.on('PATCH',  '/api/v1/plants/:id', adminTiers, ownedRow('plants', 'id', 'id'))
-app.on('DELETE', '/api/v1/plants/:id', adminTiers, ownedRow('plants', 'id', 'id'))
+app.on('POST',   '/api/v1/plants', adminTiers, requireTenantFlag((f) => f.module_patrol.allow_plant_management))
+app.on('PATCH',  '/api/v1/plants/:id', adminTiers, requireTenantFlag((f) => f.module_patrol.allow_plant_management), ownedRow('plants', 'id', 'id'))
+app.on('DELETE', '/api/v1/plants/:id', adminTiers, requireTenantFlag((f) => f.module_patrol.allow_plant_management), ownedRow('plants', 'id', 'id'))
 
 app.on('POST',   '/api/v1/incidents', incidentsMod, requirePermission('report_incident'))
 app.on('GET',    '/api/v1/incidents', incidentsMod, requirePermission('incident_tickets'))

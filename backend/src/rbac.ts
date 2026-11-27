@@ -21,6 +21,7 @@ export interface TenantFeatures {
     allow_geofence_audit: boolean
     allow_guest_enrollment: boolean // lets field guards join from the no-login Field app with a site code
     allow_daily_reports: boolean    // daily shift report emails to supervisors
+    allow_plant_management: boolean
   }
   module_incidents: {
     enabled: boolean
@@ -36,7 +37,7 @@ export interface TenantFeatures {
   }
   module_integrations: {
     enabled: boolean
-    channels: { gmail_oauth: boolean; whatsapp_api: boolean; telegram_bot: boolean }
+    channels: { gmail_oauth: boolean; smtp_email: boolean; whatsapp_api: boolean; telegram_bot: boolean }
   }
   module_qr_generator: { enabled: boolean; allow_pdf_export: boolean }
   module_activity_logs: { enabled: boolean }
@@ -45,7 +46,7 @@ export interface TenantFeatures {
 
 // Nothing is licensed by default. A new tenant must be explicitly provisioned.
 export const NO_FEATURES: TenantFeatures = {
-  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false, allow_guest_enrollment: false, allow_daily_reports: false },
+  module_patrol: { enabled: false, allow_route_assignment: false, allow_live_gps_trail: false, allow_geofence_audit: false, allow_guest_enrollment: false, allow_daily_reports: false, allow_plant_management: false },
   module_incidents: {
     enabled: false,
     allow_web_ticket_queue: false,
@@ -58,7 +59,7 @@ export const NO_FEATURES: TenantFeatures = {
       option_6_camera_photo: false,
     },
   },
-  module_integrations: { enabled: false, channels: { gmail_oauth: false, whatsapp_api: false, telegram_bot: false } },
+  module_integrations: { enabled: false, channels: { gmail_oauth: false, smtp_email: false, whatsapp_api: false, telegram_bot: false } },
   module_qr_generator: { enabled: false, allow_pdf_export: false },
   module_activity_logs: { enabled: false },
   module_sync_queue: { enabled: false },
@@ -82,6 +83,7 @@ export function normalizeTenantFeatures(raw: any): TenantFeatures {
       allow_geofence_audit: t(p.enabled) && t(p.allow_geofence_audit),
       allow_guest_enrollment: t(p.enabled) && t(p.allow_guest_enrollment),
       allow_daily_reports: t(p.enabled) && t(p.allow_daily_reports),
+      allow_plant_management: t(p.enabled) && t(p.allow_plant_management),
     },
     module_incidents: {
       enabled: t(i.enabled),
@@ -99,6 +101,7 @@ export function normalizeTenantFeatures(raw: any): TenantFeatures {
       enabled: t(g.enabled),
       channels: {
         gmail_oauth: t(g.enabled) && t(ch.gmail_oauth),
+        smtp_email: t(g.enabled) && t(ch.smtp_email),
         whatsapp_api: t(g.enabled) && t(ch.whatsapp_api),
         telegram_bot: t(g.enabled) && t(ch.telegram_bot),
       },
@@ -190,10 +193,12 @@ export function resolveAccess(tenantRaw: any, user: Partial<AppPermissions> | nu
       module_activity_logs: tf.module_activity_logs.enabled,
       module_sync_queue: tf.module_sync_queue.enabled,
       integration_gmail: tf.module_integrations.channels.gmail_oauth,
+      integration_smtp: tf.module_integrations.channels.smtp_email,
       integration_whatsapp: tf.module_integrations.channels.whatsapp_api,
       integration_telegram: tf.module_integrations.channels.telegram_bot,
       daily_reports: tf.module_patrol.allow_daily_reports,
       guest_enrollment: tf.module_patrol.allow_guest_enrollment,
+      manage_plants: tf.module_patrol.allow_plant_management,
     },
     incident_form_fields: fields,
   }
@@ -257,7 +262,7 @@ export async function buildAuthContext(
     // Platform owner bypasses tenant licensing entirely.
     access = resolveAccess(
       {
-        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true, allow_guest_enrollment: true, allow_daily_reports: true },
+        module_patrol: { enabled: true, allow_route_assignment: true, allow_live_gps_trail: true, allow_geofence_audit: true, allow_guest_enrollment: true, allow_daily_reports: true, allow_plant_management: true },
         module_incidents: {
           enabled: true, allow_web_ticket_queue: true, allow_mobile_incident_creation: true,
           allowed_creation_options: {
@@ -265,7 +270,7 @@ export async function buildAuthContext(
             option_4_title: true, option_5_description: true, option_6_camera_photo: true,
           },
         },
-        module_integrations: { enabled: true, channels: { gmail_oauth: true, whatsapp_api: true, telegram_bot: true } },
+        module_integrations: { enabled: true, channels: { gmail_oauth: true, smtp_email: true, whatsapp_api: true, telegram_bot: true } },
         module_qr_generator: { enabled: true, allow_pdf_export: true },
         module_activity_logs: { enabled: true },
         module_sync_queue: { enabled: true },

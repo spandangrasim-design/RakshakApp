@@ -1,4 +1,5 @@
 import { useAuth } from '../context/AuthContext';
+import { PlantManagementPanel, PlantRecord } from './PlantManagementPanel';
 import React, { useState, useEffect } from 'react';
 import {
   Plus,
@@ -108,6 +109,7 @@ export const GuardsView: React.FC = () => {
   const [plantAssignmentGuard, setPlantAssignmentGuard] = useState<Guard | null>(null);
   const [selectedPlantNames, setSelectedPlantNames] = useState<string[]>([]);
   const [savingPlantAssignment, setSavingPlantAssignment] = useState(false);
+  const [showPlantsPanel, setShowPlantsPanel] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -129,6 +131,8 @@ export const GuardsView: React.FC = () => {
 
   // Who is looking at this page? Only the platform Super Admin can change access level / industry.
   const { user: me, isSuper, token: authToken } = useAuth();
+  const plantsAuthHeaders: Record<string, string> = (authToken || localStorage.getItem("token")) ? { Authorization: `Bearer ${authToken || localStorage.getItem("token")}` } : {};
+
   const [tenants, setTenants] = useState<{ id: string; name: string; code?: string }[]>([]);
   const [selectedTenantFilter, setSelectedTenantFilter] = useState<string>('ALL');
   const ADMIN_ROLES = ['Chief Security Officer', 'Admin', 'Security Manager'];
@@ -590,6 +594,20 @@ export const GuardsView: React.FC = () => {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
+            {(isSuper || (me as any)?.visible_modules?.manage_plants === true) && (
+              <button
+                type="button"
+                onClick={() => setShowPlantsPanel((v) => !v)}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
+                  showPlantsPanel
+                    ? 'border-indigo-600 bg-indigo-600 text-white shadow-xs'
+                    : 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
+                }`}
+              >
+                <Building2 className="h-3.5 w-3.5" />
+                {showPlantsPanel ? '← Back to Personnel' : `Manage Plants (${plants.length})`}
+              </button>
+            )}
             <button
               type="button"
               onClick={fetchData}
@@ -609,6 +627,14 @@ export const GuardsView: React.FC = () => {
           </div>
         </div>
 
+        {showPlantsPanel && (isSuper || (me as any)?.visible_modules?.manage_plants === true) ? (
+          <PlantManagementPanel
+            guards={guards}
+            authHeaders={plantsAuthHeaders}
+            onPlantsChanged={(updated: PlantRecord[]) => setPlants(updated)}
+          />
+        ) : (
+          <>
         {/* Clickable Summary KPI Strip */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <button
@@ -748,7 +774,6 @@ export const GuardsView: React.FC = () => {
                   <th className="w-[250px] py-3.5 pl-5 pr-3">Staff Member &amp; Contact</th>
                   <th className="w-[195px] px-3 py-3.5">Role &amp; Access</th>
                   <th className="w-[190px] px-3 py-3.5">Assigned Plants</th>
-                  <th className="w-[175px] px-3 py-3.5">Site &amp; Shift</th>
                   <th className="px-3 py-3.5">Assigned Patrol Routes</th>
                   <th className="w-[105px] px-3 py-3.5">Status</th>
                   <th className="w-[265px] py-3.5 pl-3 pr-5 text-right">Actions</th>
@@ -881,17 +906,6 @@ export const GuardsView: React.FC = () => {
                             <button type="button" onClick={() => openPlantAssignment(guard)} className="ml-1 inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-50">
                               <Building2 className="h-3 w-3" /> Assign
                             </button>
-                          </div>
-                        </td>
-
-                        <td className="px-3 py-3.5 text-slate-700">
-                          <div className="flex items-center gap-1 font-semibold">
-                            <Building2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                            <span className="truncate">{guard.site_location || 'Main Plant & Gate 1'}</span>
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-1 font-mono text-[11px] text-slate-500">
-                            <Clock className="h-3 w-3 shrink-0 text-slate-400" />
-                            {guard.shift_timing || 'Morning'}
                           </div>
                         </td>
 
@@ -1052,6 +1066,8 @@ export const GuardsView: React.FC = () => {
             </div>
           </div>
         </div>
+          </>
+        )}
       </div>
 
       {/* SUPER ADMIN MODAL: Mobile App Access Control */}

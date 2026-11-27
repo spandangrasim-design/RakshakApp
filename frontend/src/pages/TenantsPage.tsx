@@ -22,6 +22,7 @@ const CATALOG: ModuleDef[] = [
       { path: 'module_patrol.allow_geofence_audit', label: 'Geofence audit' },
       { path: 'module_patrol.allow_guest_enrollment', label: 'Field app: no-login guest enrolment' },
       { path: 'module_patrol.allow_daily_reports', label: 'Daily shift reports by email' },
+      { path: 'module_patrol.allow_plant_management', label: 'Manage plants & sites' },
     ],
   },
   {
@@ -40,6 +41,7 @@ const CATALOG: ModuleDef[] = [
     path: 'module_integrations', label: 'Integrations',
     children: [
       { path: 'module_integrations.channels.gmail_oauth', label: 'Gmail alerts' },
+      { path: 'module_integrations.channels.smtp_email', label: 'Office 365 / SMTP email' },
       { path: 'module_integrations.channels.whatsapp_api', label: 'WhatsApp alerts' },
       { path: 'module_integrations.channels.telegram_bot', label: 'Telegram bot' },
     ],

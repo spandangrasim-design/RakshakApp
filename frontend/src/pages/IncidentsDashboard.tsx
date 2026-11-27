@@ -1,3 +1,4 @@
+import { PlantRecord } from '../components/PlantManagementPanel';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -18,7 +19,6 @@ import {
   Settings2
 } from 'lucide-react';
 import { getSecureMediaUrl } from '../utils/secureMedia';
-import { PlantManagementPanel, PlantRecord } from '../components/PlantManagementPanel';
 
 import { API_V1 as API_BASE } from '../lib/api';
 
@@ -53,7 +53,6 @@ interface IncidentRecord {
 
 export const IncidentsDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const [activeView, setActiveView] = useState<'queue' | 'plants'>('queue');
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [guards, setGuards] = useState<GuardUser[]>([]);
   const [guardsMap, setGuardsMap] = useState<Record<string, string>>({});
@@ -154,13 +153,6 @@ export const IncidentsDashboard: React.FC = () => {
     });
   }, [authHeaders]);
 
-  const handlePlantsChanged = useCallback((updated: PlantRecord[]) => {
-    setPlants(updated);
-    const firstActive = updated.find((p) => p.is_active !== false);
-    if (firstActive) {
-      setNewPlantId((prev) => (updated.some((p) => p.id === prev && p.is_active !== false) ? prev : firstActive.id));
-    }
-  }, []);
 
   const fetchPaginatedIncidents = useCallback(async () => {
     try {
@@ -352,20 +344,7 @@ export const IncidentsDashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => setActiveView((v) => (v === 'queue' ? 'plants' : 'queue'))}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
-                activeView === 'plants'
-                  ? 'border-indigo-600 bg-indigo-600 text-white shadow-xs'
-                  : 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
-              }`}
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-              {activeView === 'plants' ? '← Back to Incident Queue' : `Manage Plants (${plants.length})`}
-            </button>
 
-            {activeView === 'queue' && (
               <>
                 <button
                   type="button"
@@ -385,18 +364,9 @@ export const IncidentsDashboard: React.FC = () => {
                   Log Incident
                 </button>
               </>
-            )}
           </div>
         </div>
 
-        {activeView === 'plants' ? (
-          <PlantManagementPanel
-            guards={guards}
-            authHeaders={authHeaders}
-            onPlantsChanged={handlePlantsChanged}
-          />
-        ) : (
-          <>
             {banner && (
               <div
                 className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-xs font-bold ${
@@ -728,8 +698,6 @@ export const IncidentsDashboard: React.FC = () => {
                 </div>
               </div>
             </div>
-          </>
-        )}
       </div>
 
       {/* Photo Lightbox Modal */}
