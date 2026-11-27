@@ -6,7 +6,7 @@ import { X, CheckCircle2, AlertTriangle, Navigation } from 'lucide-react';
 import { getSecureMediaUrl } from '../../utils/secureMedia';
 import 'leaflet/dist/leaflet.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+import { API_V1 as API_BASE } from '../../lib/api';
 
 if (typeof window !== 'undefined') {
   delete (L.Icon.Default.prototype as any)._getIconUrl;

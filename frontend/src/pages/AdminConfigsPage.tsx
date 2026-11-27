@@ -18,7 +18,7 @@ import {
   Trash2
 } from 'lucide-react';
 
-const API_BASE_URL = "https://rakshak-api.spandangrasim.workers.dev";
+import { API_ROOT as API_BASE_URL } from '../lib/api';
 const MASK = "********";
 const DEFAULT_PLANTS = ['Test - P1', 'Test2 - P2'];
 

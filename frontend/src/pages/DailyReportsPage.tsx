@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, Layers, SlidersHorizontal
 } from 'lucide-react';
 
-const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
+import { API_V1 as API } from '../lib/api';
 
 type ReportCategory = 'route_completion' | 'individual' | 'shift' | 'daily' | 'weekly' | 'monthly' | 'incident';
 

@@ -20,7 +20,7 @@ import {
 import { getSecureMediaUrl } from '../utils/secureMedia';
 import { PlantManagementPanel, PlantRecord } from '../components/PlantManagementPanel';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+import { API_V1 as API_BASE } from '../lib/api';
 
 interface GuardUser {
   guard_id: string;

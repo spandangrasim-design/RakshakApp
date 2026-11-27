@@ -4,7 +4,7 @@ import {
   Footprints, ScanLine, AlertTriangle, CheckCircle2, Users, RefreshCw, ArrowUpRight, Clock, Radio,
 } from 'lucide-react';
 
-const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
+import { API_V1 as API } from '../lib/api';
 
 interface RouteRow { id: string; name: string; status: 'DONE' | 'IN_PROGRESS' | 'PAUSED' | 'PARTIAL' | 'PENDING'; done_by: string | null; done_at: string | null; on_it: string[]; paused_by?: string[]; progress?: { scanned: number; total: number } }
 interface Summary {

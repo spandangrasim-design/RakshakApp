@@ -15,7 +15,7 @@ import {
 import { getSecureMediaUrl } from '../utils/secureMedia';
 import { PlantRecord } from '../components/PlantManagementPanel';
 
-const API_BASE_URL = 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+import { API_V1 as API_BASE_URL } from '../lib/api';
 
 interface GuardUser {
   guard_id: string;

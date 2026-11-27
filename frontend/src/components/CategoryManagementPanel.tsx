@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Plus, Pencil, Check, X, Power, Tags, RefreshCw, ShieldCheck } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_BASE_URL || 'https://rakshak-api.spandangrasim.workers.dev/api/v1';
+import { API_V1 as API } from '../lib/api';
 type Category = { id: string; name: string; is_active: boolean; created_at?: string };
 
 interface CategoryManagementPanelProps {

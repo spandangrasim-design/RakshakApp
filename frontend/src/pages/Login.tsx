@@ -49,7 +49,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-    const baseUrl = import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev';
+    const baseUrl = (import.meta.env.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev').replace(/\/+$/, '');
     try {
       const response = await axios.post(`${baseUrl}/api/v1/auth/login`, { employee_code: adminId, password });
       const token = response.data.access_token;

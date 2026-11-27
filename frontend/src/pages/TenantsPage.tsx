@@ -6,7 +6,7 @@ import {
   Search, Layers, ShieldCheck, X
 } from 'lucide-react';
 
-const API = `${(import.meta as any).env?.VITE_API_URL || 'https://rakshak-api.spandangrasim.workers.dev'}/api/v1`;
+import { API_V1 as API } from '../lib/api';
 const MAX_LOGO_BYTES = 5 * 1024 * 1024; // 5MB
 const VALID_LOGO_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml'];
 
