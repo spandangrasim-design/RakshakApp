@@ -1,5 +1,5 @@
 const PROD_WORKER_ORIGIN = 'https://rakshak-api.spandangrasim.workers.dev';
-const DEV_WORKER_ORIGIN = 'https://dev-rakshak-api.spandangrasim.workers.dev';
+const DEV_WORKER_ORIGIN = PROD_WORKER_ORIGIN;
 
 function resolveWorkerOrigin(): string {
   const explicit = ((import.meta as any).env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
