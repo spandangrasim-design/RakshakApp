@@ -403,7 +403,9 @@ export const ReportsPage: React.FC = () => {
   const fetchAllReportsData = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE_URL}/rounds`);
+      const token = localStorage.getItem('token') || '';
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${API_BASE_URL}/rounds`, { headers });
       const data = await res.json();
       const roundList: Round[] = data.rounds || [];
       setRounds(roundList);
@@ -411,7 +413,7 @@ export const ReportsPage: React.FC = () => {
       const scanEntries = await Promise.all(
         roundList.map(async (r) => {
           try {
-            const sRes = await fetch(`${API_BASE_URL}/rounds/${r.id}/scans`);
+            const sRes = await fetch(`${API_BASE_URL}/rounds/${r.id}/scans`, { headers });
             const sData = await sRes.json();
             return [r.id, sData.scans || []] as [string, ScanRecord[]];
           } catch {
