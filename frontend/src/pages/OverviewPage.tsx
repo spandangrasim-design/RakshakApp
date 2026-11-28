@@ -14,6 +14,7 @@ interface Summary {
   incidents: {
     total: number; resolved: number; open: number;
     open_by_priority: Record<string, number>;
+    open_by_plant?: { plant_name: string; count: number }[];
     last7: { date: string; count: number }[];
     recent: { id: string; case_number: number | null; title: string; priority: string; status: string; reported_at: string; reporter: string | null }[];
   } | null;
@@ -161,7 +162,10 @@ export const OverviewPage: React.FC = () => {
   const first = (user?.full_name || '').split(' ')[0];
 
   const p = data?.patrol, inc = data?.incidents, g = data?.guards;
-  const openTotal = inc ? (Object.values(inc.open_by_priority) as number[]).reduce((a: number, b: number) => a + b, 0) || 1 : 1;
+  const plantRows = inc?.open_by_plant && inc.open_by_plant.length > 0
+    ? inc.open_by_plant
+    : Object.entries(inc?.open_by_priority || {}).map(([k, v]) => ({ plant_name: k, count: v }));
+  const openTotal = plantRows.reduce((a, b) => a + b.count, 0) || 1;
 
   return (
     <div className="mx-auto max-w-[1280px] space-y-6 p-4 md:p-6">
@@ -288,24 +292,36 @@ export const OverviewPage: React.FC = () => {
               </section>
             )}
 
-            {/* Open by priority */}
+            {/* Open by plant */}
             {inc && (
               <section className="card animate-slide-up p-5" style={{ animationDelay: '300ms' }}>
-                <h3 className="text-base font-extrabold text-slate-900">Open by priority</h3>
-                <p className="mb-4 text-xs text-slate-400">What needs attention first</p>
-                <div className="space-y-4">
-                  {PRIORITY.map((pr) => {
-                    const n = inc.open_by_priority[pr.key] || 0;
-                    return (
-                      <div key={pr.key}>
-                        <div className="mb-1.5 flex justify-between text-xs font-bold"><span className="text-slate-600">{pr.label}</span><span className="text-slate-900">{n}</span></div>
-                        <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
-                          <div className={`h-full origin-left animate-grow-x rounded-full ${pr.bar}`} style={{ width: `${(n / openTotal) * 100}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900">Open by plant</h3>
+                    <p className="text-xs text-slate-400">Active cases per site</p>
+                  </div>
+                  <Link to="/incidents" className="text-xs font-bold text-brand-600 hover:underline">View all</Link>
                 </div>
+                {plantRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">No plants configured yet.</div>
+                ) : (
+                  <div className="space-y-3.5 max-h-64 overflow-y-auto pr-1">
+                    {plantRows.map((pl, idx) => {
+                      const barTone = pl.count > 0 ? (idx === 0 ? 'bg-indigo-600' : 'bg-sky-500') : 'bg-slate-200';
+                      return (
+                        <div key={pl.plant_name}>
+                          <div className="mb-1.5 flex justify-between text-xs font-bold">
+                            <span className="truncate pr-2 text-slate-700">{pl.plant_name}</span>
+                            <span className="font-mono text-slate-900">{pl.count}</span>
+                          </div>
+                          <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                            <div className={`h-full origin-left animate-grow-x rounded-full ${barTone}`} style={{ width: `${(pl.count / openTotal) * 100}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
             )}
 

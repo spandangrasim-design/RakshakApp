@@ -30,6 +30,7 @@ export interface TenantFeatures {
     allowed_creation_options: {
       option_1_severity: boolean
       option_2_category: boolean
+      option_3_location: boolean
       option_4_title: boolean
       option_5_description: boolean
       option_6_camera_photo: boolean
@@ -54,6 +55,7 @@ export const NO_FEATURES: TenantFeatures = {
     allowed_creation_options: {
       option_1_severity: false,
       option_2_category: false,
+      option_3_location: false,
       option_4_title: false,
       option_5_description: false,
       option_6_camera_photo: false,
@@ -92,6 +94,7 @@ export function normalizeTenantFeatures(raw: any): TenantFeatures {
       allowed_creation_options: {
         option_1_severity: t(i.enabled) && t(o.option_1_severity),
         option_2_category: t(i.enabled) && t(o.option_2_category),
+        option_3_location: t(i.enabled) && (o.option_3_location !== false && (t(o.option_3_location) || t(o.option_5_description))),
         option_4_title: t(i.enabled) && t(o.option_4_title),
         option_5_description: t(i.enabled) && t(o.option_5_description),
         option_6_camera_photo: t(i.enabled) && t(o.option_6_camera_photo),
@@ -121,6 +124,7 @@ export interface AppPermissions {
   sync_queue: boolean
   incident_option_1_severity: boolean
   incident_option_2_category: boolean
+  incident_option_3_location: boolean
   incident_option_4_title: boolean
   incident_option_5_description: boolean
   incident_option_6_photo: boolean
@@ -128,7 +132,7 @@ export interface AppPermissions {
 
 export const PERMISSION_KEYS: (keyof AppPermissions)[] = [
   'patrol_route', 'report_incident', 'incident_tickets', 'activity_log', 'sync_queue',
-  'incident_option_1_severity', 'incident_option_2_category',
+  'incident_option_1_severity', 'incident_option_2_category', 'incident_option_3_location',
   'incident_option_4_title', 'incident_option_5_description', 'incident_option_6_photo',
 ]
 
@@ -137,6 +141,7 @@ export const PERMISSION_KEYS: (keyof AppPermissions)[] = [
 export const INCIDENT_FORM_FIELDS = [
   { id: 'severity', perm: 'incident_option_1_severity' },
   { id: 'category', perm: 'incident_option_2_category' },
+  { id: 'location', perm: 'incident_option_3_location' },
   { id: 'title', perm: 'incident_option_4_title' },
   { id: 'description', perm: 'incident_option_5_description' },
   { id: 'photo', perm: 'incident_option_6_photo' },
@@ -173,6 +178,7 @@ export function resolveAccess(tenantRaw: any, user: Partial<AppPermissions> | nu
     sync_queue: tf.module_sync_queue.enabled && on('sync_queue'),
     incident_option_1_severity: inc.enabled && o.option_1_severity && on('incident_option_1_severity'),
     incident_option_2_category: inc.enabled && o.option_2_category && on('incident_option_2_category'),
+    incident_option_3_location: inc.enabled && o.option_3_location && on('incident_option_3_location'),
     incident_option_4_title: inc.enabled && o.option_4_title && on('incident_option_4_title'),
     incident_option_5_description: inc.enabled && o.option_5_description && on('incident_option_5_description'),
     incident_option_6_photo: inc.enabled && o.option_6_camera_photo && on('incident_option_6_photo'),
@@ -266,7 +272,7 @@ export async function buildAuthContext(
         module_incidents: {
           enabled: true, allow_web_ticket_queue: true, allow_mobile_incident_creation: true,
           allowed_creation_options: {
-            option_1_severity: true, option_2_category: true,
+            option_1_severity: true, option_2_category: true, option_3_location: true,
             option_4_title: true, option_5_description: true, option_6_camera_photo: true,
           },
         },

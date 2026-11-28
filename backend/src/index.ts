@@ -3978,16 +3978,30 @@ app.get('/api/v1/dashboard/summary', async (c) => {
       const [totalRes, resolvedRes, openRes, weekRes, recentRes] = await Promise.all([
         applyTenant(supabase.from('incidents').select('*', { count: 'exact', head: true }), tenant),
         applyTenant(supabase.from('incidents').select('*', { count: 'exact', head: true }), tenant).in('status', ['RESOLVED', 'CLOSED']),
-        applyTenant(supabase.from('incidents').select('priority'), tenant).not('status', 'in', '(RESOLVED,CLOSED)').limit(2000),
+        applyTenant(supabase.from('incidents').select('priority, plant_name'), tenant).not('status', 'in', '(RESOLVED,CLOSED)').limit(2000),
         applyTenant(supabase.from('incidents').select('reported_at'), tenant).gte('reported_at', sevenDaysAgo).limit(3000),
         applyTenant(supabase.from('incidents').select('client_incident_id, case_number, title, priority, status, reported_at, guard_id'), tenant).order('reported_at', { ascending: false }).limit(6),
       ]);
 
       const byPriority: Record<string, number> = { P1: 0, P2: 0, P3: 0, P4: 0 };
+      const byPlantMap = new Map<string, number>();
+      if (tenant) {
+        try {
+          const pRows = await ensureTenantPlants(supabase, tenant);
+          for (const p of pRows || []) {
+            if (p.is_active !== false && p.name) byPlantMap.set(String(p.name).trim(), 0);
+          }
+        } catch {}
+      }
       for (const r of openRes.data || []) {
         const p = String(r.priority || 'P3').slice(0, 2);
         byPriority[p] = (byPriority[p] || 0) + 1;
+        const pName = String(r.plant_name || '').trim() || 'Unassigned Plant';
+        byPlantMap.set(pName, (byPlantMap.get(pName) || 0) + 1);
       }
+      const openByPlant = [...byPlantMap.entries()]
+        .map(([plant_name, count]) => ({ plant_name, count }))
+        .sort((a, b) => b.count - a.count || a.plant_name.localeCompare(b.plant_name));
 
       const buckets = new Map<string, number>();
       for (let i = 6; i >= 0; i--) buckets.set(dateKey(Date.now() - i * 86400000), 0);
@@ -4010,6 +4024,7 @@ app.get('/api/v1/dashboard/summary', async (c) => {
         resolved,
         open: Math.max(0, total - resolved),
         open_by_priority: byPriority,
+        open_by_plant: openByPlant,
         last7: [...buckets.entries()].map(([date, count]) => ({ date, count })),
         recent: recent.map((r) => ({
           id: r.client_incident_id,
