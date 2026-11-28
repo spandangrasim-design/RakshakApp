@@ -2050,6 +2050,19 @@ app.post('/api/v1/field/runs/start', async (c) => {
     if (route.my_run) {
       return c.json({ success: true, session_id: route.my_run.session_id, status: route.my_run.status, resumed: true });
     }
+    const { data: existingSession } = await supabase
+      .from('patrol_sessions')
+      .select('id, status')
+      .eq('tenant_id', a.tenant_id)
+      .eq('round_id', round_id)
+      .eq('guard_id', a.guard_id)
+      .in('status', ['ACTIVE', 'PAUSED'])
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingSession?.id) {
+      return c.json({ success: true, session_id: existingSession.id, status: existingSession.status, resumed: true });
+    }
 
     const { data: session, error } = await supabase.from('patrol_sessions').insert([{
       round_id, guard_id: a.guard_id, tenant_id: a.tenant_id, status: 'ACTIVE', completed_route: false,

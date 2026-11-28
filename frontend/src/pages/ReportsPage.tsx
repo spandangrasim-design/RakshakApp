@@ -343,7 +343,11 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
 
   if (round.active_session) {
     const activeStartMs = new Date(round.active_session.start_time).getTime();
-    const hasRunForActive = runs.some((r) => r.startTime && Math.abs(new Date(r.startTime).getTime() - activeStartMs) < 120000 && r.status !== 'COMPLETED');
+    const hasRunForActive = runs.some((r) =>
+      r.status !== 'COMPLETED' &&
+      r.startTime &&
+      new Date(r.startTime).getTime() >= activeStartMs - 120000
+    );
     if (!hasRunForActive) {
       const st = new Date(round.active_session.start_time);
       runs.push({
