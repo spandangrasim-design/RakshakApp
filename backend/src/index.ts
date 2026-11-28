@@ -1413,8 +1413,24 @@ app.get('/api/v1/rounds', async (c) => {
     const enrichedRounds = roundsWithCheckpoints.map((r: any) => {
       const s = activeSessions.find((sess: any) => sess.round_id === r.id);
       const g: any = s ? guardById.get(s.guard_id) : null;
+      const doneList = completedSessions
+        .filter((cs: any) => cs.round_id === r.id)
+        .map((cs: any) => {
+          const cg: any = guardById.get(cs.guard_id);
+          return {
+            id: cs.id,
+            guard_id: cs.guard_id,
+            guard_name: cg?.full_name || cg?.name || 'Assigned Guard',
+            guard_code: cg?.employee_code || '',
+            status: cs.status,
+            start_time: cs.start_time,
+            end_time: cs.end_time || cs.last_ping_at || cs.start_time,
+            completed_route: cs.completed_route === true || cs.status === 'COMPLETED',
+          };
+        });
       return {
         ...r,
+        completed_sessions: doneList,
         active_session: s ? {
           ...s,
           guard_name: g?.full_name || g?.name || 'Active Guard',
