@@ -194,10 +194,13 @@ export const GuardsView: React.FC = () => {
       setLoading(true);
       const token = authToken || localStorage.getItem('token') || '';
       const requestHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      const plantsQuery = isSuper && selectedTenantFilter && selectedTenantFilter !== 'ALL'
+        ? `?tenant_id=${encodeURIComponent(selectedTenantFilter)}`
+        : '';
       const [guardsRes, roundsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/guards`, { headers: requestHeaders }),
         fetch(`${API_BASE_URL}/rounds`, { headers: requestHeaders }),
-        fetch(`${API_BASE_URL}/plants`, { headers: requestHeaders }),
+        fetch(`${API_BASE_URL}/plants${plantsQuery}`, { headers: requestHeaders }),
       ]);
 
       const guardsData = await guardsRes.json();
@@ -220,7 +223,7 @@ export const GuardsView: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [selectedTenantFilter]);
 
   // Force every key the plant did NOT buy to false so it can never be sent to the server as true.
   const maskToLicensed = (p: AppPermissions, keepLicensedOnly = false): AppPermissions => {
@@ -594,7 +597,7 @@ export const GuardsView: React.FC = () => {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
-            {(isSuper || (me as any)?.visible_modules?.manage_plants === true) && (
+            {(isSuper || (me as any)?.visible_modules?.manage_plants !== false) && (
               <button
                 type="button"
                 onClick={() => setShowPlantsPanel((v) => !v)}
@@ -627,7 +630,7 @@ export const GuardsView: React.FC = () => {
           </div>
         </div>
 
-        {showPlantsPanel && (isSuper || (me as any)?.visible_modules?.manage_plants === true) ? (
+        {showPlantsPanel && (isSuper || (me as any)?.visible_modules?.manage_plants !== false) ? (
           <PlantManagementPanel
             guards={guards}
             authHeaders={plantsAuthHeaders}

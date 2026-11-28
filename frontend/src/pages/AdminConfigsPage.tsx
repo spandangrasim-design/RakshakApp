@@ -39,6 +39,7 @@ export default function AdminConfigsPage() {
   const [showOAuthGuide, setShowOAuthGuide] = useState<boolean>(false);
 
   // Plant Name & User Assignment State
+  const [plantRecords, setPlantRecords] = useState<{ id: string; name: string; is_active?: boolean }[]>([]);
   const [plants, setPlants] = useState<string[]>(DEFAULT_PLANTS);
   const [newPlantInput, setNewPlantInput] = useState<string>('');
   const [guards, setGuards] = useState<any[]>([]);
@@ -79,12 +80,14 @@ export default function AdminConfigsPage() {
   const fetchConfigs = async () => {
     try {
       setLoading(true);
-      const [cfgRes, guardsRes] = await Promise.all([
+      const [cfgRes, guardsRes, plantsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/v1/admin/configs`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE_URL}/api/v1/guards`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE_URL}/api/v1/plants`, { headers: getAuthHeaders() }),
       ]);
       const data = await cfgRes.json();
       const gData = await guardsRes.json().catch(() => ({ guards: [] }));
+      const pData = await plantsRes.json().catch(() => ({ plants: [] }));
 
       if (gData.success && Array.isArray(gData.guards)) {
         setGuards(gData.guards);
@@ -96,7 +99,13 @@ export default function AdminConfigsPage() {
           configMap[item.key_name] = item.key_value;
         });
 
-        if (configMap['CUSTOM_PLANTS'] !== undefined) {
+        if (pData.success && Array.isArray(pData.plants)) {
+          const activeRecords = pData.plants.filter((p: any) => p.is_active !== false);
+          const names = activeRecords.map((p: any) => String(p.name)).filter(Boolean);
+          setPlantRecords(activeRecords);
+          setPlants(names);
+          setSelectedPlant((prev) => (names.includes(prev) ? prev : (names[0] || '')));
+        } else if (configMap['CUSTOM_PLANTS'] !== undefined) {
           try {
             const parsed = JSON.parse(configMap['CUSTOM_PLANTS']);
             if (Array.isArray(parsed)) {
@@ -164,8 +173,20 @@ export default function AdminConfigsPage() {
       setMessage({ text: `Plant "${existing}" already exists.`, type: 'error' });
       return;
     }
-    const next = [...plants, trimmed];
     setNewPlantInput('');
+    try {
+      const code = trimmed.replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || `P${plants.length + 1}`;
+      const res = await fetch(`${API_BASE_URL}/api/v1/plants`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ name: trimmed, plant_code: code, assigned_guard_ids: [], email_notifications_enabled: true }),
+      });
+      const created = await res.json().catch(() => ({}));
+      if (res.ok && created.success && created.plant) {
+        setPlantRecords((prev) => [...prev, created.plant]);
+      }
+    } catch {}
+    const next = [...plants, trimmed];
     await persistPlants(next);
     setModalPlant(trimmed);
     setCheckedUserIds([]);
@@ -173,6 +194,16 @@ export default function AdminConfigsPage() {
   };
 
   const handleRemovePlant = async (plant: string) => {
+    const rec = plantRecords.find((p) => p.name.toLowerCase() === plant.toLowerCase());
+    if (rec?.id) {
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/plants/${rec.id}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders(),
+        });
+        setPlantRecords((prev) => prev.filter((p) => p.id !== rec.id));
+      } catch {}
+    }
     const next = plants.filter((p) => p !== plant);
     if (modalPlant === plant) {
       setModalPlant(null);
