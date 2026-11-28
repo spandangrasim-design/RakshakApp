@@ -395,6 +395,7 @@ export const ReportsPage: React.FC = () => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const hasInitialFitRef = useRef<boolean>(false);
+  const userMovedMapRef = useRef<boolean>(false);
 
   const fetchAllReportsData = async () => {
     try {
@@ -455,6 +456,7 @@ export const ReportsPage: React.FC = () => {
       setLiveTrail(null);
       setMapZoomFocus('ALL');
       hasInitialFitRef.current = false;
+      userMovedMapRef.current = false;
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -488,6 +490,9 @@ export const ReportsPage: React.FC = () => {
           attribution: '© OpenStreetMap',
           maxZoom: 19,
         }).addTo(mapInstanceRef.current);
+        mapInstanceRef.current.on('dragstart zoomstart', (e: any) => {
+          if (e?.hard !== true) userMovedMapRef.current = true;
+        });
       }
 
       const map = mapInstanceRef.current;
@@ -528,9 +533,12 @@ export const ReportsPage: React.FC = () => {
 
         const qrIcon = L.divIcon({
           className: '',
-          html: `<div style="background:${bg};color:#fff;padding:2px 6px;min-width:42px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;border:2px solid ${border};box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;">QR #${index + 1}</div>`,
-          iconSize: [46, 26],
-          iconAnchor: [23, 13],
+          html: `<div style="position:relative;display:flex;flex-direction:column;align-items:center;">
+            <div style="background:${bg};color:#fff;padding:2px 6px;min-width:42px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:10px;border:2px solid ${border};box-shadow:0 2px 6px rgba(0,0,0,0.35);white-space:nowrap;">QR #${index + 1}</div>
+            <div style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${bg};margin-top:-1px;"></div>
+          </div>`,
+          iconSize: [46, 30],
+          iconAnchor: [23, 30],
         });
 
         L.marker([lat, lng], { icon: qrIcon })
@@ -586,11 +594,14 @@ export const ReportsPage: React.FC = () => {
 
         const captureIcon = L.divIcon({
           className: '',
-          html: `<div style="background:${capBg};color:#fff;padding:2px 8px;min-width:54px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45);white-space:nowrap;">${
-            isFarAway ? '⚠️' : '📸'
-          } Cap #${stopLabelNum}</div>`,
-          iconSize: [62, 26],
-          iconAnchor: [31, 13],
+          html: `<div style="position:relative;display:flex;flex-direction:column;align-items:center;">
+            <div style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:6px solid ${capBg};margin-bottom:-1px;"></div>
+            <div style="background:${capBg};color:#fff;padding:2px 8px;min-width:54px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45);white-space:nowrap;">${
+              isFarAway ? '⚠️' : '📸'
+            } Cap #${stopLabelNum}</div>
+          </div>`,
+          iconSize: [62, 30],
+          iconAnchor: [31, 0],
         });
 
         const selfieImg = scan.selfie_url || '';
@@ -703,7 +714,7 @@ export const ReportsPage: React.FC = () => {
           ? guardBounds
           : allBounds;
 
-      if (activeBounds.length > 0 && !hasInitialFitRef.current) {
+      if (activeBounds.length > 0 && !hasInitialFitRef.current && !userMovedMapRef.current) {
         map.fitBounds(activeBounds, { padding: [55, 55], maxZoom: 18 });
         hasInitialFitRef.current = true;
       }
@@ -1532,7 +1543,7 @@ export const ReportsPage: React.FC = () => {
                 {/* Quick Zoom Switcher for Far-Away Captures */}
                 <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 text-[11px]">
                   <button
-                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('ALL'); }}
+                    onClick={() => { userMovedMapRef.current = false; hasInitialFitRef.current = false; setMapZoomFocus('ALL'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'ALL' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
@@ -1540,7 +1551,7 @@ export const ReportsPage: React.FC = () => {
                     Fit Both
                   </button>
                   <button
-                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('QR'); }}
+                    onClick={() => { userMovedMapRef.current = false; hasInitialFitRef.current = false; setMapZoomFocus('QR'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'QR' ? 'bg-emerald-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
@@ -1548,7 +1559,7 @@ export const ReportsPage: React.FC = () => {
                     Zoom QR Route
                   </button>
                   <button
-                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('GUARD'); }}
+                    onClick={() => { userMovedMapRef.current = false; hasInitialFitRef.current = false; setMapZoomFocus('GUARD'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'GUARD' ? 'bg-rose-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
