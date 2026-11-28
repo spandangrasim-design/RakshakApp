@@ -41,6 +41,16 @@ interface Round {
   created_at?: string;
   assigned_guards?: AssignedGuard[];
   checkpoints: Checkpoint[];
+  completed_sessions?: {
+    id: string;
+    guard_id: string;
+    guard_name: string;
+    guard_code: string;
+    status: string;
+    start_time: string;
+    end_time: string;
+    completed_route: boolean;
+  }[];
   active_session?: {
     id: string;
     round_id: string;
@@ -202,28 +212,50 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
   const defaultCode = round.assigned_guards?.[0]?.employee_code || '';
 
   if (!rawScans || rawScans.length === 0) {
+    const fallbackRuns: PatrolRun[] = [];
+    const doneSessions = (round.completed_sessions || []).slice().reverse();
+    doneSessions.forEach((cs, idx) => {
+      const st = new Date(cs.start_time);
+      const isDone = cs.completed_route || cs.status === 'COMPLETED';
+      fallbackRuns.push({
+        runId: cs.id,
+        runNumber: idx + 1,
+        roundId: round.id,
+        roundName: round.name,
+        totalRouteStops: round.checkpoints?.length || 0,
+        dateKey: st.toISOString().split('T')[0],
+        displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        guardName: cs.guard_name || defaultGuard,
+        guardCode: cs.guard_code || defaultCode,
+        startTime: cs.start_time,
+        endTime: cs.end_time || cs.start_time,
+        durationText: formatDuration(cs.start_time, cs.end_time || cs.start_time, isDone ? totalStops : 0),
+        status: isDone ? 'COMPLETED' : 'PARTIAL',
+        verifiedStopsCount: isDone ? totalStops : 0,
+        scans: [],
+      });
+    });
     if (round.active_session) {
       const st = new Date(round.active_session.start_time);
-      return [
-        {
-          runId: round.active_session.id,
-          runNumber: 1,
-          roundId: round.id,
-          roundName: round.name,
-          totalRouteStops: round.checkpoints?.length || 0,
-          dateKey: st.toISOString().split('T')[0],
-          displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
-          guardName: round.active_session.guard_name || defaultGuard,
-          guardCode: round.active_session.guard_code || defaultCode,
-          startTime: round.active_session.start_time,
-          endTime: '',
-          durationText: 'Live (0 Stops Yet)',
-          status: round.active_session.status === 'PAUSED' ? 'PAUSED' : 'IN_PROGRESS',
-          verifiedStopsCount: 0,
-          scans: [],
-        },
-      ];
+      fallbackRuns.push({
+        runId: round.active_session.id,
+        runNumber: fallbackRuns.length + 1,
+        roundId: round.id,
+        roundName: round.name,
+        totalRouteStops: round.checkpoints?.length || 0,
+        dateKey: st.toISOString().split('T')[0],
+        displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        guardName: round.active_session.guard_name || defaultGuard,
+        guardCode: round.active_session.guard_code || defaultCode,
+        startTime: round.active_session.start_time,
+        endTime: '',
+        durationText: 'Live (0 Stops Yet)',
+        status: round.active_session.status === 'PAUSED' ? 'PAUSED' : 'IN_PROGRESS',
+        verifiedStopsCount: 0,
+        scans: [],
+      });
     }
+    if (fallbackRuns.length > 0) return fallbackRuns.reverse();
     return [
       {
         runId: `${round.id}-pending`,
@@ -341,6 +373,37 @@ function buildPatrolRunsForRound(round: Round, rawScans: ScanRecord[]): PatrolRu
     flushBucket(currentBucket, runs.length + 1);
   }
 
+  for (const cs of (round.completed_sessions || [])) {
+    const csStart = new Date(cs.start_time).getTime();
+    const csEnd = new Date(cs.end_time || cs.start_time).getTime();
+    const alreadyCovered = runs.some((r) => {
+      if (!r.startTime) return false;
+      const rs = new Date(r.startTime).getTime();
+      return Math.abs(rs - csStart) < 15 * 60000 || (rs >= csStart - 60000 && rs <= csEnd + 60000);
+    });
+    if (!alreadyCovered) {
+      const st = new Date(cs.start_time);
+      const isDone = cs.completed_route || cs.status === 'COMPLETED';
+      runs.push({
+        runId: cs.id,
+        runNumber: runs.length + 1,
+        roundId: round.id,
+        roundName: round.name,
+        totalRouteStops: round.checkpoints?.length || 0,
+        dateKey: st.toISOString().split('T')[0],
+        displayDate: st.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        guardName: cs.guard_name || defaultGuard,
+        guardCode: cs.guard_code || defaultCode,
+        startTime: cs.start_time,
+        endTime: cs.end_time || cs.start_time,
+        durationText: formatDuration(cs.start_time, cs.end_time || cs.start_time, isDone ? totalStops : 0),
+        status: isDone ? 'COMPLETED' : 'PARTIAL',
+        verifiedStopsCount: isDone ? totalStops : 0,
+        scans: [],
+      });
+    }
+  }
+
   if (round.active_session) {
     const activeStartMs = new Date(round.active_session.start_time).getTime();
     const activeDateKey = new Date(round.active_session.start_time).toISOString().split('T')[0];
@@ -438,11 +501,12 @@ export const ReportsPage: React.FC = () => {
     fetchAllReportsData();
   }, []);
 
-  const fetchLiveTrailForRound = async (roundId: string) => {
+  const fetchLiveTrailForRound = async (roundId: string, sessionId?: string) => {
     try {
       setLoadingTrail(true);
       const token = localStorage.getItem('token') || '';
-      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail`, {
+      const qs = sessionId && !sessionId.includes('-run-') && !sessionId.endsWith('-pending') ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail${qs}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await res.json();
@@ -469,11 +533,11 @@ export const ReportsPage: React.FC = () => {
       return;
     }
 
-    fetchLiveTrailForRound(mapModalRun.roundId);
+    fetchLiveTrailForRound(mapModalRun.roundId, mapModalRun.runId);
 
     if (!autoRefreshMap) return;
     const interval = setInterval(() => {
-      fetchLiveTrailForRound(mapModalRun.roundId);
+      fetchLiveTrailForRound(mapModalRun.roundId, mapModalRun.runId);
     }, 4000);
 
     return () => clearInterval(interval);
