@@ -918,6 +918,7 @@ app.post('/api/v1/scans', async (c) => {
     await supabase
       .from('scans')
       .update({
+        round_id: (cp as any).round_id ?? c.req.param('round_id') ?? null,
         selfie_url: finalSelfieUrl,
         location_photo_url: finalLocationUrl,
         guard_lat: guard_lat,
@@ -988,12 +989,18 @@ app.get('/api/v1/rounds/:id/scans', async (c) => {
 
     const checkpointIds = checkpoints.map((cp) => cp.checkpoint_id);
 
+    const targetRoundId = c.req.param('id');
     let scans: any[] = [];
-    if (checkpointIds.length > 0) {
-      const { data: scanRecords, error: scanError } = await supabase
-        .from('scans')
-        .select('*')
-        .in('checkpoint_id', checkpointIds)
+    if (targetRoundId || checkpointIds.length > 0) {
+      let scanQuery = supabase.from('scans').select('*');
+      if (targetRoundId && checkpointIds.length > 0) {
+        scanQuery = scanQuery.or(`round_id.eq.${targetRoundId},checkpoint_id.in.(${checkpointIds.join(',')})`);
+      } else if (targetRoundId) {
+        scanQuery = scanQuery.eq('round_id', targetRoundId);
+      } else {
+        scanQuery = scanQuery.in('checkpoint_id', checkpointIds);
+      }
+      const { data: scanRecords, error: scanError } = await scanQuery
         .order('scan_time', { ascending: true });
 
       if (!scanError && scanRecords) {
@@ -1272,6 +1279,7 @@ app.post('/api/v1/patrols/sync', async (c) => {
       await supabase
         .from('scans')
         .update({
+          round_id: (cp as any).round_id ?? c.req.param('round_id') ?? null,
           selfie_url: selfieUrl,
           location_photo_url: locationUrl,
           guard_lat: scan.guard_lat,
