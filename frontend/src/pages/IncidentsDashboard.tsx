@@ -155,7 +155,7 @@ export const IncidentsDashboard: React.FC = () => {
       .then((r) => r.json())
       .then((d) => {
         if (d.success) {
-          if (Array.isArray(d.incident_form_fields)) {
+          if (Array.isArray(d.incident_form_fields) && d.incident_form_fields.length > 0) {
             setAllowedFields(d.incident_form_fields);
           }
           if (d.tier) setUserTier(String(d.tier));
@@ -317,9 +317,9 @@ export const IncidentsDashboard: React.FC = () => {
         description: showDescription
           ? newDescription.trim() || fallbackSummary
           : fallbackSummary,
-        plant_id: chosenPlant?.id || null,
-        plant_name: chosenPlant?.name || 'Main Plant',
-        plant_code: chosenPlant?.plant_code || '',
+        plant_id: chosenPlant.id,
+        plant_name: chosenPlant.name,
+        plant_code: chosenPlant.plant_code || '',
         assigned_to: newAssignedTo || null,
         photo_url: showPhoto ? newPhotoBase64 || null : null,
       };
@@ -340,11 +340,9 @@ export const IncidentsDashboard: React.FC = () => {
         setPage(1);
         await fetchPaginatedIncidents();
 
-        const label = chosenPlant
-          ? chosenPlant.plant_code
-            ? `${chosenPlant.name} (${chosenPlant.plant_code})`
-            : chosenPlant.name
-          : 'Site';
+        const label = chosenPlant.plant_code
+          ? `${chosenPlant.name} (${chosenPlant.plant_code})`
+          : chosenPlant.name;
 
         if (data.email_dispatched) {
           setBanner({
@@ -572,25 +570,25 @@ export const IncidentsDashboard: React.FC = () => {
             <div className="mx-1 h-4 w-px bg-slate-200" />
 
             <div className="inline-flex items-center gap-1.5 text-slate-500">
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                <select
-                  value={plantFilter}
-                  onChange={(e) => {
-                    setPlantFilter(e.target.value);
-                    setPage(1);
-                  }}
-                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 outline-none"
-                >
-                  <option value="ALL">All Plants</option>
-                  {plants.map((p) => (
-                    <option key={p.id} value={p.name}>
-                      {p.name}
-                      {p.plant_code ? ` (${p.plant_code})` : ''}
-                      {p.is_active === false ? ' · Inactive' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <select
+                value={plantFilter}
+                onChange={(e) => {
+                  setPlantFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700 outline-none"
+              >
+                <option value="ALL">All Plants</option>
+                {plants.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                    {p.plant_code ? ` (${p.plant_code})` : ''}
+                    {p.is_active === false ? ' · Inactive' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             {showSeverity && (
               <select
@@ -660,13 +658,13 @@ export const IncidentsDashboard: React.FC = () => {
         {/* Incidents Table */}
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left">
+            <table className="w-full min-w-[920px] border-collapse text-left">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                   <th className="w-[120px] py-3.5 pl-5 pr-3">Case ID</th>
-                  <th className="w-[190px] px-3 py-3.5">Plant</th>
-                  {showSeverity && <th className="w-[115px] px-3 py-3.5">Severity</th>}
-                  {showCategory && <th className="w-[155px] px-3 py-3.5">Category</th>}
+                  <th className="w-[185px] px-3 py-3.5">Plant</th>
+                  {showSeverity && <th className="w-[120px] px-3 py-3.5">Severity</th>}
+                  {showCategory && <th className="w-[160px] px-3 py-3.5">Category</th>}
                   <th className="px-4 py-3.5">Incident Summary</th>
                   <th className="w-[155px] px-3 py-3.5">Reported By</th>
                   <th className="w-[110px] px-3 py-3.5">Status</th>
@@ -678,14 +676,14 @@ export const IncidentsDashboard: React.FC = () => {
                 {loading ? (
                   Array.from({ length: 6 }).map((_, idx) => (
                     <tr key={idx}>
-                      <td colSpan={10} className="px-4 py-3.5">
+                      <td colSpan={9} className="px-4 py-3.5">
                         <div className="h-5 w-full animate-pulse rounded-lg bg-slate-100" />
                       </td>
                     </tr>
                   ))
                 ) : displayedIncidents.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-400">
+                    <td colSpan={9} className="px-4 py-12 text-center text-sm text-slate-400">
                       No incidents found matching your current filter criteria.
                     </td>
                   </tr>
@@ -709,11 +707,11 @@ export const IncidentsDashboard: React.FC = () => {
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-3 py-3.5">
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
-                              <Building2 className="h-3 w-3" />
-                              {formatPlantLabel(item)}
-                            </span>
-                          </td>
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
+                            <Building2 className="h-3 w-3" />
+                            {formatPlantLabel(item)}
+                          </span>
+                        </td>
                         {showSeverity && (
                           <td className="whitespace-nowrap px-3 py-3.5">
                             <span
@@ -926,6 +924,25 @@ export const IncidentsDashboard: React.FC = () => {
                   </select>
                 </div>
 
+                <div>
+                  <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
+                  <select
+                    value={newPlantId}
+                    onChange={(e) => {
+                      setNewPlantId(e.target.value);
+                      setNewAssignedTo('');
+                    }}
+                    className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
+                  >
+                    {activePlants.map((plant) => (
+                      <option key={plant.id} value={plant.id}>
+                        {plant.name}
+                        {plant.plant_code ? ` (${plant.plant_code})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 {showSeverity && (
                   <div>
                     <label className="mb-1 block text-[11px] font-bold text-slate-700">Severity Level *</label>
@@ -959,41 +976,25 @@ export const IncidentsDashboard: React.FC = () => {
                     </select>
                   </div>
                 )}
-
-                <div><label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
-                    <select
-                      value={newPlantId}
-                      onChange={(e) => {
-                        setNewPlantId(e.target.value);
-                        setNewAssignedTo('');
-                      }}
-                      className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-2 text-xs font-bold text-indigo-950 outline-none focus:border-brand-500 focus:bg-white"
-                    >
-                      {activePlants.map((plant) => (
-                        <option key={plant.id} value={plant.id}>
-                          {plant.name}
-                          {plant.plant_code ? ` (${plant.plant_code})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
               </div>
 
-              <div><label className="mb-1 block text-[11px] font-bold text-slate-700">Assigned Responder ({selectedCreatePlant?.name || 'Selected Plant'})
-                  </label>
-                  <select
-                    value={newAssignedTo}
-                    onChange={(e) => setNewAssignedTo(e.target.value)}
-                    className="w-full rounded-xl border border-emerald-200 bg-emerald-50/40 px-3 py-2 text-xs font-semibold text-emerald-950 outline-none"
-                  >
-                    <option value="">Unassigned (Group Queue)</option>
-                    {eligibleCreateResponders.map((g) => (
-                      <option key={g.guard_id} value={g.full_name}>
-                        {g.full_name} ({g.employee_code}) — {g.site_location || 'Main Site'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-slate-700">
+                  Assigned Responder ({selectedCreatePlant?.name || 'Selected Plant'})
+                </label>
+                <select
+                  value={newAssignedTo}
+                  onChange={(e) => setNewAssignedTo(e.target.value)}
+                  className="w-full rounded-xl border border-emerald-200 bg-emerald-50/40 px-3 py-2 text-xs font-semibold text-emerald-950 outline-none"
+                >
+                  <option value="">Unassigned (Group Queue)</option>
+                  {eligibleCreateResponders.map((g) => (
+                    <option key={g.guard_id} value={g.full_name}>
+                      {g.full_name} ({g.employee_code}) — {g.site_location || 'Main Site'}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               {showTitle && (
                 <div>
