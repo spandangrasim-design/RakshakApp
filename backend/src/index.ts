@@ -1367,7 +1367,7 @@ app.get('/api/v1/rounds', async (c) => {
       applyTenant(supabase.from('rounds').select('*'), scopeTenant(c)).order('created_at', { ascending: false }),
       applyTenant(supabase.from('checkpoints').select('checkpoint_id, round_id, name, lat, lng, qr_payload, sequence_order'), scopeTenant(c)).order('sequence_order', { ascending: true }).order('name', { ascending: true }),
       applyTenant(supabase.from('guards').select('*'), scopeTenant(c)),
-      supabase.from('patrol_sessions').select('id, round_id, guard_id, status, start_time, end_time, completed_route, last_lat, last_lng, last_ping_at').in('status', ['ACTIVE', 'PAUSED', 'COMPLETED', 'ENDED']).order('start_time', { ascending: false }).limit(500)
+      supabase.from('patrol_sessions').select('id, round_id, guard_id, status, start_time, end_time, completed_route, last_lat, last_lng, last_ping_at').or('status.in.(ACTIVE,PAUSED,COMPLETED,ENDED,ENDED_EARLY),completed_route.eq.true').order('start_time', { ascending: false }).limit(500)
     ]);
 
     if (roundsRes.error) return c.json({ success: false, message: errMsg(roundsRes.error) }, 500);
@@ -1377,8 +1377,8 @@ app.get('/api/v1/rounds', async (c) => {
     const checkpoints = cpRes.data || [];
     const guards = guardsRes.data || [];
     const allSessions = sessionsRes.data || [];
-    const activeSessions = allSessions.filter((s: any) => s.status === 'ACTIVE' || s.status === 'PAUSED');
-    const completedSessions = allSessions.filter((s: any) => s.status === 'COMPLETED' || s.status === 'ENDED');
+    const activeSessions = allSessions.filter((s: any) => (s.status === 'ACTIVE' || s.status === 'PAUSED') && !s.completed_route);
+    const completedSessions = allSessions.filter((s: any) => s.completed_route === true || s.status === 'COMPLETED' || s.status === 'ENDED' || s.status === 'ENDED_EARLY');
     const guardById = new Map(guards.map((g: any) => [g.guard_id || g.id, g]));
 
     const roundsWithCheckpoints = rounds.map((round) => {
