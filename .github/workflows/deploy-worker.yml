@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
     paths:
       - 'backend/**'
       - '.github/workflows/deploy-worker.yml'
@@ -37,6 +38,6 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           workingDirectory: backend
-          command: deploy
+          command: ${{ github.ref_name == 'dev' && 'deploy --env dev' || 'deploy' }}
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
