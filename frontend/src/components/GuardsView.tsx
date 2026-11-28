@@ -33,7 +33,6 @@ export interface AppPermissions {
   sync_queue: boolean;
   incident_option_1_severity: boolean;
   incident_option_2_category: boolean;
-  incident_option_3_location: boolean;
   incident_option_4_title: boolean;
   incident_option_5_description: boolean;
   incident_option_6_photo: boolean;
@@ -47,7 +46,6 @@ const BASIC_GUARD_PERMISSIONS: AppPermissions = {
   sync_queue: true,
   incident_option_1_severity: false,
   incident_option_2_category: false,
-  incident_option_3_location: true,
   incident_option_4_title: true,
   incident_option_5_description: true,
   incident_option_6_photo: true,
@@ -61,7 +59,6 @@ const FULL_ACCESS_PERMISSIONS: AppPermissions = {
   sync_queue: true,
   incident_option_1_severity: true,
   incident_option_2_category: true,
-  incident_option_3_location: true,
   incident_option_4_title: true,
   incident_option_5_description: true,
   incident_option_6_photo: true,
@@ -811,7 +808,7 @@ export const GuardsView: React.FC = () => {
 
                     const perms = getGuardPermissions(guard);
                     const formFieldCount = [
-                      'incident_option_1_severity','incident_option_2_category','incident_option_3_location',
+                      'incident_option_1_severity','incident_option_2_category',
                       'incident_option_4_title','incident_option_5_description','incident_option_6_photo',
                     ].filter((k) => isLicensed(k) && (perms as any)[k]).length;
 
@@ -1169,7 +1166,7 @@ export const GuardsView: React.FC = () => {
             </div>
 
             {/* Section 2: Report Incident Form Options (only the ones this plant bought) */}
-            {['incident_option_1_severity','incident_option_2_category','incident_option_3_location','incident_option_4_title','incident_option_5_description','incident_option_6_photo'].some(isLicensed) && (
+            {['incident_option_1_severity','incident_option_2_category','incident_option_4_title','incident_option_5_description','incident_option_6_photo'].some(isLicensed) && (
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
@@ -1190,11 +1187,6 @@ export const GuardsView: React.FC = () => {
                     key: 'incident_option_2_category',
                     label: 'Category Selector',
                     note: 'If hidden, server automatically sets Security / Patrol',
-                  },
-                  {
-                    key: 'incident_option_3_location',
-                    label: 'Location / Checkpoint Field',
-                    note: 'Specific gate, floor, or checkpoint location input',
                   },
                   {
                     key: 'incident_option_4_title',

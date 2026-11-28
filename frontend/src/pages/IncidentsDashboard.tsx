@@ -16,7 +16,6 @@ import {
   Paperclip,
   Building2,
   SlidersHorizontal,
-  MapPin,
   Tag,
   AlertOctagon,
   Settings2,
@@ -42,7 +41,6 @@ interface IncidentRecord {
   title: string;
   description: string;
   priority?: string;
-  location?: string | null;
   plant_id?: string | null;
   plant_name?: string;
   plant_code?: string | null;
@@ -74,12 +72,10 @@ export const IncidentsDashboard: React.FC = () => {
   const [allowedFields, setAllowedFields] = useState<string[]>([
     'severity',
     'category',
-    'location',
     'title',
     'description',
     'photo',
   ]);
-  const [allowPlantField, setAllowPlantField] = useState<boolean>(true);
   const [userTier, setUserTier] = useState<string>('USER');
 
   // Filter & Pagination State
@@ -108,7 +104,6 @@ export const IncidentsDashboard: React.FC = () => {
   const [newCategory, setNewCategory] = useState('');
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [newPlantId, setNewPlantId] = useState('');
-  const [newLocation, setNewLocation] = useState('');
   const [newAssignedTo, setNewAssignedTo] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -125,7 +120,6 @@ export const IncidentsDashboard: React.FC = () => {
 
   const showSeverity = allowedFields.includes('severity');
   const showCategory = allowedFields.includes('category');
-  const showLocation = allowedFields.includes('location');
   const showTitle = allowedFields.includes('title');
   const showDescription = allowedFields.includes('description');
   const showPhoto = allowedFields.includes('photo');
@@ -163,9 +157,6 @@ export const IncidentsDashboard: React.FC = () => {
         if (d.success) {
           if (Array.isArray(d.incident_form_fields)) {
             setAllowedFields(d.incident_form_fields);
-          }
-          if (d.visible_modules && typeof d.visible_modules.manage_plants === 'boolean') {
-            setAllowPlantField(d.visible_modules.manage_plants);
           }
           if (d.tier) setUserTier(String(d.tier));
         }
@@ -307,7 +298,7 @@ export const IncidentsDashboard: React.FC = () => {
     }
 
     const chosenPlant = activePlants.find((p) => p.id === newPlantId) || activePlants[0];
-    if (allowPlantField && !chosenPlant) {
+    if (!chosenPlant) {
       alert('Please configure at least one active Plant first.');
       return;
     }
@@ -322,7 +313,6 @@ export const IncidentsDashboard: React.FC = () => {
         guard_id: newCallerGuardId || null,
         priority: showSeverity ? newPriority : 'P3 - Moderate',
         category: showCategory ? newCategory || 'Security / Patrol' : 'Security / Patrol',
-        location: showLocation ? newLocation.trim() || null : null,
         title: showTitle ? fallbackSummary : fallbackSummary,
         description: showDescription
           ? newDescription.trim() || fallbackSummary
@@ -345,7 +335,6 @@ export const IncidentsDashboard: React.FC = () => {
         setShowCreateModal(false);
         setNewTitle('');
         setNewDescription('');
-        setNewLocation('');
         setNewPhotoBase64(null);
         setNewPhotoName(null);
         setPage(1);
@@ -582,8 +571,7 @@ export const IncidentsDashboard: React.FC = () => {
 
             <div className="mx-1 h-4 w-px bg-slate-200" />
 
-            {allowPlantField && (
-              <div className="inline-flex items-center gap-1.5 text-slate-500">
+            <div className="inline-flex items-center gap-1.5 text-slate-500">
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 <select
                   value={plantFilter}
@@ -603,7 +591,6 @@ export const IncidentsDashboard: React.FC = () => {
                   ))}
                 </select>
               </div>
-            )}
 
             {showSeverity && (
               <select
@@ -677,10 +664,9 @@ export const IncidentsDashboard: React.FC = () => {
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
                   <th className="w-[120px] py-3.5 pl-5 pr-3">Case ID</th>
-                  {allowPlantField && <th className="w-[190px] px-3 py-3.5">Plant</th>}
+                  <th className="w-[190px] px-3 py-3.5">Plant</th>
                   {showSeverity && <th className="w-[115px] px-3 py-3.5">Severity</th>}
                   {showCategory && <th className="w-[155px] px-3 py-3.5">Category</th>}
-                  {showLocation && <th className="w-[150px] px-3 py-3.5">Location</th>}
                   <th className="px-4 py-3.5">Incident Summary</th>
                   <th className="w-[155px] px-3 py-3.5">Reported By</th>
                   <th className="w-[110px] px-3 py-3.5">Status</th>
@@ -722,14 +708,12 @@ export const IncidentsDashboard: React.FC = () => {
                             <ArrowUpRight className="h-3 w-3 opacity-0 transition group-hover:opacity-100" />
                           </span>
                         </td>
-                        {allowPlantField && (
-                          <td className="whitespace-nowrap px-3 py-3.5">
+                        <td className="whitespace-nowrap px-3 py-3.5">
                             <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 text-[11px] font-bold text-indigo-700">
                               <Building2 className="h-3 w-3" />
                               {formatPlantLabel(item)}
                             </span>
                           </td>
-                        )}
                         {showSeverity && (
                           <td className="whitespace-nowrap px-3 py-3.5">
                             <span
@@ -746,18 +730,6 @@ export const IncidentsDashboard: React.FC = () => {
                               <Tag className="h-2.5 w-2.5 text-slate-400" />
                               {item.category || 'Security / Patrol'}
                             </span>
-                          </td>
-                        )}
-                        {showLocation && (
-                          <td className="whitespace-nowrap px-3 py-3.5 text-[11px] font-semibold text-slate-600">
-                            {item.location ? (
-                              <span className="inline-flex items-center gap-1">
-                                <MapPin className="h-3 w-3 text-slate-400" />
-                                {item.location}
-                              </span>
-                            ) : (
-                              <span className="text-slate-300">—</span>
-                            )}
                           </td>
                         )}
                         <td className="max-w-md xl:max-w-xl px-4 py-3.5">
@@ -988,9 +960,7 @@ export const IncidentsDashboard: React.FC = () => {
                   </div>
                 )}
 
-                {allowPlantField && (
-                  <div>
-                    <label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
+                <div><label className="mb-1 block text-[11px] font-bold text-slate-700">Plant *</label>
                     <select
                       value={newPlantId}
                       onChange={(e) => {
@@ -1007,28 +977,9 @@ export const IncidentsDashboard: React.FC = () => {
                       ))}
                     </select>
                   </div>
-                )}
               </div>
 
-              {showLocation && (
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">
-                    Location / Checkpoint / Gate
-                  </label>
-                  <input
-                    type="text"
-                    value={newLocation}
-                    onChange={(e) => setNewLocation(e.target.value)}
-                    placeholder="e.g. Gate 2, Boiler Room, Warehouse Bay 4..."
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:border-brand-500 focus:bg-white"
-                  />
-                </div>
-              )}
-
-              {allowPlantField && (
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-700">
-                    Assigned Responder ({selectedCreatePlant?.name || 'Selected Plant'})
+              <div><label className="mb-1 block text-[11px] font-bold text-slate-700">Assigned Responder ({selectedCreatePlant?.name || 'Selected Plant'})
                   </label>
                   <select
                     value={newAssignedTo}
@@ -1043,7 +994,6 @@ export const IncidentsDashboard: React.FC = () => {
                     ))}
                   </select>
                 </div>
-              )}
 
               {showTitle && (
                 <div>

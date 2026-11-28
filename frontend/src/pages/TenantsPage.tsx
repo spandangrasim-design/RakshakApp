@@ -32,7 +32,6 @@ const CATALOG: ModuleDef[] = [
       { path: 'module_incidents.allow_mobile_incident_creation', label: 'Mobile incident creation' },
       { path: 'module_incidents.allowed_creation_options.option_1_severity', label: 'Form field: Severity' },
       { path: 'module_incidents.allowed_creation_options.option_2_category', label: 'Form field: Category' },
-      { path: 'module_incidents.allowed_creation_options.option_3_location', label: 'Form field: Location / Checkpoint' },
       { path: 'module_incidents.allowed_creation_options.option_4_title', label: 'Form field: Title' },
       { path: 'module_incidents.allowed_creation_options.option_5_description', label: 'Form field: Description' },
       { path: 'module_incidents.allowed_creation_options.option_6_camera_photo', label: 'Form field: Camera photo' },
