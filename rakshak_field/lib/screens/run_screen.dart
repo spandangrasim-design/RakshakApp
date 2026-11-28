@@ -46,6 +46,8 @@ class _RunScreenState extends State<RunScreen> {
   String? _error;
   Timer? _clock;
   Timer? _gpsTimer;
+  StreamSubscription<Position>? _gpsSub;
+  DateTime? _lastPingSentAt;
   bool _gpsPingInFlight = false;
 
   late final List<Map<String, dynamic>> _cps;
@@ -76,6 +78,7 @@ class _RunScreenState extends State<RunScreen> {
   void dispose() {
     _clock?.cancel();
     _gpsTimer?.cancel();
+    _gpsSub?.cancel();
     super.dispose();
   }
 
@@ -111,11 +114,37 @@ class _RunScreenState extends State<RunScreen> {
 
   void _startGpsTracking() {
     _gpsTimer?.cancel();
+    _gpsSub?.cancel();
     if (_sessionId == null || _paused) return;
-    _gpsTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+
+    _gpsSub = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 3,
+      ),
+    ).listen(
+      (pos) async {
+        if (!mounted || _paused || _gpsPingInFlight) return;
+        final last = _lastPingSentAt;
+        if (last != null && DateTime.now().difference(last).inMilliseconds < 3500) return;
+        try {
+          await _sendLiveLocation(pos);
+        } catch (e) {
+          debugPrint('Live patrol stream ping failed: $e');
+        }
+      },
+      onError: (e) => debugPrint('GPS stream error: $e'),
+    );
+
+    _gpsTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
       if (!mounted || _paused || _gpsPingInFlight) return;
-      try { await _sendLiveLocation(await _position()); }
-      catch (e) { debugPrint('Live patrol GPS update failed: $e'); }
+      final last = _lastPingSentAt;
+      if (last != null && DateTime.now().difference(last).inSeconds < 7) return;
+      try {
+        await _sendLiveLocation(await _position());
+      } catch (e) {
+        debugPrint('Live patrol GPS heartbeat failed: $e');
+      }
     });
   }
 
@@ -125,6 +154,7 @@ class _RunScreenState extends State<RunScreen> {
     _gpsPingInFlight = true;
     try {
       await Api.pingRun(id, widget.route['id'].toString(), position.latitude, position.longitude);
+      _lastPingSentAt = DateTime.now();
     } finally {
       _gpsPingInFlight = false;
     }

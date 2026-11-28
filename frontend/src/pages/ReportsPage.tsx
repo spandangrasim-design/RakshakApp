@@ -394,6 +394,7 @@ export const ReportsPage: React.FC = () => {
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
+  const hasInitialFitRef = useRef<boolean>(false);
 
   const fetchAllReportsData = async () => {
     try {
@@ -434,7 +435,10 @@ export const ReportsPage: React.FC = () => {
   const fetchLiveTrailForRound = async (roundId: string) => {
     try {
       setLoadingTrail(true);
-      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail`);
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch(`${API_BASE_URL}/rounds/${roundId}/live-trail`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await res.json();
       if (data.success) {
         setLiveTrail(data);
@@ -450,6 +454,7 @@ export const ReportsPage: React.FC = () => {
     if (!mapModalRun) {
       setLiveTrail(null);
       setMapZoomFocus('ALL');
+      hasInitialFitRef.current = false;
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -462,7 +467,7 @@ export const ReportsPage: React.FC = () => {
     if (!autoRefreshMap) return;
     const interval = setInterval(() => {
       fetchLiveTrailForRound(mapModalRun.roundId);
-    }, 10000);
+    }, 4000);
 
     return () => clearInterval(interval);
   }, [mapModalRun, autoRefreshMap]);
@@ -662,8 +667,9 @@ export const ReportsPage: React.FC = () => {
       // 5. Plot Live Guard Marker ("G")
       const lastScan = mapModalRun.scans[mapModalRun.scans.length - 1];
       const lastScanResolved = lastScan ? resolveGuardCaptureCoords(lastScan) : { lat: 0, lng: 0 };
-      const liveLat = liveTrail?.session?.last_lat || lastScanResolved.lat;
-      const liveLng = liveTrail?.session?.last_lng || lastScanResolved.lng;
+      const latestCrumb = rawCrumbs.length > 0 ? rawCrumbs[rawCrumbs.length - 1] : null;
+      const liveLat = liveTrail?.session?.last_lat || latestCrumb?.[0] || lastScanResolved.lat;
+      const liveLng = liveTrail?.session?.last_lng || latestCrumb?.[1] || lastScanResolved.lng;
 
       if (liveLat && liveLng && !isNaN(Number(liveLat)) && !isNaN(Number(liveLng)) && Number(liveLat) !== 0) {
         const gLat = Number(liveLat);
@@ -697,8 +703,9 @@ export const ReportsPage: React.FC = () => {
           ? guardBounds
           : allBounds;
 
-      if (activeBounds.length > 0) {
+      if (activeBounds.length > 0 && !hasInitialFitRef.current) {
         map.fitBounds(activeBounds, { padding: [55, 55], maxZoom: 18 });
+        hasInitialFitRef.current = true;
       }
     });
 
@@ -1525,7 +1532,7 @@ export const ReportsPage: React.FC = () => {
                 {/* Quick Zoom Switcher for Far-Away Captures */}
                 <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 text-[11px]">
                   <button
-                    onClick={() => setMapZoomFocus('ALL')}
+                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('ALL'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'ALL' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
@@ -1533,7 +1540,7 @@ export const ReportsPage: React.FC = () => {
                     Fit Both
                   </button>
                   <button
-                    onClick={() => setMapZoomFocus('QR')}
+                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('QR'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'QR' ? 'bg-emerald-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
@@ -1541,7 +1548,7 @@ export const ReportsPage: React.FC = () => {
                     Zoom QR Route
                   </button>
                   <button
-                    onClick={() => setMapZoomFocus('GUARD')}
+                    onClick={() => { hasInitialFitRef.current = false; setMapZoomFocus('GUARD'); }}
                     className={`px-2.5 py-1 rounded-md font-bold transition ${
                       mapZoomFocus === 'GUARD' ? 'bg-rose-600 text-white' : 'text-slate-300 hover:text-white'
                     }`}
