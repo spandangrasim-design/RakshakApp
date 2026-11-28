@@ -1036,29 +1036,79 @@ app.post('/api/v1/patrols/session/start', async (c) => {
     const { round_id, lat, lng } = await c.req.json();
     const supabase = getSupabase(c.env);
 
-    await supabase
+    const tenantId = c.get('auth').tenant_id;
+
+    // Lock route if another guard currently holds an ACTIVE or PAUSED session
+    const { data: otherActive } = await supabase
       .from('patrol_sessions')
-      .update({ status: 'COMPLETED', end_time: new Date().toISOString() })
+      .select('id, guard_id, status')
+      .eq('round_id', round_id)
+      .in('status', ['ACTIVE', 'PAUSED'])
+      .or('completed_route.is.null,completed_route.eq.false')
+      .neq('guard_id', guard_id)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (otherActive?.id) {
+      return c.json({
+        success: false,
+        message: 'This route is currently in progress by another guard until completed or ended.'
+      }, 409);
+    }
+
+    // Reuse existing ACTIVE/PAUSED session for this guard + route so back/reopen never creates duplicates
+    const { data: myOpenSessions } = await supabase
+      .from('patrol_sessions')
+      .select('*')
       .eq('guard_id', guard_id)
       .eq('round_id', round_id)
-      .eq('status', 'ACTIVE');
+      .in('status', ['ACTIVE', 'PAUSED'])
+      .or('completed_route.is.null,completed_route.eq.false')
+      .order('start_time', { ascending: false });
 
-    const { data: session, error } = await supabase
-      .from('patrol_sessions')
-      .insert([{
-        round_id,
-        guard_id,
-        tenant_id: c.get('auth').tenant_id,
-        status: 'ACTIVE',
-        start_time: new Date().toISOString(),
-        last_lat: lat,
-        last_lng: lng,
-        last_ping_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
+    let session = myOpenSessions?.[0] || null;
+    if (session?.id) {
+      if ((myOpenSessions?.length || 0) > 1) {
+        const extraIds = (myOpenSessions || []).slice(1).map((s: any) => s.id);
+        await supabase
+          .from('patrol_sessions')
+          .update({ status: 'ENDED_EARLY', end_time: new Date().toISOString(), ended_reason: 'OTHER', ended_note: 'Consolidated duplicate open session' })
+          .in('id', extraIds);
+      }
+      const { data: updatedSession } = await supabase
+        .from('patrol_sessions')
+        .update({
+          status: 'ACTIVE',
+          paused_at: null,
+          last_lat: lat ?? session.last_lat,
+          last_lng: lng ?? session.last_lng,
+          last_ping_at: new Date().toISOString()
+        })
+        .eq('id', session.id)
+        .select()
+        .single();
+      if (updatedSession) session = updatedSession;
+    } else {
+      const { data: insertedSession, error: insertError } = await supabase
+        .from('patrol_sessions')
+        .insert([{
+          round_id,
+          guard_id,
+          tenant_id: tenantId,
+          status: 'ACTIVE',
+          completed_route: false,
+          start_time: new Date().toISOString(),
+          last_lat: lat,
+          last_lng: lng,
+          last_ping_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
+      if (insertError) throw insertError;
+      session = insertedSession;
+    }
 
-    if (error) throw error;
 
     if (lat && lng) {
       await supabase.from('patrol_breadcrumbs').insert([{
@@ -2068,17 +2118,46 @@ app.post('/api/v1/field/runs/start', async (c) => {
     if (route.my_run) {
       return c.json({ success: true, session_id: route.my_run.session_id, status: route.my_run.status, resumed: true });
     }
-    const { data: existingSession } = await supabase
+
+    // Lock route while another guard has an ACTIVE or PAUSED session
+    const { data: otherGuardSession } = await supabase
+      .from('patrol_sessions')
+      .select('id, guard_id, status')
+      .eq('tenant_id', a.tenant_id)
+      .eq('round_id', round_id)
+      .in('status', ['ACTIVE', 'PAUSED'])
+      .or('completed_route.is.null,completed_route.eq.false')
+      .neq('guard_id', a.guard_id)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (otherGuardSession?.id) {
+      return c.json({
+        success: false,
+        message: 'This route is currently in progress by another guard until completed or ended.'
+      }, 409);
+    }
+
+    const { data: existingSessions } = await supabase
       .from('patrol_sessions')
       .select('id, status')
       .eq('tenant_id', a.tenant_id)
       .eq('round_id', round_id)
       .eq('guard_id', a.guard_id)
       .in('status', ['ACTIVE', 'PAUSED'])
-      .order('start_time', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .or('completed_route.is.null,completed_route.eq.false')
+      .order('start_time', { ascending: false });
+
+    const existingSession = existingSessions?.[0] || null;
     if (existingSession?.id) {
+      if ((existingSessions?.length || 0) > 1) {
+        const extraIds = (existingSessions || []).slice(1).map((s: any) => s.id);
+        await supabase
+          .from('patrol_sessions')
+          .update({ status: 'ENDED_EARLY', end_time: new Date().toISOString(), ended_reason: 'OTHER', ended_note: 'Consolidated duplicate open session' })
+          .in('id', extraIds);
+      }
       return c.json({ success: true, session_id: existingSession.id, status: existingSession.status, resumed: true });
     }
 
